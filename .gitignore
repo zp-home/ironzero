@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# PyTorch / models / datasets
+*.pt
+*.pth
+*.onnx
+*.engine
+*.ckpt
+*.npz
+*.npy
+*.h5
+*.parquet
+checkpoints/
+datasets/
+logs/
+
+# Java / Gradle / Kotlin
+*.class
+*.jar
+*.log
+build/
+out/
+.gradle/
+.idea/
+*.iml
+
+# Game / bridge runtime
+*.rwmod
+rw-agent*.jar
+episodes/
+replays/
+captures/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local configuration
+.env
+*.local
+secret.toml
+config.local.*
