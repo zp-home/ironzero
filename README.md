@@ -49,6 +49,7 @@ Gymnasium 环境（reset / step / reward）
 - [协议 v1 说明](./docs/协议v1说明.md)
 - [RWPP 兼容性验证](./docs/RWPP兼容性验证.md)
 - [铁锈战争安装与获取](./docs/游戏安装与获取.md)
+- [经典强化学习案例与 RTS 启示](./docs/经典强化学习案例与RTS启示.md)
 
 ## 获取游戏
 

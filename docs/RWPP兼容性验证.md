@@ -153,9 +153,13 @@ Java 版本
 
 - Python 3.12 可用。
 - Java 25 便携运行时可位于 `.runtime/jdk25/`。
-- 尚未发现可用的 RWPP 运行目录和游戏 assets。
+- 已找到一份 1.15 PC 客户端，Steam App ID 为 `647960`。
+- 客户端自报 `Game Version: 1.15`、`Game Code: 176`、`Build Number: #28`。
+- 客户端包含完整 `assets/`，约 21.4 MiB。
+- 客户端自带 `game-lib.jar` 和 Java 13 运行时；RWPP 服务端仍使用项目自己的 Java 25。
+- RWPP 源码已下载到 `.runtime/RWPP-main`，正在构建 `rwpp-server`。
 
-因此 M1 的真实服务端启动尚未通过。必须先提供 RWPP 运行目录、Java 25 和合法游戏资源，才能继续完成兼容性验证。
+M1 的服务端构建和真实启动尚未完成。构建通过后，需要把客户端 `assets/` 复制到独立运行目录，而不是直接修改游戏安装目录。
 
 在缺少真实资源时，可以使用 mock runtime 验证脚本本身：
 
