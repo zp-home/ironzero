@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Rusted Warfare reinforcement learning package."""
 
 from .protocol import (

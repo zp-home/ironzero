@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Versioned wire protocol for the Rusted Warfare RL bridge.
 
 The protocol is intentionally transport-agnostic. The first transport is
@@ -339,6 +340,7 @@ def message_schema() -> dict[str, Any]:
     schema["$id"] = "https://github.com/zp-home/rusted-warfare-rl/schemas/rwrl/1/messages.schema.json"
     schema["title"] = "RWRL v1 bridge message"
     schema["x-schema-version"] = SCHEMA_VERSION
+    schema["x-license"] = "Apache-2.0"
     return schema
 
 

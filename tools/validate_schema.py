@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Validate representative messages against the checked-in JSON Schema."""
 
 from __future__ import annotations

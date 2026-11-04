@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
 import json
@@ -14,6 +15,7 @@ class SchemaArtifactTests(unittest.TestCase):
         schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
         self.assertEqual(schema["$schema"], "https://json-schema.org/draft/2020-12/schema")
         self.assertEqual(schema["x-schema-version"], "1.0.0")
+        self.assertEqual(schema["x-license"], "Apache-2.0")
         self.assertEqual(schema["discriminator"]["propertyName"], "type")
 
     def test_schema_contains_all_message_types(self) -> None:

@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # RWPP 兼容性验证
 
 > 文档状态：M1 验证手册

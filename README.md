@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # 铁锈战争强化学习
 
 作者：**周培智**
@@ -5,6 +6,8 @@
 一个面向 PC 版《铁锈战争》（Rusted Warfare）的强化学习研究项目规划，目标是把游戏接入为可观测、可动作、可重置、可复现的强化学习环境，并完成从训练到推理的完整闭环。
 
 > 当前状态：架构与协议基线阶段。已有 RWRL v1 协议 schema、协议单元测试和 RWPP 环境检查/冒烟脚本；尚未包含真实游戏桥接程序或训练代码。
+
+> 开源许可：代码 Apache-2.0，文档 CC BY 4.0。详见 [许可证说明](./LICENSING.md)。
 
 ## 项目目标
 
@@ -45,6 +48,16 @@ Gymnasium 环境（reset / step / reward）
 - [性能与容量基线](./docs/性能与容量基线.md)
 - [协议 v1 说明](./docs/协议v1说明.md)
 - [RWPP 兼容性验证](./docs/RWPP兼容性验证.md)
+- [铁锈战争安装与获取](./docs/游戏安装与获取.md)
+
+## 获取游戏
+
+PC 版通过 Steam 官方渠道获取：
+
+- [Steam 商店页面](https://store.steampowered.com/app/647960/Rusted_Warfare/)
+- [安装说明](./docs/游戏安装与获取.md)
+
+本仓库不包含游戏本体、`assets/` 或第三方安装包。
 
 ## 开发入口
 
@@ -115,7 +128,20 @@ python tools/validate_schema.py
 
 ## 许可证
 
-许可证暂未指定。公开发布前请根据项目目标补充合适的开源许可证。
+本项目采用分层开源许可证：
+
+- 代码、脚本、测试和 schema：**Apache-2.0**
+- 文档：**CC BY 4.0**
+- 第三方依赖和参考项目：各自保留原许可证
+
+详见：
+
+- [许可证说明](./LICENSING.md)
+- [Apache-2.0 全文](./LICENSE)
+- [CC BY 4.0 全文](./docs/LICENSE)
+- [第三方声明](./THIRD_PARTY_NOTICES.md)
+- [NOTICE](./NOTICE)
+- [安全政策](./SECURITY.md)
 
 ## 参考项目
 

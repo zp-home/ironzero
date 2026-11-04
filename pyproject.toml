@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
@@ -9,7 +10,15 @@ description = "Rusted Warfare reinforcement learning environment and bridge"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "周培智" }]
+license = { file = "LICENSE" }
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+]
 dependencies = ["pydantic>=2.8,<3"]
+
+[project.urls]
+Repository = "https://github.com/zp-home/rusted-warfare-rl"
 
 [project.optional-dependencies]
 dev = ["jsonschema>=4.23,<5", "pytest>=8,<9"]

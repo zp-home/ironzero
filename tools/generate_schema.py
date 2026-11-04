@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Generate the checked-in RWRL v1 JSON Schema."""
 
 from __future__ import annotations

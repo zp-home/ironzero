@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 [CmdletBinding()]
 param(
     [string]$RuntimeDir = $env:RWPP_RUNTIME_DIR,
