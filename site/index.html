@@ -10,6 +10,7 @@
   <meta property="og:description" content="真实 RTS 引擎、结构化观测、动作桥与 PPO 训练闭环。">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://zp-home.github.io/rusted-warfare-rl/">
+  <meta property="og:image" content="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/647960/header.jpg?t=1569131908">
   <title>RWRL Lab — 铁锈战争强化学习</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <script>document.documentElement.classList.add("js");</script>
@@ -67,7 +68,9 @@
 
       <div class="hero-visual reveal" aria-label="战术地图可视化">
         <div class="map-frame">
-          <div class="map-topline"><span><i class="live-dot"></i> SECTOR 07 / LIVE SIM</span><span>TICK 01284</span></div>
+          <img class="game-shot" src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/647960/page_bg_raw.jpg?t=1569131908" alt="《铁锈战争》官方 Steam 商店实机战斗截图" width="1438" height="810" loading="eager" fetchpriority="high" referrerpolicy="no-referrer">
+          <div class="shot-shade" aria-hidden="true"></div>
+          <div class="map-topline"><span><i class="live-dot"></i> REAL GAME / TRAINING TARGET</span><span>STEAM 647960</span></div>
           <svg class="tactical-map" viewBox="0 0 660 620" role="img" aria-label="抽象 RTS 战术地图">
             <defs>
               <pattern id="grid" width="34" height="34" patternUnits="userSpaceOnUse"><path d="M34 0H0V34" fill="none" stroke="rgba(173, 205, 165, .10)" stroke-width="1"/></pattern>
@@ -92,7 +95,7 @@
             <g class="map-label" transform="translate(500 574)"><text class="map-label-sub">GRID 64 x 64</text></g>
           </svg>
           <div class="map-reticle" aria-hidden="true"></div><div class="map-scanline" aria-hidden="true"></div>
-          <div class="map-bottomline"><span>OBS-MASK <b>ON</b></span><span>POLICY <b>PPO</b></span><span>FOG <b>VERIFIED</b></span></div>
+          <div class="map-bottomline"><span>SOURCE <b>STEAM</b></span><span>POLICY <b>PPO</b></span><span>RWPP <b>HEADLESS</b></span></div>
           <aside class="map-panel"><span class="panel-kicker">OBSERVATION</span><strong>已识别 3 个敌方单位</strong><p>视野内信息 / 记忆目标 / 动作掩码</p><div class="panel-meter"><i style="width: 72%"></i></div><div class="panel-row"><span>DECISION</span><b>12 TICKS</b></div><div class="panel-row"><span>LATENCY</span><b>18 MS</b></div></aside>
         </div>
       </div>
@@ -100,6 +103,35 @@
 
     <section class="stat-strip section-shell reveal" aria-label="项目指标">
       <div><strong>05</strong><span>系统分层</span></div><div><strong>09</strong><span>协议消息</span></div><div><strong>20</strong><span>协议测试</span></div><div><strong>02</strong><span>开源许可证</span></div><div class="stat-note"><i></i> ARCHITECTURE / PROTOCOL BASELINE</div>
+    </section>
+
+    <section class="battle-gallery section-shell" id="battlefield">
+      <div class="battle-gallery-head reveal">
+        <div>
+          <p class="section-index">GAME / STEAM APP 647960</p>
+          <h2>不是概念图，<span>是训练目标。</span></h2>
+          <p>官方商店实机画面。这里发生的大规模单位交战、基地建设和迷雾侦察，就是 RWRL 要接入的真实战场。</p>
+        </div>
+        <a class="game-identity" href="https://store.steampowered.com/app/647960/Rusted_Warfare/" target="_blank" rel="noreferrer">
+          <img src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/647960/header.jpg?t=1569131908" alt="Rusted Warfare 官方标题图" width="460" height="215" loading="lazy" decoding="async" referrerpolicy="no-referrer">
+          <span>TARGET GAME / RUSTED WARFARE <b>↗</b></span>
+        </a>
+      </div>
+      <div class="shot-grid reveal">
+        <figure class="shot-card shot-primary">
+          <img src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/647960/ss_ed768986304cafa6030593bfcbd3ad088daa5e8d.1920x1080.jpg?t=1569131908" alt="铁锈战争官方截图：大规模单位交战" width="1920" height="1080" loading="lazy" decoding="async" referrerpolicy="no-referrer">
+          <figcaption><span>01 / COMBAT</span><b>大规模单位交战</b></figcaption>
+        </figure>
+        <figure class="shot-card">
+          <img src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/647960/ss_1e3387006f46aa5685a13216321d5e8d8cbb6233.1920x1080.jpg?t=1569131908" alt="铁锈战争官方截图：完整 RTS 操作界面" width="1920" height="1080" loading="lazy" decoding="async" referrerpolicy="no-referrer">
+          <figcaption><span>02 / CONTROL SURFACE</span><b>真实 RTS 操作界面</b></figcaption>
+        </figure>
+        <figure class="shot-card">
+          <img src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/647960/ss_3259a13507fccf33e1a6448d0da2229b687f996d.1920x1080.jpg?t=1569131908" alt="铁锈战争官方截图：基地与生产单位" width="1920" height="1080" loading="lazy" decoding="async" referrerpolicy="no-referrer">
+          <figcaption><span>03 / ECONOMY</span><b>基地、生产与扩张</b></figcaption>
+        </figure>
+      </div>
+      <p class="image-attribution reveal">游戏画面版权归 Corroding Games 所有，来自 Steam 官方商店，仅用于非官方研究项目的游戏识别与介绍。</p>
     </section>
 
     <section class="section section-shell" id="mission">
@@ -187,7 +219,7 @@
   <footer class="footer section-shell">
     <div class="footer-brand"><span class="brand-text">RWRL<em>LAB</em></span><p>Rusted Warfare Reinforcement Learning</p></div>
     <div class="footer-links"><a href="https://github.com/zp-home/rusted-warfare-rl" target="_blank" rel="noreferrer">GitHub</a><a href="https://github.com/zp-home/rusted-warfare-rl/tree/main/docs" target="_blank" rel="noreferrer">Docs</a><a href="https://store.steampowered.com/app/647960/Rusted_Warfare/" target="_blank" rel="noreferrer">Steam</a></div>
-    <div class="footer-meta"><span>作者 / 周培智</span><span>© <span id="year">2026</span> RWRL Lab</span><span>非 Corroding Games 官方项目</span></div>
+    <div class="footer-meta"><span>作者 / 周培智</span><span>© <span id="year">2026</span> RWRL Lab</span><span>非 Corroding Games 官方项目</span><span>Steam 游戏画面 © Corroding Games</span></div>
   </footer>
 </body>
 </html>

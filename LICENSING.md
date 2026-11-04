@@ -60,6 +60,8 @@ game-agent/rwpp-extension/  按 RWPP 要求单独标注，可能为 AGPL-3.0
 
 这些内容的使用受游戏 EULA、版权法和其他适用条款约束。
 
+展示页通过 Steam 官方 CDN 远程引用《铁锈战争》宣传截图。这些图片不属于本项目代码或文档许可证范围，仓库也不保存这些图片副本。详见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
+
 ## 5. 模型、数据和运行产物
 
 当前仓库不包含训练好的模型权重、训练数据集、回放或日志。

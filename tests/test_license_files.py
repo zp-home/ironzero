@@ -29,6 +29,11 @@ class LicenseFilesTests(unittest.TestCase):
         self.assertIn("RWPP", text)
         self.assertIn("AGPL-3.0", text)
 
+    def test_third_party_notices_cover_steam_imagery(self) -> None:
+        text = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+        self.assertIn("Steam", text)
+        self.assertIn("Corroding Games", text)
+
     def test_readme_points_to_license_documents(self) -> None:
         text = (ROOT / "README.md").read_text(encoding="utf-8")
         for name in ["LICENSING.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "NOTICE"]:

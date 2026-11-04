@@ -51,6 +51,18 @@ Pydantic 通过 `pyproject.toml` 声明为依赖，当前仓库不包含其源�
 - 本仓库不包含游戏本体、assets、商店安装包或 Steam 客户端。
 - “Rusted Warfare”名称和相关商标归其权利人所有。
 
+### Steam 宣传素材
+
+展示页 `site/index.html` 通过 Steam 官方 CDN 远程引用以下宣传素材：
+
+- Steam App ID：`647960`
+- 商店页面：https://store.steampowered.com/app/647960/Rusted_Warfare/
+- 用途：非官方研究项目的游戏识别与介绍
+- 版权：归 Corroding Games 及其权利人所有
+- 分发方式：仅远程外链，不存入仓库，不纳入项目 Apache-2.0 / CC BY 4.0 许可
+
+如果 Steam 外链失效或需要离线部署，应重新取得素材使用许可，不能直接把游戏截图提交到仓库。
+
 ## 5. 维护要求
 
 新增依赖或复制第三方代码前，更新本文件并记录：
