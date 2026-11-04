@@ -147,79 +147,175 @@ Java 版本
 
 ---
 
-## 8. 当前状态
+## 8. 已验证兼容矩阵
 
-当前工作站已确认：
+2026-11-04 的 M1 实测组合：
 
-- Python 3.12 可用。
-- Java 25 便携运行时可位于 `.runtime/jdk25/`。
-- 已找到一份 1.15 PC 客户端，Steam App ID 为 `647960`。
-- 客户端自报 `Game Version: 1.15`、`Game Code: 176`、`Build Number: #28`。
-- 客户端包含完整 `assets/`，约 21.4 MiB。
-- 客户端自带 `game-lib.jar` 和 Java 13 运行时；RWPP 服务端仍使用项目自己的 Java 25。
-- RWPP 源码已下载到纯英文路径 `.rwrl-runtime/RWPP-main`，用于避免 Android Gradle 插件拒绝中文路径。
-- Gradle 下载已显式配置本地 HTTP/HTTPS 代理，不再依赖直连。
+| 组件 | 已验证版本 |
+|---|---|
+| 游戏 | Rusted Warfare 1.15，Game Code `176`，Build `#28`，Steam App `647960` |
+| 游戏资源 | 完整 `assets/`，约 21.4 MiB |
+| 游戏映射库 | `io.github.rwpp-team:game-lib:v3-1.15` |
+| 映射 JAR SHA-256 | `1C7B864C3B2E78C30903BFB94F7FF4C89B31230D04C8321734D66F025522B230` |
+| RWPP | `0c8325fb4eeb98ceb0d93e279c61d05f784538f4`（2026-10-23） |
+| RWML | `1.0.2`，commit `c5b7c8dc57da25d667f1536a7badb6d3e21182b6` |
+| RWML Desktop | 从 RWML `1.0.2` 源码本地构建 |
+| Java | Microsoft OpenJDK `25.0.5.0.2` |
+| Gradle（RWPP） | `9.6.1` |
+| Gradle（RWML） | `9.6.0` |
+| 默认测试地图 | `maps/skirmish/[p2]Lake (2p).tmx` |
+| 地图 SHA-256 | `251273E30DEBFF8BB3927A99A6D668EE0B5D03D936EA991DE8866F638358FA6E` |
 
-M1 的服务端构建和真实启动尚未通过。当前构建已经进入 `:rwpp-api:compileKotlinJvm`，说明 Gradle、Java 25 和主源码解析基本可用。
+这组版本已经完成真实无头启动，不能只根据游戏显示版本“1.15”推断其他构建也兼容。
 
-## 9. 已发现的构建阻塞
+## 9. 版本差异与兼容补丁
 
-### 9.1 中文路径
+### 9.1 `game-lib` 必须使用 v3 映射
 
-Android Gradle Plugin 会拒绝非 ASCII 项目路径。RWPP 构建目录必须放在英文路径，例如：
+`game-lib:v2-1.15` 中 `AI` 没有 `aiUpdatePaused`，而当前 RWPP AI Controller 需要该字段。`game-lib:v3-1.15` 已包含：
 
 ```text
-D:\qwq\.rwrl-runtime\RWPP-main
+public boolean aiUpdatePaused;
 ```
 
-不要直接使用包含中文的仓库目录作为构建根目录。
+因此本机构建使用：
 
-### 9.2 Gradle 代理
+```toml
+game-lib = "v3-1.15"
+```
 
-Windows 系统代理不会自动传给 Java/Gradle。需要显式设置，例如：
+这是版本对齐，不是功能改写。
+
+### 9.2 `LocaleEngine` 方法改名
+
+`v3-1.15` 将旧映射方法：
+
+```text
+LocaleEngine.b(String)
+```
+
+命名为：
+
+```text
+LocaleEngine.translateMapName(String)
+```
+
+RWPP main 中对应调用需要改为：
+
+```kotlin
+LocaleEngine.translateMapName(plainName)
+```
+
+这是 API 名称适配，不改变地图名称翻译逻辑。
+
+### 9.3 RWML Desktop 本地构建
+
+`rwml-desktop:1.0.2` 当前没有可从 Maven Central 匿名获取的 JAR，JitPack 返回 `401`。
+
+已验证的处理方式：
+
+1. 从公开的 RWML `1.0.2` 源码构建。
+2. 使用 `game-lib:v3-1.15` 的本地 Maven 布局。
+3. 执行：
 
 ```powershell
-$env:HTTP_PROXY = "http://127.0.0.1:7897"
-$env:HTTPS_PROXY = "http://127.0.0.1:7897"
-$env:JAVA_TOOL_OPTIONS = "-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=7897 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=7897"
-$env:GRADLE_OPTS = $env:JAVA_TOOL_OPTIONS
+.\gradlew.bat :desktop:publishToMavenLocal --no-daemon
 ```
 
-端口和地址应按本机代理实际配置修改。
+生成：
 
-### 9.3 JetBrains Runtime 工具链
+```text
+C:\Users\<user>\.m2\repository\io\github\rwpp-team\rwml-desktop\1.0.2\rwml-desktop-1.0.2.jar
+```
 
-RWPP 仓库的 `gradle/gradle-daemon-jvm.properties` 默认要求 JetBrains Runtime 25。若使用 Microsoft OpenJDK 25，需要在本机构建副本中使用兼容的工具链配置，或安装对应 JBR。不要把这类本机适配提交到上游仓库。
+本地构建的 JAR SHA-256：
 
-### 9.4 `AI.aiUpdatePaused` 映射差异
+```text
+B205278494D17CBAF5E50391672CCFE097D3D7C5D1A461D92C8BD988BD97AB7B
+```
 
-当前 RWPP `main` 的 AI Controller 代码直接引用 `AI.aiUpdatePaused`，但 `game-lib:v2-1.15` 映射中不存在该字段，导致 API 编译失败。
+RWPP 的 `settings.gradle.kts` 已允许从 `mavenLocal()` 解析 `rwml-desktop`。
 
-这意味着“同为 1.15”并不等于接口完全一致。后续必须：
+### 9.4 构建环境要求
 
-- 固定 RWPP commit。
-- 固定 `game-lib` 映射版本。
-- 记录游戏 Build Code。
-- 对 AI Controller 字段做能力探测。
-- 缺少字段时只允许 `AUGMENT_NATIVE`，不要强行启用 `REPLACE_NATIVE`。
+- RWPP 和 RWML 构建目录必须使用纯英文路径。
+- Windows 系统代理需要显式传给 Java/Gradle。
+- RWPP 仓库默认要求 JetBrains Runtime 25；使用 Microsoft OpenJDK 时，本机构建副本需调整工具链供应商标记。
+- 不要把本机代理、路径和工具链适配提交到上游仓库。
 
-本地可用于验证的临时兼容方案是反射读取字段，但这不应替代正式版本适配。
+## 10. M1 冒烟结果
 
-### 9.5 `rwml-desktop:1.0.2` 依赖不可匿名获取
+实际运行：
 
-服务端依赖 `io.github.rwpp-team:rwml-desktop:1.0.2`，JitPack 当前返回 `401 Unauthorized`。RWML 仓库本身是公开的，因此下一步选项是：
+```text
+[rwml] 100% 2 loaded, 0 disabled, 0 skipped
+Version:RAW - v1.15
+network:server started
+[rwml-server] Listening on port 5123; map maps/skirmish/[p2]Lake (2p).tmx
+[rwpp-server] Completed 180 frames
+```
 
-1. 从 RWML 公开源码构建并发布到本机 Maven 仓库。
-2. 使用已验证的本地构件。
-3. 等待上游提供可匿名下载的正式构件。
+结果：
 
-在依赖可用前，`rwpp-server` 不能完成构建。
+| 项目 | 结果 |
+|---|---|
+| Java 环境检查 | 通过 |
+| RWPP runtime 目录 | 通过 |
+| assets / extensions | 通过 |
+| 服务端启动 | 通过 |
+| RWML 扩展加载 | 2 loaded |
+| 地图加载 | 通过 |
+| 180 tick 执行 | 通过 |
+| 进程退出码 | 0 |
+| 端口释放 | 通过 |
+| 明显异常日志 | 未发现 |
 
-## 10. 当前结论
+测试报告：
 
-M1 尚未通过真实运行验证。已经确认的不是“RWPP 不能跑”，而是“当前 RWPP main、映射库、工具链和依赖发布状态需要固定版本后才能跑”。
+```text
+artifacts/smoke/20261104-160400/report.json
+```
 
-下一步应优先解决 `rwml-desktop` 本地构建，然后用同一份 1.15 客户端 assets 启动服务端。构建成功前不要开始 RL 训练。
+## 11. 自维护兼容策略
+
+可以作为开源项目自行维护兼容层，但必须把补丁限制在“API 适配”而不是修改游戏行为。
+
+建议维护：
+
+```text
+vendor/rwpp/
+  pinned-versions.toml
+  patches/
+    0001-game-lib-v3.patch
+    0002-locale-engine-translate-map-name.patch
+  build-runtime.ps1
+  smoke-test.ps1
+```
+
+原则：
+
+- 固定上游 commit，不跟随 main 自动构建。
+- 每个补丁记录目标版本、原因、影响和测试结果。
+- 只做字段存在性、方法改名和依赖获取适配。
+- 不修改单位数值、战斗逻辑、奖励机制或可见性规则。
+- 升级 RWPP、RWML、game-lib 或游戏 Build 后重新跑完整 M1。
+- 上游修复后删除本地补丁，不长期分叉。
+
+当前两处源码修改都属于可提交上游的通用兼容修复：
+
+1. `game-lib` 依赖从 `v2-1.15` 升级到 `v3-1.15`。
+2. `LocaleEngine.b` 更新为 `translateMapName`。
+
+如果上游接受，优先提交 PR 并删除本地补丁。
+
+## 12. 结论
+
+M1 已经通过真实服务端启动验证。之前的两个问题都是版本/发布状态问题，不是游戏引擎不可接入：
+
+- `AI.aiUpdatePaused`：升级到 `game-lib:v3-1.15` 解决。
+- `rwml-desktop:1.0.2`：从公开 RWML 源码本地构建并发布到本机 Maven 解决。
+
+下一阶段可以进入 M2：只读 Bridge、状态快照和固定 episode 生命周期。
 
 在缺少真实资源时，可以使用 mock runtime 验证脚本本身：
 

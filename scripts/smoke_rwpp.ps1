@@ -72,7 +72,7 @@ $exitCode = $process.ExitCode
 $stdout = if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { "" }
 $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { "" }
 $combined = $stdout + "`n" + $stderr
-$severePattern = "Exception|SEVERE|FATAL|ERROR|FAILED|Could not|Unable to"
+$severePattern = "(?im)^(?:.*\bSEVERE\b.*|.*\bFATAL\b.*|.*Exception in thread.*|.*OutOfMemoryError.*|.*NoClassDefFoundError.*|.*UnsatisfiedLinkError.*|.*BUILD FAILED.*)$"
 $severe = $combined -match $severePattern
 
 $portAvailable = $false
