@@ -34,6 +34,14 @@ Pydantic 通过 `pyproject.toml` 声明为依赖，当前仓库不包含其源�
 
 如果未来使用或修改 RWPP 代码，必须单独遵守 AGPL-3.0，并在相关目录保留许可证和来源说明。
 
+### RWML
+
+- 项目：https://github.com/RWPP-Team/RWML
+- 用途：RWPP 服务端扩展加载与 Mixin 宿主
+- 已验证版本：`1.0.2`
+- 许可证：RWPP-Team Shield License（PolyForm Shield 1.0.0 + 附加条款）
+- 当前状态：从公开源码本地构建，不随本项目 Apache-2.0 / CC BY 4.0 许可分发
+
 ### Rusted Warfare LLM Pilot
 
 - 项目：https://github.com/Crystalhihihi/rusted-warfare-llm-pilot

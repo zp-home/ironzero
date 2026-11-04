@@ -276,6 +276,39 @@ network:server started
 artifacts/smoke/20261104-160400/report.json
 ```
 
+## 10.1 一键可重复构建
+
+以下脚本已经从全新构建目录完整验证：
+
+```powershell
+.\scripts\build_rwpp_compat.ps1 `
+  -GameDir "D:\path\to\Rusted Warfare" `
+  -BuildRoot "$env:LOCALAPPDATA\RWRL" `
+  -ProxyUrl "http://127.0.0.1:7897"
+```
+
+它执行：
+
+```text
+下载固定 RWPP/RWML/game-lib
+  -> 应用兼容补丁
+  -> 构建 RWML Desktop
+  -> 构建 RWPP Server
+  -> 组装独立 runtime
+  -> 运行环境检查
+  -> 执行 180 tick 冒烟测试
+```
+
+全新目录验证结果：
+
+```text
+BUILD SUCCESSFUL
+Environment check passed
+RWPP smoke test passed
+exit_code: 0
+port_available_after_exit: true
+```
+
 ## 11. 自维护兼容策略
 
 可以作为开源项目自行维护兼容层，但必须把补丁限制在“API 适配”而不是修改游戏行为。
@@ -307,6 +340,8 @@ vendor/rwpp/
 2. `LocaleEngine.b` 更新为 `translateMapName`。
 
 如果上游接受，优先提交 PR 并删除本地补丁。
+
+固定版本清单见 `vendor/rwpp/pinned-versions.json`，可重复构建入口见 `scripts/build_rwpp_compat.ps1`。
 
 ## 12. 结论
 

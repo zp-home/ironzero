@@ -14,6 +14,7 @@ Copyright 2026 周培智
 | `tools/` | Apache-2.0 | 生成、校验和辅助工具 |
 | `scripts/` | Apache-2.0 | PowerShell 脚本 |
 | `schemas/` | Apache-2.0 | 机器可读协议 schema |
+| `vendor/rwpp/pinned-versions.json` | Apache-2.0 | 第三方版本固定清单 |
 | `pyproject.toml` | Apache-2.0 | 项目构建配置 |
 | `site/`（除 README） | Apache-2.0 | 静态展示页 HTML、CSS、JS 和 SVG |
 | `site/README.md` | CC BY 4.0 | 展示页使用说明 |

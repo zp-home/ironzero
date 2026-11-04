@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "runtime_id": "rwpp-1.15",
+  "game": {
+    "name": "Rusted Warfare",
+    "version": "1.15",
+    "game_code": 176,
+    "build_number": 28,
+    "steam_app_id": "647960"
+  },
+  "rwpp": {
+    "repository": "https://github.com/RWPP-Team/RWPP",
+    "commit": "0c8325fb4eeb98ceb0d93e279c61d05f784538f4",
+    "gradle": "9.6.1"
+  },
+  "rwml": {
+    "repository": "https://github.com/RWPP-Team/RWML",
+    "tag": "1.0.2",
+    "commit": "c5b7c8dc57da25d667f1536a7badb6d3e21182b6",
+    "gradle": "9.6.0"
+  },
+  "game_lib": {
+    "group": "io.github.rwpp-team",
+    "artifact": "game-lib",
+    "version": "v3-1.15",
+    "sha256": "1C7B864C3B2E78C30903BFB94F7FF4C89B31230D04C8321734D66F025522B230"
+  },
+  "java": {
+    "vendor": "Microsoft OpenJDK",
+    "version": "25.0.5.0.2",
+    "major": 25
+  },
+  "map": {
+    "path": "maps/skirmish/[p2]Lake (2p).tmx",
+    "sha256": "251273E30DEBFF8BB3927A99A6D668EE0B5D03D936EA991DE8866F638358FA6E"
+  },
+  "patches": [
+    "game-lib-v2-to-v3",
+    "locale-engine-translate-map-name",
+    "gradle-toolchain-vendor-microsoft"
+  ]
+}

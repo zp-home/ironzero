@@ -41,7 +41,10 @@ replays/
 captures/
 .runtime/
 artifacts/
-vendor/
+vendor/*
+!vendor/rwpp/
+vendor/rwpp/*
+!vendor/rwpp/pinned-versions.json
 
 # OS
 .DS_Store

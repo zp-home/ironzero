@@ -50,6 +50,7 @@ Gymnasium 环境（reset / step / reward）
 - [RWPP 兼容性验证](./docs/RWPP兼容性验证.md)
 - [铁锈战争安装与获取](./docs/游戏安装与获取.md)
 - [经典强化学习案例与 RTS 启示](./docs/经典强化学习案例与RTS启示.md)
+- [RWPP 角色与适配决策](./docs/RWPP角色与适配决策.md)
 
 ## 获取游戏
 
@@ -101,6 +102,17 @@ python tools/validate_schema.py
 ```powershell
 .\scripts\bootstrap_java25.ps1
 ```
+
+从固定的 RWPP/RWML/game-lib 版本自动构建兼容 runtime：
+
+```powershell
+.\scripts\build_rwpp_compat.ps1 `
+  -GameDir "D:\path\to\Rusted Warfare" `
+  -BuildRoot "$env:LOCALAPPDATA\RWRL" `
+  -ProxyUrl "http://127.0.0.1:7897"
+```
+
+脚本会完成源码下载、兼容补丁、RWML Desktop 构建、RWPP Server 构建、assets 组装和 180 tick 冒烟测试。
 
 执行 RWPP 无头冒烟测试：
 
