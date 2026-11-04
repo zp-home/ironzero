@@ -157,9 +157,69 @@ Java 版本
 - 客户端自报 `Game Version: 1.15`、`Game Code: 176`、`Build Number: #28`。
 - 客户端包含完整 `assets/`，约 21.4 MiB。
 - 客户端自带 `game-lib.jar` 和 Java 13 运行时；RWPP 服务端仍使用项目自己的 Java 25。
-- RWPP 源码已下载到 `.runtime/RWPP-main`，正在构建 `rwpp-server`。
+- RWPP 源码已下载到纯英文路径 `.rwrl-runtime/RWPP-main`，用于避免 Android Gradle 插件拒绝中文路径。
+- Gradle 下载已显式配置本地 HTTP/HTTPS 代理，不再依赖直连。
 
-M1 的服务端构建和真实启动尚未完成。构建通过后，需要把客户端 `assets/` 复制到独立运行目录，而不是直接修改游戏安装目录。
+M1 的服务端构建和真实启动尚未通过。当前构建已经进入 `:rwpp-api:compileKotlinJvm`，说明 Gradle、Java 25 和主源码解析基本可用。
+
+## 9. 已发现的构建阻塞
+
+### 9.1 中文路径
+
+Android Gradle Plugin 会拒绝非 ASCII 项目路径。RWPP 构建目录必须放在英文路径，例如：
+
+```text
+D:\qwq\.rwrl-runtime\RWPP-main
+```
+
+不要直接使用包含中文的仓库目录作为构建根目录。
+
+### 9.2 Gradle 代理
+
+Windows 系统代理不会自动传给 Java/Gradle。需要显式设置，例如：
+
+```powershell
+$env:HTTP_PROXY = "http://127.0.0.1:7897"
+$env:HTTPS_PROXY = "http://127.0.0.1:7897"
+$env:JAVA_TOOL_OPTIONS = "-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=7897 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=7897"
+$env:GRADLE_OPTS = $env:JAVA_TOOL_OPTIONS
+```
+
+端口和地址应按本机代理实际配置修改。
+
+### 9.3 JetBrains Runtime 工具链
+
+RWPP 仓库的 `gradle/gradle-daemon-jvm.properties` 默认要求 JetBrains Runtime 25。若使用 Microsoft OpenJDK 25，需要在本机构建副本中使用兼容的工具链配置，或安装对应 JBR。不要把这类本机适配提交到上游仓库。
+
+### 9.4 `AI.aiUpdatePaused` 映射差异
+
+当前 RWPP `main` 的 AI Controller 代码直接引用 `AI.aiUpdatePaused`，但 `game-lib:v2-1.15` 映射中不存在该字段，导致 API 编译失败。
+
+这意味着“同为 1.15”并不等于接口完全一致。后续必须：
+
+- 固定 RWPP commit。
+- 固定 `game-lib` 映射版本。
+- 记录游戏 Build Code。
+- 对 AI Controller 字段做能力探测。
+- 缺少字段时只允许 `AUGMENT_NATIVE`，不要强行启用 `REPLACE_NATIVE`。
+
+本地可用于验证的临时兼容方案是反射读取字段，但这不应替代正式版本适配。
+
+### 9.5 `rwml-desktop:1.0.2` 依赖不可匿名获取
+
+服务端依赖 `io.github.rwpp-team:rwml-desktop:1.0.2`，JitPack 当前返回 `401 Unauthorized`。RWML 仓库本身是公开的，因此下一步选项是：
+
+1. 从 RWML 公开源码构建并发布到本机 Maven 仓库。
+2. 使用已验证的本地构件。
+3. 等待上游提供可匿名下载的正式构件。
+
+在依赖可用前，`rwpp-server` 不能完成构建。
+
+## 10. 当前结论
+
+M1 尚未通过真实运行验证。已经确认的不是“RWPP 不能跑”，而是“当前 RWPP main、映射库、工具链和依赖发布状态需要固定版本后才能跑”。
+
+下一步应优先解决 `rwml-desktop` 本地构建，然后用同一份 1.15 客户端 assets 启动服务端。构建成功前不要开始 RL 训练。
 
 在缺少真实资源时，可以使用 mock runtime 验证脚本本身：
 
