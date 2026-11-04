@@ -1,0 +1,1464 @@
+{
+  "$defs": {
+    "ActionMasks": {
+      "additionalProperties": false,
+      "properties": {
+        "action_mask": {
+          "items": {
+            "type": "boolean"
+          },
+          "title": "Action Mask",
+          "type": "array"
+        },
+        "unit_group_mask": {
+          "items": {
+            "type": "boolean"
+          },
+          "title": "Unit Group Mask",
+          "type": "array"
+        },
+        "target_mask": {
+          "items": {
+            "type": "boolean"
+          },
+          "title": "Target Mask",
+          "type": "array"
+        },
+        "position_mask": {
+          "items": {
+            "items": {
+              "type": "boolean"
+            },
+            "type": "array"
+          },
+          "title": "Position Mask",
+          "type": "array"
+        }
+      },
+      "required": [
+        "action_mask",
+        "unit_group_mask",
+        "target_mask",
+        "position_mask"
+      ],
+      "title": "ActionMasks",
+      "type": "object"
+    },
+    "AttackMoveAction": {
+      "additionalProperties": false,
+      "properties": {
+        "unit_group": {
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Unit Group",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "attack_move",
+          "default": "attack_move",
+          "title": "Kind",
+          "type": "string"
+        },
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        }
+      },
+      "required": [
+        "unit_group",
+        "x",
+        "y"
+      ],
+      "title": "AttackMoveAction",
+      "type": "object"
+    },
+    "AttackTargetAction": {
+      "additionalProperties": false,
+      "properties": {
+        "unit_group": {
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Unit Group",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "attack_target",
+          "default": "attack_target",
+          "title": "Kind",
+          "type": "string"
+        },
+        "target_entity_id": {
+          "minimum": 0,
+          "title": "Target Entity Id",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "unit_group",
+        "target_entity_id"
+      ],
+      "title": "AttackTargetAction",
+      "type": "object"
+    },
+    "DoneMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "const": "rwrl/1",
+          "default": "rwrl/1",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "message_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Message Id",
+          "type": "string"
+        },
+        "episode_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Episode Id",
+          "type": "string"
+        },
+        "tick": {
+          "minimum": 0,
+          "title": "Tick",
+          "type": "integer"
+        },
+        "timestamp_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp Ms"
+        },
+        "type": {
+          "const": "done",
+          "default": "done",
+          "title": "Type",
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/DoneResult"
+        },
+        "reward": {
+          "default": 0.0,
+          "title": "Reward",
+          "type": "number"
+        },
+        "terminated": {
+          "default": true,
+          "title": "Terminated",
+          "type": "boolean"
+        },
+        "truncated": {
+          "default": false,
+          "title": "Truncated",
+          "type": "boolean"
+        },
+        "info": {
+          "additionalProperties": true,
+          "title": "Info",
+          "type": "object"
+        }
+      },
+      "required": [
+        "message_id",
+        "episode_id",
+        "tick",
+        "result"
+      ],
+      "title": "DoneMessage",
+      "type": "object"
+    },
+    "DoneResult": {
+      "enum": [
+        "victory",
+        "defeat",
+        "draw",
+        "timeout",
+        "failure"
+      ],
+      "title": "DoneResult",
+      "type": "string"
+    },
+    "Entity": {
+      "additionalProperties": true,
+      "properties": {
+        "entity_id": {
+          "minimum": 0,
+          "title": "Entity Id",
+          "type": "integer"
+        },
+        "entity_type_id": {
+          "minimum": 0,
+          "title": "Entity Type Id",
+          "type": "integer"
+        },
+        "team_id": {
+          "minimum": 0,
+          "title": "Team Id",
+          "type": "integer"
+        },
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        },
+        "hp": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hp"
+        },
+        "max_hp": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Hp"
+        },
+        "shield": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Shield"
+        },
+        "facing": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Facing"
+        },
+        "velocity": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Velocity"
+        },
+        "is_building": {
+          "default": false,
+          "title": "Is Building",
+          "type": "boolean"
+        },
+        "build_progress": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Build Progress"
+        },
+        "production_queue_length": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Production Queue Length"
+        },
+        "order_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Order Type"
+        },
+        "attack_target_id": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Attack Target Id"
+        },
+        "attack_cooldown": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Attack Cooldown"
+        },
+        "carried_resource": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Carried Resource"
+        },
+        "is_selected": {
+          "default": false,
+          "title": "Is Selected",
+          "type": "boolean"
+        },
+        "is_alive": {
+          "default": true,
+          "title": "Is Alive",
+          "type": "boolean"
+        },
+        "is_visible": {
+          "default": true,
+          "title": "Is Visible",
+          "type": "boolean"
+        },
+        "last_seen_tick": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Seen Tick"
+        }
+      },
+      "required": [
+        "entity_id",
+        "entity_type_id",
+        "team_id",
+        "x",
+        "y"
+      ],
+      "title": "Entity",
+      "type": "object"
+    },
+    "ErrorCode": {
+      "enum": [
+        "STALE_EPISODE",
+        "STALE_TICK",
+        "DUPLICATE_DECISION",
+        "UNKNOWN_UNIT",
+        "UNIT_NOT_OWNED",
+        "TARGET_NOT_VISIBLE",
+        "TARGET_INVALID",
+        "POSITION_BLOCKED",
+        "INSUFFICIENT_FUNDS",
+        "ACTION_MASKED",
+        "POLICY_TIMEOUT",
+        "BRIDGE_DISCONNECTED",
+        "INVALID_MESSAGE",
+        "UNSUPPORTED_VERSION"
+      ],
+      "title": "ErrorCode",
+      "type": "string"
+    },
+    "ErrorMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "const": "rwrl/1",
+          "default": "rwrl/1",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "message_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Message Id",
+          "type": "string"
+        },
+        "episode_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Episode Id"
+        },
+        "tick": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tick"
+        },
+        "timestamp_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp Ms"
+        },
+        "type": {
+          "const": "error",
+          "default": "error",
+          "title": "Type",
+          "type": "string"
+        },
+        "error_code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "message": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "recoverable": {
+          "default": true,
+          "title": "Recoverable",
+          "type": "boolean"
+        },
+        "details": {
+          "additionalProperties": true,
+          "title": "Details",
+          "type": "object"
+        }
+      },
+      "required": [
+        "message_id",
+        "error_code",
+        "message"
+      ],
+      "title": "ErrorMessage",
+      "type": "object"
+    },
+    "GlobalState": {
+      "additionalProperties": true,
+      "properties": {
+        "funds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Funds"
+        },
+        "income": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Income"
+        },
+        "expense": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expense"
+        },
+        "population": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Population"
+        },
+        "population_cap": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Population Cap"
+        },
+        "unit_count": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit Count"
+        },
+        "building_count": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Building Count"
+        },
+        "army_value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Army Value"
+        },
+        "visible_enemy_value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Visible Enemy Value"
+        },
+        "kills": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Kills"
+        },
+        "losses": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Losses"
+        }
+      },
+      "title": "GlobalState",
+      "type": "object"
+    },
+    "HeartbeatMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "const": "rwrl/1",
+          "default": "rwrl/1",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "message_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Message Id",
+          "type": "string"
+        },
+        "episode_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Episode Id"
+        },
+        "tick": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tick"
+        },
+        "timestamp_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp Ms"
+        },
+        "type": {
+          "const": "heartbeat",
+          "default": "heartbeat",
+          "title": "Type",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/HeartbeatStatus",
+          "default": "running"
+        },
+        "last_tick": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Tick"
+        }
+      },
+      "required": [
+        "message_id"
+      ],
+      "title": "HeartbeatMessage",
+      "type": "object"
+    },
+    "HeartbeatStatus": {
+      "enum": [
+        "running",
+        "paused",
+        "stopping"
+      ],
+      "title": "HeartbeatStatus",
+      "type": "string"
+    },
+    "HelloMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "const": "rwrl/1",
+          "default": "rwrl/1",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "message_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Message Id",
+          "type": "string"
+        },
+        "episode_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Episode Id"
+        },
+        "tick": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tick"
+        },
+        "timestamp_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp Ms"
+        },
+        "type": {
+          "const": "hello",
+          "default": "hello",
+          "title": "Type",
+          "type": "string"
+        },
+        "adapter_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Adapter Version",
+          "type": "string"
+        },
+        "game_version": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Game Version",
+          "type": "string"
+        },
+        "capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Capabilities",
+          "type": "array"
+        }
+      },
+      "required": [
+        "message_id",
+        "adapter_version",
+        "game_version"
+      ],
+      "title": "HelloMessage",
+      "type": "object"
+    },
+    "HoldAction": {
+      "additionalProperties": false,
+      "properties": {
+        "unit_group": {
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Unit Group",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "hold",
+          "default": "hold",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "unit_group"
+      ],
+      "title": "HoldAction",
+      "type": "object"
+    },
+    "MoveGroupAction": {
+      "additionalProperties": false,
+      "properties": {
+        "unit_group": {
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Unit Group",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "move_group",
+          "default": "move_group",
+          "title": "Kind",
+          "type": "string"
+        },
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        }
+      },
+      "required": [
+        "unit_group",
+        "x",
+        "y"
+      ],
+      "title": "MoveGroupAction",
+      "type": "object"
+    },
+    "ObservationMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "const": "rwrl/1",
+          "default": "rwrl/1",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "message_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Message Id",
+          "type": "string"
+        },
+        "episode_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Episode Id",
+          "type": "string"
+        },
+        "tick": {
+          "minimum": 0,
+          "title": "Tick",
+          "type": "integer"
+        },
+        "timestamp_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp Ms"
+        },
+        "type": {
+          "const": "obs",
+          "default": "obs",
+          "title": "Type",
+          "type": "string"
+        },
+        "decision_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Decision Id",
+          "type": "string"
+        },
+        "game_time": {
+          "minimum": 0,
+          "title": "Game Time",
+          "type": "number"
+        },
+        "controlled_team": {
+          "minimum": 0,
+          "title": "Controlled Team",
+          "type": "integer"
+        },
+        "visibility_revision": {
+          "minimum": 0,
+          "title": "Visibility Revision",
+          "type": "integer"
+        },
+        "observation_schema_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Observation Schema Version",
+          "type": "string"
+        },
+        "global_state": {
+          "$ref": "#/$defs/GlobalState"
+        },
+        "own_entities": {
+          "items": {
+            "$ref": "#/$defs/Entity"
+          },
+          "title": "Own Entities",
+          "type": "array"
+        },
+        "visible_enemy_entities": {
+          "items": {
+            "$ref": "#/$defs/Entity"
+          },
+          "title": "Visible Enemy Entities",
+          "type": "array"
+        },
+        "remembered_enemies": {
+          "items": {
+            "$ref": "#/$defs/Entity"
+          },
+          "title": "Remembered Enemies",
+          "type": "array"
+        },
+        "local_maps": {
+          "additionalProperties": {
+            "items": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "type": "array"
+          },
+          "title": "Local Maps",
+          "type": "object"
+        },
+        "masks": {
+          "$ref": "#/$defs/ActionMasks"
+        },
+        "reward": {
+          "default": 0.0,
+          "title": "Reward",
+          "type": "number"
+        },
+        "terminated": {
+          "default": false,
+          "title": "Terminated",
+          "type": "boolean"
+        },
+        "truncated": {
+          "default": false,
+          "title": "Truncated",
+          "type": "boolean"
+        },
+        "info": {
+          "additionalProperties": true,
+          "title": "Info",
+          "type": "object"
+        }
+      },
+      "required": [
+        "message_id",
+        "episode_id",
+        "tick",
+        "decision_id",
+        "game_time",
+        "controlled_team",
+        "visibility_revision",
+        "observation_schema_version",
+        "global_state",
+        "masks"
+      ],
+      "title": "ObservationMessage",
+      "type": "object"
+    },
+    "ReceiptMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "const": "rwrl/1",
+          "default": "rwrl/1",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "message_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Message Id",
+          "type": "string"
+        },
+        "episode_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Episode Id",
+          "type": "string"
+        },
+        "tick": {
+          "minimum": 0,
+          "title": "Tick",
+          "type": "integer"
+        },
+        "timestamp_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp Ms"
+        },
+        "type": {
+          "const": "receipt",
+          "default": "receipt",
+          "title": "Type",
+          "type": "string"
+        },
+        "decision_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Decision Id",
+          "type": "string"
+        },
+        "accepted": {
+          "title": "Accepted",
+          "type": "boolean"
+        },
+        "executed_at_tick": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Executed At Tick"
+        },
+        "rejected_reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorCode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "message_id",
+        "episode_id",
+        "tick",
+        "decision_id",
+        "accepted"
+      ],
+      "title": "ReceiptMessage",
+      "type": "object"
+    },
+    "ResetRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "const": "rwrl/1",
+          "default": "rwrl/1",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "message_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Message Id",
+          "type": "string"
+        },
+        "episode_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Episode Id",
+          "type": "string"
+        },
+        "tick": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tick"
+        },
+        "timestamp_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp Ms"
+        },
+        "type": {
+          "const": "reset",
+          "default": "reset",
+          "title": "Type",
+          "type": "string"
+        },
+        "seed": {
+          "minimum": 0,
+          "title": "Seed",
+          "type": "integer"
+        },
+        "scenario": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Scenario",
+          "type": "string"
+        },
+        "map_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Map Id",
+          "type": "string"
+        },
+        "options": {
+          "additionalProperties": true,
+          "title": "Options",
+          "type": "object"
+        }
+      },
+      "required": [
+        "message_id",
+        "episode_id",
+        "seed",
+        "scenario",
+        "map_id"
+      ],
+      "title": "ResetRequest",
+      "type": "object"
+    },
+    "ShutdownMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "const": "rwrl/1",
+          "default": "rwrl/1",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "message_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Message Id",
+          "type": "string"
+        },
+        "episode_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Episode Id"
+        },
+        "tick": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tick"
+        },
+        "timestamp_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp Ms"
+        },
+        "type": {
+          "const": "shutdown",
+          "default": "shutdown",
+          "title": "Type",
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "deadline_ticks": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deadline Ticks"
+        }
+      },
+      "required": [
+        "message_id",
+        "reason"
+      ],
+      "title": "ShutdownMessage",
+      "type": "object"
+    },
+    "StepRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "const": "rwrl/1",
+          "default": "rwrl/1",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "message_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Message Id",
+          "type": "string"
+        },
+        "episode_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Episode Id",
+          "type": "string"
+        },
+        "tick": {
+          "minimum": 0,
+          "title": "Tick",
+          "type": "integer"
+        },
+        "timestamp_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp Ms"
+        },
+        "type": {
+          "const": "step",
+          "default": "step",
+          "title": "Type",
+          "type": "string"
+        },
+        "decision_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Decision Id",
+          "type": "string"
+        },
+        "actions": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "attack_move": "#/$defs/AttackMoveAction",
+                "attack_target": "#/$defs/AttackTargetAction",
+                "hold": "#/$defs/HoldAction",
+                "move_group": "#/$defs/MoveGroupAction",
+                "stop": "#/$defs/StopAction"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/MoveGroupAction"
+              },
+              {
+                "$ref": "#/$defs/AttackMoveAction"
+              },
+              {
+                "$ref": "#/$defs/AttackTargetAction"
+              },
+              {
+                "$ref": "#/$defs/StopAction"
+              },
+              {
+                "$ref": "#/$defs/HoldAction"
+              }
+            ]
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Actions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "message_id",
+        "episode_id",
+        "tick",
+        "decision_id",
+        "actions"
+      ],
+      "title": "StepRequest",
+      "type": "object"
+    },
+    "StopAction": {
+      "additionalProperties": false,
+      "properties": {
+        "unit_group": {
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Unit Group",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "stop",
+          "default": "stop",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "unit_group"
+      ],
+      "title": "StopAction",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "done": "#/$defs/DoneMessage",
+      "error": "#/$defs/ErrorMessage",
+      "heartbeat": "#/$defs/HeartbeatMessage",
+      "hello": "#/$defs/HelloMessage",
+      "obs": "#/$defs/ObservationMessage",
+      "receipt": "#/$defs/ReceiptMessage",
+      "reset": "#/$defs/ResetRequest",
+      "shutdown": "#/$defs/ShutdownMessage",
+      "step": "#/$defs/StepRequest"
+    },
+    "propertyName": "type"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/HelloMessage"
+    },
+    {
+      "$ref": "#/$defs/ResetRequest"
+    },
+    {
+      "$ref": "#/$defs/StepRequest"
+    },
+    {
+      "$ref": "#/$defs/ObservationMessage"
+    },
+    {
+      "$ref": "#/$defs/ReceiptMessage"
+    },
+    {
+      "$ref": "#/$defs/DoneMessage"
+    },
+    {
+      "$ref": "#/$defs/ErrorMessage"
+    },
+    {
+      "$ref": "#/$defs/HeartbeatMessage"
+    },
+    {
+      "$ref": "#/$defs/ShutdownMessage"
+    }
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/zp-home/rusted-warfare-rl/schemas/rwrl/1/messages.schema.json",
+  "title": "RWRL v1 bridge message",
+  "x-schema-version": "1.0.0"
+}

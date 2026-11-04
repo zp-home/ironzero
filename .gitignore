@@ -39,6 +39,9 @@ rw-agent*.jar
 episodes/
 replays/
 captures/
+.runtime/
+artifacts/
+vendor/
 
 # OS
 .DS_Store

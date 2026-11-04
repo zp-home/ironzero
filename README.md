@@ -4,7 +4,7 @@
 
 一个面向 PC 版《铁锈战争》（Rusted Warfare）的强化学习研究项目规划，目标是把游戏接入为可观测、可动作、可重置、可复现的强化学习环境，并完成从训练到推理的完整闭环。
 
-> 当前状态：架构设计阶段。仓库暂未包含可运行的桥接程序或训练代码。
+> 当前状态：架构与协议基线阶段。已有 RWRL v1 协议 schema、协议单元测试和 RWPP 环境检查/冒烟脚本；尚未包含真实游戏桥接程序或训练代码。
 
 ## 项目目标
 
@@ -35,6 +35,57 @@ Gymnasium 环境（reset / step / reward）
 
 - [铁锈战争强化学习系统架构](./铁锈战争强化学习系统架构.md)
 - [训练、推理与演示架构](./训练推理与演示架构.md)
+- [文档索引](./docs/README.md)
+
+配套规格与检查表：
+
+- [环境规格说明](./docs/环境规格说明.md)
+- [确定性与测试方案](./docs/确定性与测试方案.md)
+- [安全与发布检查表](./docs/安全与发布检查表.md)
+- [性能与容量基线](./docs/性能与容量基线.md)
+- [协议 v1 说明](./docs/协议v1说明.md)
+- [RWPP 兼容性验证](./docs/RWPP兼容性验证.md)
+
+## 开发入口
+
+运行协议测试：
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m unittest discover -s tests -v
+```
+
+重新生成协议 schema：
+
+```powershell
+python tools/generate_schema.py
+python tools/validate_schema.py
+```
+
+检查 RWPP 运行环境：
+
+```powershell
+.\scripts\check_environment.ps1 `
+  -RuntimeDir "D:\rwpp-runtime" `
+  -JavaHome "D:\jdks\jdk-25"
+```
+
+如果本机没有 Java 25，可先下载便携运行时：
+
+```powershell
+.\scripts\bootstrap_java25.ps1
+```
+
+执行 RWPP 无头冒烟测试：
+
+```powershell
+.\scripts\smoke_rwpp.ps1 `
+  -RuntimeDir "D:\rwpp-runtime" `
+  -JavaHome "D:\jdks\jdk-25" `
+  -Ticks 180
+```
+
+协议模型见 `src/rwrl/protocol.py`，机器可读 schema 见 `schemas/rwrl/1/messages.schema.json`。
 
 文档覆盖：
 
