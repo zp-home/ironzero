@@ -15,6 +15,8 @@ Copyright 2026 周培智
 | `scripts/` | Apache-2.0 | PowerShell 脚本 |
 | `schemas/` | Apache-2.0 | 机器可读协议 schema |
 | `pyproject.toml` | Apache-2.0 | 项目构建配置 |
+| `site/`（除 README） | Apache-2.0 | 静态展示页 HTML、CSS、JS 和 SVG |
+| `site/README.md` | CC BY 4.0 | 展示页使用说明 |
 | `docs/` | CC BY 4.0 | 架构文档、规格和检查表 |
 | 根目录 Markdown 文档 | CC BY 4.0 | README、总体架构和配套架构文档 |
 

@@ -59,6 +59,18 @@ PC 版通过 Steam 官方渠道获取：
 
 本仓库不包含游戏本体、`assets/` 或第三方安装包。
 
+## 展示页
+
+- [在线展示页](https://zp-home.github.io/rusted-warfare-rl/)
+- [RWRL Lab 静态展示页](./site/index.html)
+- 页面源码与本地预览说明见 [site/README.md](./site/README.md)
+
+本地预览：
+
+```powershell
+python -m http.server 8000 --directory site
+```
+
 ## 开发入口
 
 运行协议测试：
