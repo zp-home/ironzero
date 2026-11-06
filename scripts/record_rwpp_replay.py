@@ -44,6 +44,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-root", default="runs/platform")
     parser.add_argument("--map", default=MAP_RELATIVE)
     parser.add_argument("--map-name", default=MAP_NAME)
+    parser.add_argument("--policy", choices=["none", "scripted"], default="scripted",
+                        help="scripted = drive the player units with simple orders")
+    parser.add_argument("--order-every", type=int, default=4, help="send an order every N observations")
     return parser
 
 
@@ -148,6 +151,40 @@ def main(argv: list[str] | None = None) -> int:
                 kind = message.get("type")
                 if kind == "obs":
                     frames.append(obs_to_frame(message, {}))
+                    if args.policy == "scripted" and len(frames) % max(1, args.order_every) == 0:
+                        own = [u for u in message.get("own_entities", []) if u.get("team_id") == 0]
+                        enemies = [u for u in message.get("visible_enemy_entities", [])
+                                   if u.get("team_id") == 1]
+                        actions = []
+                        if own and enemies:
+                            best = None
+                            best_distance = float("inf")
+                            for enemy in enemies:
+                                for unit in own:
+                                    distance = ((enemy["x"] - unit["x"]) ** 2
+                                                + (enemy["y"] - unit["y"]) ** 2) ** 0.5
+                                    if distance < best_distance:
+                                        best_distance = distance
+                                        best = enemy
+                            actions = [{"kind": "attack_target", "unit_group": 0,
+                                        "target_entity_id": best["entity_id"]}]
+                        elif own:
+                            actions = [{"kind": "attack_move", "unit_group": 0,
+                                        "x": 1500.0, "y": 1500.0}]
+                        if actions:
+                            step = {
+                                "protocol": "ironzero/1",
+                                "type": "step",
+                                "message_id": f"m-{len(frames)}",
+                                "episode_id": "rwpp-bridge",
+                                "tick": message.get("tick", 0),
+                                "decision_id": f"d-{len(frames)}",
+                                "actions": actions,
+                            }
+                            try:
+                                sock.sendall((json.dumps(step) + "\n").encode("utf-8"))
+                            except OSError:
+                                pass
                 elif kind == "done":
                     break
         print(f"captured {len(frames)} frames, server log {server_log}")

@@ -13,7 +13,7 @@
 >
 > 平台进度：`ironzero/1` Bridge（NDJSON/TCP）、Gymnasium 兼容环境、动作掩码、确定性微操参考环境、PPO + GAE 训练与评估闭环**已实现并通过 102 项测试**；参考环境按真实 1.15 坦克数值校准（HP 210 / 伤害 25 / 射程 130 / 75 tick 射速 / 66 单位每秒），200 轮 PPO 对脚本 AI 的评估胜率 0% → 100%（随机基线 0%，平均回报 −1.33 → +1.21）。训练/推理 Web 平台（Docker + 监控大屏 + 对局沙盘 + 回放/录制）已可运行，沙盘支持真实地图地形模拟（A* 绕水/碰撞）、迷雾与道具层。
 >
-> 真机进度：已从零重建 RWPP 1.15 无头运行时（180 tick 冒烟通过）；IronZero Java 扩展把真实游戏世界状态（tick/单位/队伍，10 tick 一帧）经回环 NDJSON 输出，`scripts/record_rwpp_replay.py` 录制的真机回放可直接在沙盘按真实 Lake 地图播放。**动作注入（真机训练/对战）待建**，详见 [平台搭建方案 5.4](./docs/平台搭建方案.md)。
+> 真机进度：已从零重建 RWPP 1.15 无头运行时（180 tick 冒烟通过）；IronZero Java 扩展把真实游戏世界状态（tick/单位/队伍，10 tick 一帧）经回环 NDJSON 输出，并**支持动作注入**（move / attack_move / attack_target 经 `CommandController` 执行，回执 accepted）；`scripts/record_rwpp_replay.py` 可驱动真机单位并把回放落进平台，沙盘按真实 Lake 地图播放。**平台一键真机模式（容器内 Java + runtime）待接**，详见 [平台搭建方案 5.4](./docs/平台搭建方案.md)。
 
 > 开源许可：代码 Apache-2.0，文档 CC BY 4.0。详见 [许可证说明](./LICENSING.md)。
 

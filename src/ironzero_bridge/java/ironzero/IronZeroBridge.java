@@ -3,7 +3,13 @@ package ironzero;
 
 import com.corrodinggames.rts.game.RWGameEngine;
 import com.corrodinggames.rts.game.Team;
+import com.corrodinggames.rts.game.units.OrderableUnit;
 import com.corrodinggames.rts.game.units.Unit;
+import com.corrodinggames.rts.gameFramework.CommandControllerCommand;
+import com.eclipsesource.json.Json;
+import com.eclipsesource.json.JsonArray;
+import com.eclipsesource.json.JsonObject;
+import com.eclipsesource.json.JsonValue;
 import io.github.rwml.api.ExtensionContext;
 import io.github.rwpp.api.game.impl.NativeMapLoader;
 import io.github.rwpp.server.ServerExtension;
@@ -39,6 +45,7 @@ public final class IronZeroBridge implements ServerExtension {
     private Socket client;
     private BufferedWriter writer;
     private BufferedReader reader;
+    private RWGameEngine engine;
     private int port = 5130;
     private int maxFrames = 900;
     private String mapPath = "maps/skirmish/[p2]Lake (2p).tmx";
@@ -52,6 +59,7 @@ public final class IronZeroBridge implements ServerExtension {
     public void runServer(ServerRuntimeContext context) {
         parseArguments(context.getArguments());
         RWGameEngine engine = context.createEngine(false);
+        this.engine = engine;
         System.out.println("[ironzero] engine created, bridge port=" + port + " ticks=" + maxFrames);
 
         startBridge();
@@ -201,7 +209,7 @@ public final class IronZeroBridge implements ServerExtension {
 
     private String entityJson(Unit unit) {
         int teamId = unit.team != null ? unit.team.teamId : -1;
-        return "{\"entity_id\":" + (unit.id & 0x7fffffffL)
+        return "{\"entity_id\":" + unit.id
                 + ",\"entity_type_id\":1,\"team_id\":" + teamId
                 + ",\"x\":" + fmt(unit.x) + ",\"y\":" + fmt(unit.y)
                 + ",\"hp\":" + fmt(unit.hp) + ",\"max_hp\":" + fmt(unit.maxHp)
@@ -226,14 +234,110 @@ public final class IronZeroBridge implements ServerExtension {
                     stop = true;
                     return;
                 }
-                if (line.contains("shutdown")) {
+                if (line.isBlank()) {
+                    continue;
+                }
+                JsonValue value;
+                try {
+                    value = Json.parse(line);
+                } catch (RuntimeException failure) {
+                    continue;
+                }
+                if (!value.isObject()) {
+                    continue;
+                }
+                JsonObject message = value.asObject();
+                String type = message.getString("type", "");
+                if ("shutdown".equals(type)) {
                     stop = true;
                     return;
+                }
+                if ("step".equals(type)) {
+                    applyStep(message);
                 }
             }
         } catch (IOException failure) {
             stop = true;
         }
+    }
+
+    /** Translate an ironzero/1 step into native unit commands (stage 2). */
+    private void applyStep(JsonObject message) {
+        String decisionId = message.getString("decision_id", "d-0");
+        JsonArray actions = message.get("actions") instanceof JsonArray
+                ? message.get("actions").asArray()
+                : new JsonArray();
+        int accepted = 0;
+        int rejected = 0;
+        for (JsonValue item : actions) {
+            if (!item.isObject()) {
+                rejected++;
+                continue;
+            }
+            JsonObject action = item.asObject();
+            String kind = action.getString("kind", "");
+            CommandControllerCommand command = null;
+            if ("move_group".equals(kind) || "attack_move".equals(kind)) {
+                float x = (float) action.getDouble("x", 0.0);
+                float y = (float) action.getDouble("y", 0.0);
+                command = engine.commandController.createCommandForTeam(engine.playerTeam);
+                addOwnOrderableUnits(command);
+                if ("move_group".equals(kind)) {
+                    command.setMoveWaypoint(x, y);
+                } else {
+                    command.setAttackMoveWaypoint(x, y);
+                }
+            } else if ("attack_target".equals(kind)) {
+                long targetId = action.getLong("target_entity_id", -1L);
+                Unit target = findUnitById(targetId);
+                if (target != null) {
+                    command = engine.commandController.createCommandForTeam(engine.playerTeam);
+                    addOwnOrderableUnits(command);
+                    command.setAttackUnitWaypoint(target);
+                }
+            }
+            if (command != null && command.getUnitCount() > 0) {
+                accepted++;
+            } else {
+                rejected++;
+            }
+        }
+        engine.commandController.dispatchQueuedCommands();
+        writeLine("{\"protocol\":\"ironzero/1\",\"type\":\"receipt\",\"message_id\":\"receipt-"
+                + engine.simulationTick + "\",\"episode_id\":\"rwpp-bridge\",\"tick\":"
+                + engine.simulationTick + ",\"decision_id\":\"" + decisionId + "\","
+                + "\"accepted\":" + (accepted > 0) + ",\"executed_at_tick\":"
+                + (accepted > 0 ? engine.simulationTick + 1 : null) + ","
+                + "\"accepted_count\":" + accepted + ",\"rejected_count\":" + rejected
+                + (accepted > 0 ? "" : ",\"rejected_reason\":\"ACTION_MASKED\"") + "}");
+    }
+
+    private void addOwnOrderableUnits(CommandControllerCommand command) {
+        for (Object item : Unit.unitList) {
+            if (!(item instanceof OrderableUnit)) {
+                continue;
+            }
+            OrderableUnit unit = (OrderableUnit) item;
+            if (unit.removed || unit.hp <= 0.0f) {
+                continue;
+            }
+            if (unit.team != null && unit.team.teamId == engine.playerTeam.teamId) {
+                command.addUnit(unit);
+            }
+        }
+    }
+
+    private Unit findUnitById(long entityId) {
+        for (Object item : Unit.unitList) {
+            if (!(item instanceof Unit)) {
+                continue;
+            }
+            Unit unit = (Unit) item;
+            if (unit.id == entityId && !unit.removed && unit.hp > 0.0f) {
+                return unit;
+            }
+        }
+        return null;
     }
 
     private void writeLine(String line) {
