@@ -55,56 +55,36 @@ python -m uvicorn web.backend.app:app --host 127.0.0.1 --port 8000 --reload
 
 ## 3. 页面功能
 
-### 训练监控
+前端只保留两个主页面：**实机推理** 与 **实机训练**（都围绕真实《铁锈战争》1.15 无头对局；旧版离线参考引擎的监控/沙盘页面已从主导航移除，后端接口仍保留）。
 
-- 表单启动 PPO：`updates / envs / rollout_steps / opponent / seed / eval_every / eval_episodes / lr / entropy`
-- KPI：最新 update、训练窗口胜率、平均回报、entropy、策略/价值损失
-- 曲线：评估胜率、平均回报（含随机基线参考线）
-- 日志：训练子进程 stdout 尾巴，失败原因直接可见
-- 停止：终止训练子进程（已产出的 checkpoint 保留）
+### 实机推理
 
-训练任务目录（宿主机 `runs/platform/train-*`）：
+- 选择地图（73 张可用）、策略（scripted 脚本 AI）、时长 ticks，点「开始实机推理」
+- 宿主机拉起真实 1.15 无头对局 + IronZero 扩展，动作桥驱动单位，**帧实时回传**到平台
+- 大沙盘按真实 Lake 地图渲染（真实地形/贴图），自动跟随交战区域，播放/暂停/倍速/进度条
+- HUD 显示「实机 · 地图名 · 帧数 · tick」；完成后自动刷新回放库并提示
+- 下方回放卡：播放历史真机回放、删除
 
-```text
-meta.json       任务元数据与状态
-events.jsonl    逐 update / eval / done 事件（前端增量拉取）
-stdout.log      训练日志
-metrics.json    训练结束后的完整指标
-checkpoint.pt   模型权重
-```
+![实机推理](../docs/assets/platform_real_infer.png)
 
-### 对局沙盘（人工观测 agent 对打）
+### 实机训练
 
-- 选择 checkpoint / 局数 / 对手 / 种子 / 策略模式（greedy / sample / random / **scripted 观战**）
-- **两种模拟模式**：
-  - `微操竞技场（arena）`：训练用的 1000×1000 确定性微操，抽象/地图皮肤渲染
-  - `实机地形（terrain）`：读取真实 `.tmx` 水面掩码，单位在陆地出生、A* 绕水行军、碰撞不穿墙；地图尺寸即真实像素尺寸
-- **地图选择**：73 张可用地图（按 skirmish/normal/survival 排序），`battle` 视野自动跟随交战区域（1:1 像素）、`full` 全场视野
-- **迷雾开关**：视觉层按我方单位 `vision_radius` 开视野；引擎级迷雾（推理时过滤不可见敌人、目标不可选）可通过推理参数 `fog` 开启
-- **道具层开关**：建筑/资源点来自地图 Items/Units 层（静态），可单独显示/隐藏
-- 单位使用原版坦克贴图（车体 + 炮塔 + 阵营环 + 血条），shot 弹道/枪口闪光、kill 爆炸
-- 支持播放 / 暂停 / 0.5–4 倍速 / 进度条 / 跳到最新；「录制视频」导出 `.webm`
-- 每局自动写入回放库；回放记住 `sim_mode`、地图、迷雾视觉设置
+- 配置地图、策略、局数（1–50）、每局 ticks，点「开始实机训练」
+- 当前阶段为**真机数据采集**：逐局拉起真实 1.15 对局并用脚本策略驱动，录制训练数据
+- 进度卡实时显示状态、进度条（x/y 局）、当前局、耗时；完成后列出本任务的真机回放产物，点「播放」跳回实机推理页播放
+- 说明：PPO 真机训练器接入后复用同一进度区（下一步）
 
-### 回放库
+![实机训练 · 数据采集](../docs/assets/platform_real_train.png)
 
-- 列出所有录制回放（对手、结果、回报、帧数、时间）
-- 点击载入沙盘重放；支持删除
-- 回放是纯 JSON（`ironzero.replay/1`），可以直接用别的工具消费
+### 真机服务（宿主机）
 
-### 真机一键录制（真实 Rusted Warfare 1.15）
-
-平台容器里没有 Java，真实游戏运行时在宿主机上，通过一个小 HTTP 服务桥接。启动一次（保持运行）：
+平台容器里没有 Java，真实游戏运行时在宿主机上，通过 HTTP 服务桥接。启动一次并保持运行：
 
 ```powershell
 python scripts\rwpp_real_service.py --port 8300
 ```
 
-然后在平台「回放库」点「● 真机录制」：宿主机拉起 `rwpp-server` + IronZero 扩展，脚本策略通过动作桥驱动真实单位，跑完把回放写进 `runs/platform/real-rwpp-*/replays/`，平台自动刷新并可在沙盘按真实 Lake 地图播放（回放行标注「真机」）。
-
-![真机录制（回放库）](../docs/assets/platform_rwpp_ui.png)
-
-![真机回放自动载入沙盘](../docs/assets/platform_rwpp_live.png)
+服务提供 `/infer`（单局、帧实时回传）、`/train`（多局数据采集）、`/jobs/{id}`（状态/进度/产物）；平台后端在容器内通过 `host.docker.internal:8300` 调用，回放写入 `runs/platform/real-rwpp-*/replays/`。
 
 > 真机服务只监听本机/内网，不暴露公网。真实游戏画面录像需要带图形客户端 + 窗口捕获，这里提供的是真实状态级回放。
 
@@ -136,8 +116,11 @@ python scripts\rwpp_real_service.py --port 8300
 | GET | `/api/maps/{id}` | 地图详情（图层 gid、tileset 图集、战场窗口） |
 | GET | `/api/assets/{path}` | 游戏图集/贴图文件（只读，路径校验） |
 | GET | `/api/rwpp/status` | 宿主机真机服务健康状态 |
-| POST | `/api/rwpp/record` | 一键录制真实对局 `{ticks, policy}` |
-| GET | `/api/rwpp/jobs/{id}` | 真机录制任务状态 |
+| POST | `/api/rwpp/infer` | 单局实机推理 `{ticks, policy, map_name}`（帧实时回传） |
+| GET | `/api/rwpp/infer/{id}/frames?after=N` | 实机推理增量帧 |
+| POST | `/api/rwpp/train` | 实机训练数据采集 `{episodes, ticks, policy, map_name}` |
+| POST | `/api/rwpp/record` | 一键录制真实对局 `{ticks, policy}`（兼容旧入口） |
+| GET | `/api/rwpp/jobs/{id}` | 真机任务状态/进度/产物 |
 
 ## 6. 目录
 
@@ -156,17 +139,15 @@ runs/                   产物（已 gitignore）
 
 ## 7. 界面
 
-![训练监控](../docs/assets/platform_training.png)
+![实机推理（首页）](../docs/assets/platform_real_home.png)
 
-![对局沙盘（实机地形 · 自动跟随）](../docs/assets/platform_sandbox.png)
+![实机推理完成](../docs/assets/platform_real_infer.png)
 
-![迷雾（视野 260px）](../docs/assets/platform_sandbox_fog.png)
-
-![对局沙盘（全场视野）](../docs/assets/platform_sandbox_full.png)
-
-![回放库](../docs/assets/platform_replays.png)
+![实机训练 · 数据采集](../docs/assets/platform_real_train.png)
 
 ## 8. 边界
 
-- 平台当前跑的是**离线参考环境**（按真实 1.15 坦克数值校准的 8v8 微操），不是游戏本体；真机 RWPP 接入后只需把后端里的训练/推理命令换成 TCP 适配器版本。
+- 平台当前围绕**真实 1.15 无头对局**：实机推理由脚本策略驱动、帧实时回传；实机训练当前阶段是**真机数据采集**（逐局录制），PPO 真机训练器是下一步。
+- 离线参考引擎（8v8 微操、PPO 训练闭环）的接口仍保留在后端，但已从主导航移除。
+- 真实游戏画面录像需要带图形客户端 + 窗口捕获；这里提供的是真实状态级回放。
 - 平台默认只在本机/内网使用，不要暴露到公网。

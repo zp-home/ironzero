@@ -84,6 +84,7 @@ class RwppRecordRequest(BaseModel):
     ticks: int = Field(default=2400, ge=120, le=20000)
     policy: str = Field(default="scripted", pattern="^(scripted|none)$")
     map_name: str | None = Field(default=None, max_length=128)
+    episodes: int = Field(default=1, ge=1, le=50)
 
 
 # ----------------------------------------------------------------------
@@ -677,6 +678,37 @@ def rwpp_status() -> dict[str, Any]:
 @app.post("/api/rwpp/record")
 def rwpp_record(request: RwppRecordRequest) -> dict[str, Any]:
     return _rwpp_call("/record", request.model_dump(), timeout=20.0)
+
+
+@app.post("/api/rwpp/infer")
+def rwpp_infer(request: RwppRecordRequest) -> dict[str, Any]:
+    payload = request.model_dump()
+    payload.pop("episodes", None)
+    return _rwpp_call("/infer", payload, timeout=20.0)
+
+
+@app.post("/api/rwpp/train")
+def rwpp_train(request: RwppRecordRequest) -> dict[str, Any]:
+    return _rwpp_call("/train", request.model_dump(), timeout=20.0)
+
+
+@app.get("/api/rwpp/infer/{job_id}/frames")
+def rwpp_infer_frames(job_id: str, after: int = Query(default=0, ge=0)) -> dict[str, Any]:
+    job = _rwpp_call(f"/jobs/{job_id}", timeout=10.0)
+    frames_file = job.get("frames_file")
+    if not frames_file:
+        raise HTTPException(status_code=404, detail="job has no frame stream")
+    path = (REPO_ROOT / frames_file).resolve()
+    if REPO_ROOT not in path.parents:
+        raise HTTPException(status_code=400, detail="invalid frames path")
+    stream = _read_jsonl(path)
+    pending = stream[after:]
+    return {
+        "next": after + len(pending),
+        "frames": pending,
+        "status": job.get("status"),
+        "job": {key: job.get(key) for key in ("id", "kind", "status", "episodes_done", "episodes_total", "seconds", "replay_path", "frames_file")},
+    }
 
 
 @app.get("/api/rwpp/jobs/{job_id}")

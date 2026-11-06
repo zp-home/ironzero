@@ -104,6 +104,9 @@ const Api = {
   rwppStatus: () => api('/api/rwpp/status', { timeout: 5000 }),
   rwppRecord: (config) => api('/api/rwpp/record', { method: 'POST', body: config }),
   rwppJob: (id) => api('/api/rwpp/jobs/' + encodeURIComponent(id), { timeout: 5000 }),
+  rwppInfer: (config) => api('/api/rwpp/infer', { method: 'POST', body: config, timeout: 20000 }),
+  rwppInferFrames: (id, after) => api('/api/rwpp/infer/' + encodeURIComponent(id) + '/frames?after=' + Math.max(0, Math.floor(after || 0)), { timeout: 10000 }),
+  rwppTrain: (config) => api('/api/rwpp/train', { method: 'POST', body: config, timeout: 20000 }),
 };
 
 /* ============================================================
@@ -370,6 +373,11 @@ function cacheEls() {
     'sb-ckpt', 'sb-opponent', 'sb-episode', 'sb-frames', 'event-feed',
     'replay-count', 'replay-refresh', 'replay-body', 'toast-host',
     'rwpp-status', 'rwpp-status-text', 'rwpp-record-btn',
+    'rwpp-status-train', 'rwpp-status-train-text',
+    'fe-policy', 'fe-ticks', 'fe-start-btn', 'fe-infer-status',
+    'fe-train-map', 'fe-train-policy', 'fe-train-episodes', 'fe-train-ticks', 'fe-train-start',
+    'fe-train-status', 'fe-train-progress', 'fe-train-episodes-label', 'fe-train-current',
+    'fe-train-seconds', 'fe-train-artifacts', 'fe-train-artifact-count', 'fe-train-refresh',
   ];
   for (const id of ids) {
     const key = id.replace(/-([a-z])/g, (match, chr) => chr.toUpperCase());
@@ -468,6 +476,24 @@ const state = {
     polling: false,
     running: false,
     lastSeconds: 0,
+    hostRunning: 0,
+  },
+  fe: {
+    inferJobId: null,
+    inferTimer: null,
+    inferPolling: false,
+    inferStatus: 'idle',
+    inferFrames: 0,
+    inferLastTick: 0,
+    inferStartedAt: 0,
+    trainJobId: null,
+    trainTimer: null,
+    trainPolling: false,
+    trainStatus: 'idle',
+    trainStartedAt: 0,
+    trainProgress: { done: 0, total: 0, seconds: 0, current: 0 },
+    trainArtifacts: [],
+    mapsReady: false,
   },
 };
 
@@ -928,7 +954,7 @@ function enterDemo() {
   if (els.inferHint) els.inferHint.textContent = '后端未连接：可播放内置演示对局（演示数据，仅用于界面预览）。';
   if (DEMO.runs.length) selectDemoRun(DEMO.runs[0].id);
   syncMapStatus();
-  if (state.tab === 'sandbox') ensureSandboxContent();
+  if (state.tab === 'sandbox' || state.tab === 'infer') ensureSandboxContent();
 }
 
 function exitDemo() {
@@ -2060,15 +2086,21 @@ function isRealReplay(item) {
 
 function renderRwppStatus() {
   const rwpp = state.rwpp;
-  if (els.rwppStatus) {
-    els.rwppStatus.setAttribute('data-state', rwpp.checked ? (rwpp.available ? 'ok' : 'down') : 'unknown');
-    if (rwpp.service) els.rwppStatus.title = '宿主机真机服务：' + rwpp.service;
+  const stateName = rwpp.checked ? (rwpp.available ? 'ok' : 'down') : 'unknown';
+  const label = !rwpp.checked
+    ? '真机服务检测中…'
+    : (rwpp.available ? '真机服务就绪' : '真机服务未启动');
+  for (const badge of document.querySelectorAll('.rwpp-status')) {
+    badge.setAttribute('data-state', stateName);
+    if (rwpp.service) badge.title = '宿主机真机服务：' + rwpp.service;
   }
-  if (els.rwppStatusText) {
-    els.rwppStatusText.textContent = !rwpp.checked
-      ? '真机服务检测中…'
-      : (rwpp.available ? '真机服务就绪' : '真机服务未启动');
+  for (const labelNode of document.querySelectorAll('.rwpp-status-text')) {
+    labelNode.textContent = label;
   }
+  if (els.rwppStatus) els.rwppStatus.setAttribute('data-state', stateName);
+  if (els.rwppStatusText) els.rwppStatusText.textContent = label;
+  if (els.rwppStatusTrain) els.rwppStatusTrain.setAttribute('data-state', stateName);
+  if (els.rwppStatusTrainText) els.rwppStatusTrainText.textContent = label;
   if (els.rwppRecordBtn) {
     els.rwppRecordBtn.classList.toggle('unavailable', rwpp.checked && !rwpp.available);
   }
@@ -2089,6 +2121,7 @@ async function refreshRwppStatus(force) {
     const payload = await Api.rwppStatus();
     rwpp.available = !!(payload && payload.ok);
     rwpp.service = payload && payload.service ? String(payload.service) : null;
+    rwpp.hostRunning = payload && numOrNull(payload.running) !== null ? num(payload.running, 0) : 0;
     rwpp.serviceError = null;
   } catch (error) {
     rwpp.available = false;
@@ -2887,6 +2920,7 @@ async function loadMaps(force) {
   }
   state.maps.ready = true;
   renderMapOptions();
+  renderFeMapControls();
   return;
 }
 
@@ -2951,7 +2985,9 @@ function syncMapStatus() {
     setMapStatus('地图加载失败，已回退抽象渲染 · ' + sandbox.terrainError, 'bad');
     return;
   }
-  const modeLabel = sandbox.simMode === 'terrain' ? '地形模拟' : '竞技场';
+  const modeLabel = (sandbox.source === 'infer' || sandbox.checkpoint === 'rwpp-live')
+    ? '实机'
+    : (sandbox.simMode === 'terrain' ? '地形模拟' : '竞技场');
   if (sandbox.mapDetail) {
     let viewLabel;
     if (sandbox.simMode === 'terrain') {
@@ -3952,7 +3988,7 @@ function drawSandboxEmpty(ctx, width, height) {
   ctx.fillStyle = 'rgba(93, 115, 144, 0.85)';
   ctx.font = '12px "Segoe UI", "Microsoft YaHei", sans-serif';
   ctx.fillText(
-    state.mode === 'demo' ? '演示模式：点击「开始推理」播放内置演示对局' : '在右侧选择 checkpoint 后点击「开始推理」，或从回放库加载一局',
+    state.mode === 'demo' ? '演示模式：点击「开始实机推理」播放内置演示对局' : '在右侧选择地图与时长，点击「开始实机推理」；或从下方回放库加载一局',
     width / 2, height / 2 + 14
   );
   ctx.restore();
@@ -3969,7 +4005,10 @@ function drawSandboxHud(ctx, sandbox, frame, width, height) {
     : '等待推理数据';
   ctx.fillText(info, 14, 12);
 
-  const modeLabel = sandbox.simMode === 'terrain' ? '地形模拟' : '竞技场';
+  const realReplay = sandbox.checkpoint === 'rwpp-live';
+  const modeLabel = (sandbox.source === 'infer' || realReplay)
+    ? '实机'
+    : (sandbox.simMode === 'terrain' ? '地形模拟' : '竞技场');
   const mapLabel = sandbox.mapDetail ? (sandbox.mapDetail.name || '地图') : '抽象竞技场';
   let viewLabel;
   if (sandbox.simMode === 'terrain') {
@@ -3980,7 +4019,7 @@ function drawSandboxHud(ctx, sandbox, frame, width, height) {
   ctx.save();
   ctx.font = '10px "Microsoft YaHei", "Segoe UI", sans-serif';
   ctx.fillStyle = sandbox.simMode === 'terrain' ? 'rgba(125, 227, 176, 0.95)' : 'rgba(124, 160, 190, 0.9)';
-  let metaLine = modeLabel + ' · ' + mapLabel + ' · ' + viewLabel;
+  let metaLine = modeLabel + ' · ' + mapLabel + ' · ' + viewLabel + ' · ' + (sandbox.frames ? sandbox.frames.length : 0) + ' 帧';
   if (sandbox.fogEnabled) metaLine += ' · 迷雾';
   ctx.fillText(metaLine, 14, 27);
   ctx.restore();
@@ -4388,38 +4427,46 @@ function finalizeRecording(sandbox) {
  * ============================================================ */
 
 function switchTab(name) {
-  if (state.tab === 'sandbox' && name !== 'sandbox') stopRecording();
-  state.tab = name;
+  const resolved = name === 'train' ? 'train' : 'infer';
+  if ((state.tab === 'sandbox' || state.tab === 'infer') && resolved !== 'infer') stopRecording();
+  state.tab = resolved;
   const buttons = document.querySelectorAll('.tab-btn');
   for (const button of buttons) {
-    const active = button.getAttribute('data-tab') === name;
+    const active = button.getAttribute('data-tab') === resolved;
     button.classList.toggle('active', active);
     button.setAttribute('aria-selected', active ? 'true' : 'false');
   }
   const panels = document.querySelectorAll('.tab-panel');
-  for (const panel of panels) panel.classList.toggle('active', panel.id === 'panel-' + name);
-  if (window.location.hash !== '#' + name) {
+  for (const panel of panels) {
+    const target = resolved === 'train' ? 'panel-train' : 'panel-infer';
+    panel.classList.toggle('active', panel.id === target);
+  }
+  if (window.location.hash !== '#' + resolved) {
     try {
-      window.history.replaceState(null, '', '#' + name);
+      window.history.replaceState(null, '', '#' + resolved);
     } catch (error) {
-      window.location.hash = name;
+      window.location.hash = resolved;
     }
   }
-  if (name === 'train') {
-    drawCharts();
-  } else if (name === 'sandbox') {
-    ensureSandboxContent();
+  if (resolved === 'infer') {
+    if (state.mode === 'demo') ensureSandboxContent();
     drawSandbox();
-  } else if (name === 'replays') {
-    loadReplays();
     refreshRwppStatus();
+    loadReplays();
+  } else {
+    refreshRwppStatus(true);
+    renderFeTrainArtifacts(state.fe.trainArtifacts);
+    if (state.fe.trainStatus === 'idle' && state.rwpp.hostRunning > 0) {
+      const hint = document.getElementById('fe-train-hint');
+      if (hint) hint.textContent = '检测到宿主机有任务正在运行；若为训练任务，完成后回放会自动入库。';
+    }
   }
 }
 
 function tabFromHash() {
   const hash = String(window.location.hash || '').replace('#', '');
-  if (hash === 'sandbox' || hash === 'replays' || hash === 'train') return hash;
-  return 'train';
+  if (hash === 'train') return 'train';
+  return 'infer';
 }
 
 function toast(message, kind) {
@@ -4488,10 +4535,17 @@ function bindEvents() {
     });
   }
   if (els.rwppRecordBtn) els.rwppRecordBtn.addEventListener('click', startRwppRecord);
+  if (els.feStartBtn) els.feStartBtn.addEventListener('click', feStartInfer);
+  if (els.feTrainStart) els.feTrainStart.addEventListener('click', feStartTrain);
+  if (els.feTrainRefresh) els.feTrainRefresh.addEventListener('click', feRefreshTrainArtifacts);
   if (els.demoRetry) els.demoRetry.addEventListener('click', retryConnection);
   if (els.recordBtn) els.recordBtn.addEventListener('click', toggleRecording);
   if (els.mapSelect) {
     els.mapSelect.addEventListener('change', () => {
+      if (state.sandbox.simMode !== 'infer') {
+        state.sandbox.simMode = 'terrain';
+        state.sandbox.fogAvailable = true;
+      }
       selectMap(els.mapSelect.value || '');
     });
   }
@@ -4592,12 +4646,11 @@ function bindEvents() {
   }
 
   window.addEventListener('resize', () => {
-    if (state.tab === 'train') drawCharts();
-    if (state.tab === 'sandbox') drawSandbox();
+    if (state.tab === 'infer' || state.tab === 'sandbox') drawSandbox();
   });
 
   window.addEventListener('keydown', (event) => {
-    if (state.tab !== 'sandbox') return;
+    if (state.tab !== 'sandbox' && state.tab !== 'infer') return;
     const target = event.target;
     if (target && ['INPUT', 'SELECT', 'TEXTAREA'].indexOf(target.tagName) >= 0) return;
     const sandbox = state.sandbox;
@@ -4624,7 +4677,7 @@ function bindEvents() {
     const stack = document.querySelector('.chart-stack');
     if (stack) {
       const observer = new ResizeObserver(() => {
-        if (state.tab === 'train') drawCharts();
+        if (state.tab === 'infer' || state.tab === 'sandbox') drawSandbox();
       });
       observer.observe(stack);
     }
@@ -4637,10 +4690,484 @@ function animationLoop(timestamp) {
   requestAnimationFrame(animationLoop);
   const dt = lastAnimationTs ? Math.min(0.12, (timestamp - lastAnimationTs) / 1000) : 0;
   lastAnimationTs = timestamp;
-  if (state.tab === 'sandbox') {
+  if (state.tab === 'sandbox' || state.tab === 'infer') {
     advanceSandbox(dt);
     drawSandbox();
   }
+}
+
+
+/* ============================================================
+ * 两页实机工作流：实机推理 / 实机训练
+ * ============================================================ */
+
+const FE_DEFAULT_MAP_NAME = '[p2]Lake (2p)';
+const FE_INFER_POLL_MS = 600;
+const FE_TRAIN_POLL_MS = 2000;
+
+function feMapList() {
+  return (state.maps.list || []).filter((item) => item && !item.broken);
+}
+
+function feMapItemById(id) {
+  return feMapList().find((item) => item.id === id) || null;
+}
+
+function feMapItemByName(name) {
+  return feMapList().find((item) => item.name === name) || null;
+}
+
+function feDefaultMap() {
+  return feMapItemByName(FE_DEFAULT_MAP_NAME) || feMapList()[0] || null;
+}
+
+function renderFeMapControls() {
+  const list = feMapList();
+  const defaultItem = feDefaultMap();
+  if (els.mapSelect) {
+    const previousId = els.mapSelect.value || (state.sandbox && state.sandbox.mapId) || '';
+    els.mapSelect.innerHTML = '';
+    for (const item of list) {
+      const option = document.createElement('option');
+      option.value = item.id;
+      option.textContent = item.name + (item.players ? ' · ' + item.players + 'P' : '');
+      els.mapSelect.appendChild(option);
+    }
+    const fallbackId = list.some((item) => item.id === previousId)
+      ? previousId
+      : (defaultItem ? defaultItem.id : '');
+    els.mapSelect.value = fallbackId;
+  }
+  if (els.feTrainMap) {
+    const previousName = els.feTrainMap.value || (defaultItem ? defaultItem.name : '');
+    els.feTrainMap.innerHTML = '';
+    for (const item of list) {
+      const option = document.createElement('option');
+      option.value = item.name;
+      option.textContent = item.name + (item.players ? ' · ' + item.players + 'P' : '');
+      els.feTrainMap.appendChild(option);
+    }
+    const fallbackName = list.some((item) => item.name === previousName)
+      ? previousName
+      : (defaultItem ? defaultItem.name : '');
+    els.feTrainMap.value = fallbackName;
+  }
+  if (!state.fe.mapsReady && defaultItem) {
+    state.fe.mapsReady = true;
+    const sandbox = state.sandbox;
+    sandbox.simMode = 'terrain';
+    sandbox.fogAvailable = true;
+    if (els.mapSelect) els.mapSelect.value = defaultItem.id;
+    void selectMap(defaultItem.id, { silent: true });
+  }
+}
+
+function evalMapSelected() {
+  return !!(state.sandbox && state.sandbox.mapId);
+}
+
+function feSetInferStatus(text, tone) {
+  if (!els.feInferStatus) return;
+  els.feInferStatus.textContent = text;
+  els.feInferStatus.className = 'hint-line' + (tone ? ' ' + tone : '');
+}
+
+function feSetInferRunning(running) {
+  if (els.feStartBtn) {
+    els.feStartBtn.disabled = running;
+    els.feStartBtn.textContent = running ? '实机推理中…' : '开始实机推理';
+  }
+  if (els.mapSelect) els.mapSelect.disabled = running;
+  if (els.feTicks) els.feTicks.disabled = running;
+}
+
+function handleFeError(error, label) {
+  const status = error && error.status;
+  if (status === 503) {
+    toast('真机服务未启动：在宿主机运行 python scripts/rwpp_real_service.py', 'error');
+  } else if (status === 409) {
+    toast('宿主机已有真机任务在运行，请等待完成', 'error');
+  } else {
+    toast(label + '失败：' + (error && error.message ? error.message : error), 'error');
+  }
+}
+
+async function feStartInfer() {
+  const fe = state.fe;
+  if (fe.inferStatus === 'running') return;
+  if (state.mode === 'demo') {
+    toast('演示模式下无法连接真机服务', 'error');
+    return;
+  }
+  const mapItem = feMapItemById(els.mapSelect ? els.mapSelect.value : '') || feDefaultMap();
+  if (!mapItem) {
+    toast('请选择地图（需要游戏资源缓存）', 'error');
+    return;
+  }
+  const ticks = clampInt(els.feTicks && els.feTicks.value, 120, 20000, 2400);
+  const policy = (els.fePolicy && els.fePolicy.value) || 'scripted';
+  if (policy !== 'scripted') {
+    toast('模型策略尚未接入，当前仅支持 scripted', 'error');
+    return;
+  }
+  feSetInferRunning(true);
+  feSetInferStatus('排队中…');
+  try {
+    const response = await Api.rwppInfer({ ticks: ticks, policy: policy, map_name: mapItem.name });
+    const jobId = response && (response.job_id || response.id);
+    if (!jobId) throw new Error('后端未返回推理任务 id');
+    fe.inferJobId = String(jobId);
+    fe.inferStatus = 'running';
+    fe.inferFrames = 0;
+    fe.inferLastTick = 0;
+    fe.inferStartedAt = Date.now();
+    feSetInferStatus('运行中 · 等待首帧…');
+    resetSandbox();
+    const sandbox = state.sandbox;
+    sandbox.source = 'infer';
+    sandbox.inferId = fe.inferJobId;
+    sandbox.status = 'running';
+    sandbox.streaming = true;
+    sandbox.playing = true;
+    sandbox.follow = true;
+    sandbox.simMode = 'terrain';
+    sandbox.visionRadius = 260;
+    sandbox.fogAvailable = true;
+    sandbox.cameraRegion = null;
+    if (els.mapSelect) els.mapSelect.value = mapItem.id;
+    await selectMap(mapItem.id, { silent: true });
+    syncMapToggles();
+    switchTab('infer');
+    startFeInferPolling();
+    toast('实机推理已开始 · ' + jobId, 'ok');
+  } catch (error) {
+    feSetInferRunning(false);
+    fe.inferStatus = 'failed';
+    handleFeError(error, '实机推理');
+    feSetInferStatus('失败：' + (error && error.message ? error.message : error), 'bad');
+  }
+}
+
+function startFeInferPolling() {
+  stopFeInferPolling(true);
+  state.fe.inferTimer = setInterval(fePollInfer, FE_INFER_POLL_MS);
+  fePollInfer();
+}
+
+function stopFeInferPolling(keepJob) {
+  const fe = state.fe;
+  if (fe.inferTimer) {
+    clearInterval(fe.inferTimer);
+    fe.inferTimer = null;
+  }
+  if (!keepJob) {
+    fe.inferJobId = null;
+    fe.inferStatus = 'idle';
+  }
+}
+
+async function fePollInfer() {
+  const fe = state.fe;
+  if (!fe.inferJobId || fe.inferPolling) return;
+  fe.inferPolling = true;
+  try {
+    const payload = await Api.rwppInferFrames(fe.inferJobId, state.sandbox.fetchCursor);
+    if (!payload) return;
+    const frames = Array.isArray(payload.frames) ? payload.frames : [];
+    if (frames.length) {
+      applyInferBatch(frames, payload.next !== undefined && payload.next !== null ? payload.next : undefined);
+      if (state.sandbox.follow && state.sandbox.playing && state.sandbox.frames.length > 8) {
+        state.sandbox.playback = Math.max(state.sandbox.playback, state.sandbox.frames.length - 6);
+      }
+      fe.inferFrames = state.sandbox.frames.length;
+      if (fe.inferFrames) {
+        fe.inferLastTick = state.sandbox.frames[fe.inferFrames - 1].tick || fe.inferLastTick;
+      }
+      feSetInferStatus('运行中 · 已收 ' + fe.inferFrames + ' 帧 · tick=' + fe.inferLastTick);
+    } else {
+      const job = payload.job || {};
+      const seconds = numOrNull(job.seconds) !== null ? num(job.seconds, 0) : (Date.now() - fe.inferStartedAt) / 1000;
+      feSetInferStatus('运行中 · 已收 ' + fe.inferFrames + ' 帧 · ' + Math.round(seconds) + 's');
+    }
+    const job = payload.job || {};
+    const status = job.status || payload.status;
+    if (status === 'failed') {
+      const failure = new Error(job.error || '宿主机任务失败');
+      failure.feJobFailed = true;
+      throw failure;
+    }
+    if (status === 'done' || state.sandbox.inferDone) {
+      stopFeInferPolling();
+      fe.inferStatus = 'done';
+      state.sandbox.status = 'done';
+      state.sandbox.streaming = false;
+      state.sandbox.playing = false;
+      feSetInferRunning(false);
+      feSetInferStatus('完成 · 共 ' + fe.inferFrames + ' 帧', 'ok');
+      updatePlayerUi(true);
+      await loadReplays();
+      toast('实机推理完成（' + fe.inferFrames + ' 帧）', 'ok');
+      await refreshRwppStatus(true);
+    }
+  } catch (error) {
+    if (error && (error.status === 503 || error.status === 409)) {
+      stopFeInferPolling();
+      feSetInferRunning(false);
+      fe.inferStatus = 'failed';
+      handleFeError(error, '实机推理');
+      feSetInferStatus('失败：' + error.message, 'bad');
+    } else if (error && (error.feJobFailed || error.status >= 500)) {
+      stopFeInferPolling();
+      feSetInferRunning(false);
+      fe.inferStatus = 'failed';
+      state.sandbox.status = 'failed';
+      updatePlayerUi(true);
+      toast('实机推理失败：' + (error.message || error), 'error');
+      feSetInferStatus('失败：' + (error.message || error), 'bad');
+    }
+  } finally {
+    fe.inferPolling = false;
+  }
+}
+
+function feSetTrainRunning(running) {
+  if (els.feTrainStart) {
+    els.feTrainStart.disabled = running;
+    els.feTrainStart.textContent = running ? '实机训练中…' : '开始实机训练';
+  }
+  if (els.feTrainEpisodes) els.feTrainEpisodes.disabled = running;
+  if (els.feTrainTicks) els.feTrainTicks.disabled = running;
+  if (els.feTrainMap) els.feTrainMap.disabled = running;
+}
+
+function feRenderTrainProgress(done, total, seconds, current, label, cls) {
+  const state0 = state.fe.trainProgress;
+  state0.done = Math.max(0, Math.round(num(done, 0)));
+  state0.total = Math.max(0, Math.round(num(total, state0.total)));
+  state0.seconds = Math.max(0, num(seconds, 0));
+  state0.current = Math.max(0, Math.round(num(current, 0)));
+  const percent = state0.total > 0 ? Math.min(100, Math.round((state0.done / state0.total) * 100)) : 0;
+  if (els.feTrainProgress) els.feTrainProgress.style.width = percent + '%';
+  if (els.feTrainEpisodesLabel) els.feTrainEpisodesLabel.textContent = state0.done + ' / ' + state0.total + ' 局';
+  if (els.feTrainSeconds) els.feTrainSeconds.textContent = Math.round(state0.seconds) + 's';
+  if (els.feTrainCurrent) {
+    if (state0.total > 0 && state0.done >= state0.total) els.feTrainCurrent.textContent = '已完成';
+    else if (state0.current > 0) els.feTrainCurrent.textContent = '当前第 ' + state0.current + ' 局';
+    else els.feTrainCurrent.textContent = '等待开始';
+  }
+  if (els.feTrainStatus) {
+    els.feTrainStatus.className = 'status-pill ' + (cls || 'idle');
+    els.feTrainStatus.textContent = label || '空闲';
+  }
+}
+
+async function feStartTrain() {
+  const fe = state.fe;
+  if (fe.trainStatus === 'running') return;
+  if (state.mode === 'demo') {
+    toast('演示模式下无法连接真机服务', 'error');
+    return;
+  }
+  const mapName = els.feTrainMap ? els.feTrainMap.value : '';
+  if (!mapName) {
+    toast('请选择地图', 'error');
+    return;
+  }
+  const episodes = clampInt(els.feTrainEpisodes && els.feTrainEpisodes.value, 1, 50, 3);
+  const ticks = clampInt(els.feTrainTicks && els.feTrainTicks.value, 120, 20000, 1200);
+  const policy = (els.feTrainPolicy && els.feTrainPolicy.value) || 'scripted';
+  if (policy !== 'scripted') {
+    toast('模型策略尚未接入，当前仅支持 scripted', 'error');
+    return;
+  }
+  feSetTrainRunning(true);
+  feRenderTrainProgress(0, episodes, 0, 0, '排队中', 'warn');
+  fe.trainArtifacts = [];
+  renderFeTrainArtifacts([]);
+  try {
+    const response = await Api.rwppTrain({
+      episodes: episodes,
+      ticks: ticks,
+      policy: policy,
+      map_name: mapName,
+    });
+    const jobId = response && (response.job_id || response.id);
+    if (!jobId) throw new Error('后端未返回训练任务 id');
+    fe.trainJobId = String(jobId);
+    fe.trainStatus = 'running';
+    fe.trainStartedAt = Date.now();
+    startFeTrainPolling();
+    toast('实机训练已开始 · ' + episodes + ' 局 × ' + ticks + ' ticks', 'ok');
+  } catch (error) {
+    feSetTrainRunning(false);
+    fe.trainStatus = 'failed';
+    handleFeError(error, '实机训练');
+    feRenderTrainProgress(0, episodes, 0, 0, '失败', 'bad');
+  }
+}
+
+function startFeTrainPolling() {
+  stopFeTrainPolling(true);
+  state.fe.trainTimer = setInterval(fePollTrain, FE_TRAIN_POLL_MS);
+  fePollTrain();
+}
+
+function stopFeTrainPolling(keepJob) {
+  const fe = state.fe;
+  if (fe.trainTimer) {
+    clearInterval(fe.trainTimer);
+    fe.trainTimer = null;
+  }
+  if (!keepJob) {
+    fe.trainJobId = null;
+    fe.trainStatus = 'idle';
+  }
+}
+
+async function fePollTrain() {
+  const fe = state.fe;
+  if (!fe.trainJobId || fe.trainPolling) return;
+  fe.trainPolling = true;
+  try {
+    const job = await Api.rwppJob(fe.trainJobId);
+    if (!job) return;
+    const total = numOrNull(job.episodes_total) !== null ? num(job.episodes_total, 0) : state.fe.trainProgress.total;
+    const done = numOrNull(job.episodes_done) !== null ? num(job.episodes_done, 0) : state.fe.trainProgress.done;
+    const current = numOrNull(job.current_episode) !== null ? num(job.current_episode, 0) : 0;
+    const seconds = numOrNull(job.seconds) !== null ? num(job.seconds, 0) : (Date.now() - fe.trainStartedAt) / 1000;
+    const running = job.status === 'running';
+    feRenderTrainProgress(
+      done,
+      total,
+      seconds,
+      current,
+      running ? '运行中' : (job.status === 'done' ? '已完成' : '失败'),
+      running ? 'running' : (job.status === 'done' ? 'done' : 'bad')
+    );
+    if (running) return;
+    stopFeTrainPolling();
+    feSetTrainRunning(false);
+    if (job.status === 'done') {
+      fe.trainStatus = 'done';
+      toast('实机训练完成（' + Math.round(seconds) + 's · ' + done + ' 局）', 'ok');
+      await loadReplays();
+      await renderFeTrainArtifactsFromJob(job);
+      await refreshRwppStatus(true);
+    } else {
+      fe.trainStatus = 'failed';
+      toast('实机训练失败：' + String(job.error || job.last_log || '未知错误').slice(0, 160), 'error');
+    }
+  } catch (error) {
+    if (error && (error.status === 503 || error.status === 409)) {
+      stopFeTrainPolling();
+      feSetTrainRunning(false);
+      fe.trainStatus = 'failed';
+      handleFeError(error, '实机训练');
+      feRenderTrainProgress(state.fe.trainProgress.done, state.fe.trainProgress.total, state.fe.trainProgress.seconds, 0, '失败', 'bad');
+    }
+  } finally {
+    fe.trainPolling = false;
+  }
+}
+
+async function renderFeTrainArtifactsFromJob(job) {
+  const names = (Array.isArray(job.replays) ? job.replays : []).map((path) => basename(String(path).replace(/\\/g, '/')));
+  const items = state.replays || [];
+  let picked = names
+    .map((name) => items.find((item) => item.name === name))
+    .filter(Boolean);
+  if (!picked.length) {
+    const total = numOrNull(job.episodes_total) !== null ? num(job.episodes_total, 1) : names.length;
+    picked = items.filter(isRealReplay).slice(0, Math.max(1, total));
+  }
+  state.fe.trainArtifacts = picked;
+  renderFeTrainArtifacts(picked);
+}
+
+function renderFeTrainArtifacts(items) {
+  const body = els.feTrainArtifacts;
+  if (!body) return;
+  body.innerHTML = '';
+  const list = Array.isArray(items) ? items : [];
+  if (els.feTrainArtifactCount) els.feTrainArtifactCount.textContent = String(list.length);
+  if (!list.length) {
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = 6;
+    cell.className = 'empty';
+    cell.textContent = '训练完成后显示本任务录制的回放';
+    row.appendChild(cell);
+    body.appendChild(row);
+    return;
+  }
+  for (const item of list) {
+    const row = document.createElement('tr');
+    row.className = 'data-row';
+
+    const cellName = document.createElement('td');
+    cellName.textContent = item.name || basename(item.id);
+    if (isRealReplay(item)) {
+      const tag = document.createElement('span');
+      tag.className = 'real-tag';
+      tag.textContent = '真机';
+      cellName.appendChild(tag);
+    }
+
+    const cellSim = document.createElement('td');
+    cellSim.textContent = (item.simMode === 'terrain' ? '地形' : '竞技场')
+      + (item.simMode === 'terrain' && item.mapName ? ' · ' + item.mapName : '');
+
+    const cellResult = document.createElement('td');
+    const badge = document.createElement('span');
+    const meta = resultMeta(item.result);
+    badge.className = 'result-badge ' + meta.cls;
+    badge.textContent = meta.label;
+    cellResult.appendChild(badge);
+
+    const cellFrames = document.createElement('td');
+    cellFrames.textContent = item.frames === null || item.frames === undefined ? '—' : String(item.frames);
+
+    const cellTime = document.createElement('td');
+    cellTime.textContent = fmtShortTime(item.created_at) || '—';
+
+    const cellActions = document.createElement('td');
+    const playButton = document.createElement('button');
+    playButton.type = 'button';
+    playButton.className = 'btn btn-sm';
+    playButton.textContent = '播放';
+    playButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      openFeReplay(item.id);
+    });
+    cellActions.appendChild(playButton);
+
+    row.appendChild(cellName);
+    row.appendChild(cellSim);
+    row.appendChild(cellResult);
+    row.appendChild(cellFrames);
+    row.appendChild(cellTime);
+    row.appendChild(cellActions);
+    body.appendChild(row);
+  }
+}
+
+async function openFeReplay(id) {
+  switchTab('infer');
+  await openReplay(id);
+}
+
+async function feRefreshTrainArtifacts() {
+  await loadReplays();
+  if (state.fe.trainJobId) {
+    try {
+      const job = await Api.rwppJob(state.fe.trainJobId);
+      await renderFeTrainArtifactsFromJob(job);
+      return;
+    } catch (error) {
+      // fall back to cached artifacts
+    }
+  }
+  renderFeTrainArtifacts(state.fe.trainArtifacts);
 }
 
 async function tickMain() {
@@ -4655,14 +5182,8 @@ async function tickMain() {
     }
     if (state.mode === 'demo') exitDemo();
     if (state.mode === 'boot') state.mode = 'live';
-    await refreshRuns();
-    if (state.currentRunId) await refreshCurrentRun();
-    if (state.tab === 'replays') {
-      await loadReplays();
-      await refreshRwppStatus();
-    }
-    if (!state.checkpoints.length) await loadCheckpoints();
     if (!state.maps.ready) await loadMaps();
+    await refreshRwppStatus();
     renderConn();
   } finally {
     state.mainBusy = false;
@@ -4682,18 +5203,14 @@ async function boot() {
   if (state.connected) {
     state.mode = 'live';
     renderConn();
-    await refreshRuns();
-    if (state.runs.length && !state.currentRunId) await selectRun(state.runs[0].id);
-    await loadCheckpoints();
     await loadMaps();
     await loadReplays();
     await refreshRwppStatus(true);
+    renderFeTrainArtifacts(state.fe.trainArtifacts);
   } else {
     enterDemo();
   }
   renderConn();
-  updateKpis();
-  drawCharts();
   updatePlayerUi(true);
   setInterval(tickMain, 1000);
 }

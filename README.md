@@ -82,29 +82,29 @@ PC 版通过 Steam 官方渠道获取：
 python -m http.server 8000 --directory site
 ```
 
-## 训练与推理平台（大屏）
+## 训练与推理平台（实机）
 
-一条命令启动，浏览器里训练、看指标、看 agent 对打、录视频：
+一条命令启动平台（宿主机另需跑真机服务）：
 
 ```powershell
+python scripts\rwpp_real_service.py --port 8300     # 宿主机：真实 1.15 运行时 + IronZero 扩展
 docker compose -f web/docker-compose.yml up -d --build
 start http://127.0.0.1:8000
 ```
+
+平台只保留两个主页面，都面向**真实《铁锈战争》1.15 无头对局**：
+
+- **实机推理**：选地图（73 张）+ 策略（scripted）+ 时长 → 宿主机拉起真实对局，动作桥驱动单位，帧实时回传；大沙盘按真实地图渲染、自动跟随、可录制 `.webm`
+- **实机训练**：选地图/局数/每局 ticks → 逐局真实对局数据采集，进度条 + 产物回放（播放跳回实机推理）
+- **真机回放**：每局落盘 `ironzero.replay/1`，回放库标注「真机」，点击即可按真实 Lake 地图播放
+
+![实机推理](docs/assets/platform_real_infer.png)
 
 实机地图渲染需要先把本机 1.15 客户端资源复制到本地缓存（`.game_cache/`，已 gitignore，不提交不分发）：
 
 ```powershell
 .\web\scripts\prepare_assets.ps1 -GameDir "E:\path\to\Rusted Warfare1.15PC"
 ```
-
-- **训练监控**：启动/停止 PPO，胜率与回报曲线、KPI、实时日志
-- **对局沙盘**：载入 checkpoint 逐帧推理，canvas 渲染 8v8 坦克、血条、弹道、爆炸，支持倍速/进度条
-- **实机地形**：解析 1.15 客户端 `.tmx`/tileset/坦克贴图，单位在真实陆地出生、A* 绕水行军、碰撞不穿墙；73 张地图可选，`battle` 自动跟随 / `full` 全景
-- **迷雾与道具层**：视觉迷雾 + 引擎级可见性过滤；建筑/资源点（地图道具层）可单独开关
-- **回放库**：每局自动落盘 `ironzero.replay/1` JSON，可重放、删除；「录制视频」导出 `.webm`
-- **真机一键录制**：宿主机跑 `scripts/rwpp_real_service.py` 后，平台里点「真机录制」即可驱动真实 1.15 无头对局（IronZero 扩展 + 动作桥），录完自动进回放库并可在沙盘按真实地图播放
-
-![对局沙盘](docs/assets/platform_sandbox.png)
 
 Dockerfile / compose / API / 目录说明见 [web/README.md](./web/README.md)。
 

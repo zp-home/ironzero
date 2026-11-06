@@ -1157,3 +1157,137 @@ body::before {
   .topbar { flex-wrap: wrap; }
   .topbar-right { margin-left: 0; }
 }
+
+
+/* ============================================================
+ * 两页布局：实机推理 / 实机训练
+ * ============================================================ */
+#panel-infer.active,
+#panel-train.active {
+  display: block;
+  grid-template-columns: none;
+}
+
+.infer-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 336px;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+}
+
+.infer-main {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  min-width: 0;
+}
+
+.infer-main .sandbox-stage {
+  flex: 1 1 auto;
+  min-height: 420px;
+}
+
+.infer-main .replay-card {
+  flex: 0 0 auto;
+  height: auto;
+  max-height: 40%;
+  display: flex;
+  flex-direction: column;
+  min-height: 190px;
+}
+
+.infer-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.fe-badge-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px 0;
+}
+
+.fe-train-grid {
+  display: grid;
+  grid-template-columns: 348px minmax(0, 1fr);
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+}
+
+.fe-train-main {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow: auto;
+  min-width: 0;
+}
+
+.fe-progress { padding: 14px 12px 12px; }
+
+.fe-progress-track {
+  height: 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  background: rgba(5, 12, 22, 0.85);
+  overflow: hidden;
+}
+
+.fe-progress-track i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 5px;
+  background: linear-gradient(90deg, var(--cyan), #1a6fd4);
+  box-shadow: 0 0 10px rgba(56, 225, 255, 0.5);
+  transition: width 0.3s ease;
+}
+
+.fe-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 9px;
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  color: var(--muted);
+}
+
+.fe-progress-meta #fe-train-episodes-label { color: #cfe8fb; }
+
+.hint-line.subtle {
+  color: var(--muted-2);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.fe-artifacts td { white-space: nowrap; }
+
+@media (max-width: 1180px) {
+  .infer-grid { grid-template-columns: minmax(0, 1fr); }
+  .infer-side { flex-direction: row; flex-wrap: wrap; overflow: visible; }
+  .infer-side .card { flex: 1 1 300px; }
+  .fe-train-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+
+/* 实机训练页：产物表填满右列剩余高度 */
+.fe-train-main .card:last-child {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 220px;
+}
+.fe-train-main .card:last-child .replay-table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+}

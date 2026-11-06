@@ -47,6 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--policy", choices=["none", "scripted"], default="scripted",
                         help="scripted = drive the player units with simple orders")
     parser.add_argument("--order-every", type=int, default=4, help="send an order every N observations")
+    parser.add_argument("--stream", default="", help="optional JSONL path for live dashboard frames")
     return parser
 
 
@@ -121,6 +122,13 @@ def main(argv: list[str] | None = None) -> int:
         stderr=subprocess.STDOUT,
     )
     frames: list[dict] = []
+    stream = None
+    if args.stream:
+        stream_path = Path(args.stream)
+        stream_path.parent.mkdir(parents=True, exist_ok=True)
+        stream = stream_path.open("w", encoding="utf-8")
+        stream.write(json.dumps({"type": "start", "job": job_dir.name}) + "\n")
+        stream.flush()
     deadline = time.time() + args.timeout
     sock = None
     try:
@@ -150,7 +158,11 @@ def main(argv: list[str] | None = None) -> int:
                 message = json.loads(line)
                 kind = message.get("type")
                 if kind == "obs":
-                    frames.append(obs_to_frame(message, {}))
+                    frame = obs_to_frame(message, {})
+                    frames.append(frame)
+                    if stream is not None:
+                        stream.write(json.dumps({"type": "frame", **frame}, ensure_ascii=False) + "\n")
+                        stream.flush()
                     if args.policy == "scripted" and len(frames) % max(1, args.order_every) == 0:
                         own = [u for u in message.get("own_entities", []) if u.get("team_id") == 0]
                         enemies = [u for u in message.get("visible_enemy_entities", [])
@@ -232,11 +244,21 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8",
         )
         print(f"replay written: {replay_path} ({len(frames)} frames)")
+        if stream is not None:
+            stream.write(
+                json.dumps({"type": "done", "replay_path": str(replay_path), "frames": len(frames)}) + "\n"
+            )
+            stream.flush()
         try:
             sock.sendall(b'{"type":"shutdown"}\n')
         except OSError:
             pass
     finally:
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
         try:
             process.wait(timeout=60)
         except subprocess.TimeoutExpired:
