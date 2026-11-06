@@ -1,0 +1,57 @@
+{
+  "schema": "ironzero.game_assets/1",
+  "game": {
+    "version": "1.15",
+    "game_code": 176,
+    "build_number": "28",
+    "assets_size_bytes": 22470061,
+    "asset_file_count": 868
+  },
+  "tick_rate": 60,
+  "unit": {
+    "key": "tank",
+    "display_name": "tank",
+    "price": 350.0,
+    "max_hp": 210.0,
+    "radius": 11.0,
+    "mass": 3000.0,
+    "attack_range": 130.0,
+    "shoot_delay_ticks": 75,
+    "direct_damage": 25.0,
+    "projectile_speed": 5.0,
+    "move_speed_per_tick": 1.1,
+    "move_speed_per_second": 66.0,
+    "dps": 20.0,
+    "source": "assets/units/tanks/tank.ini"
+  },
+  "map": {
+    "name": "[p2]Lake (2p).tmx",
+    "width_tiles": 130,
+    "height_tiles": 130,
+    "tile_width": 20,
+    "tile_height": 20,
+    "width_px": 2600,
+    "height_px": 2600,
+    "path": "assets/maps/skirmish/[p2]Lake (2p).tmx",
+    "sha256": "251273E30DEBFF8BB3927A99A6D668EE0B5D03D936EA991DE8866F638358FA6E"
+  },
+  "micro_config": {
+    "tick_rate": 60,
+    "decision_interval": 30,
+    "episode_ticks": 3600,
+    "map_width": 1000.0,
+    "map_height": 1000.0,
+    "spawn_margin": 220.0,
+    "units_per_team": 8,
+    "groups": 4,
+    "unit_hp": 210.0,
+    "unit_damage": 25.0,
+    "attack_range": 130.0,
+    "attack_cooldown_ticks": 75,
+    "unit_speed": 66.0,
+    "unit_radius": 11.0,
+    "unit_price": 350.0
+  },
+  "generated_by": "tools/import_game_assets.py",
+  "license_note": "Derived numeric game data only; no Rusted Warfare binaries or assets are redistributed."
+}
