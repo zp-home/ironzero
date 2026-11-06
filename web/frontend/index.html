@@ -50,243 +50,342 @@
     </div>
 
     <main class="screen">
-      <!-- ================= Page 1 · 实机推理 ================= -->
+      <!-- ================= Page 1 · 实机推理大屏 ================= -->
       <section class="tab-panel active" id="panel-infer" role="tabpanel">
-        <div class="infer-grid">
-          <div class="infer-main">
-            <section class="card sandbox-stage">
-              <header class="card-head">
-                <h2>实机沙盘 <span class="demo-chip" id="sandbox-demo-chip" hidden>演示数据</span></h2>
-                <div class="head-actions">
-                  <span class="status-pill idle" id="infer-status">空闲</span>
-                  <button class="btn btn-sm btn-ghost" type="button" id="record-btn">● 录制视频</button>
-                </div>
-              </header>
-              <div class="map-toolbar">
-                <label class="mini-field" title="战场 1:1 聚焦交战区域；全场显示整张地图">
-                  <span>视野</span>
-                  <select id="view-select" disabled>
-                    <option value="battle" selected>战场 1:1</option>
-                    <option value="full">全场</option>
-                  </select>
-                </label>
-                <span class="mini-field" title="视觉迷雾：以我方单位 vision_radius 为可见半径，敌方仅进入视野可见">
-                  <span>迷雾</span>
-                  <button class="toggle-btn" type="button" id="fog-toggle" aria-pressed="false" disabled>关</button>
-                </span>
-                <span class="mini-field" title="地图道具层（建筑/资源点/树木，来自地图静态数据；动态建造与采矿尚未模拟）">
-                  <span>道具</span>
-                  <button class="toggle-btn" type="button" id="items-toggle" aria-pressed="true" disabled>开</button>
-                </span>
-                <span class="map-status" id="map-status">等待实机推理 · 地形仅视觉</span>
-              </div>
-              <div class="stage-wrap" id="stage-wrap">
-                <canvas id="sandbox-canvas"></canvas>
-                <div class="rec-badge" id="rec-badge" hidden><span class="rec-dot"></span>REC</div>
-              </div>
-              <div class="player-bar">
-                <button class="btn btn-sm" type="button" id="play-btn">暂停</button>
-                <button class="btn btn-sm btn-ghost" type="button" id="latest-btn">跳到最新</button>
-                <label class="speed">
-                  <span>倍速</span>
-                  <select id="speed-select">
-                    <option value="0.5">0.5×</option>
-                    <option value="1" selected>1×</option>
-                    <option value="2">2×</option>
-                    <option value="4">4×</option>
-                  </select>
-                </label>
-                <input type="range" id="seek" min="0" max="0" step="1" value="0" aria-label="播放进度" />
-                <div class="frame-label">
-                  <span id="frame-label">帧 — / —</span>
-                  <span class="frame-sub" id="frame-sub">—</span>
-                </div>
-              </div>
-            </section>
+        <div class="dash-page">
+          <section class="dash-kpis" id="fe-kpis">
+            <div class="kpi-card">
+              <div class="kpi-label">并发实例</div>
+              <div class="kpi-value"><b id="fe-kpi-concurrency">1</b><span class="kpi-unit">路</span></div>
+              <div class="kpi-foot" id="fe-kpi-slots">max 4 · 空闲 —</div>
+            </div>
+            <div class="kpi-card accent-cyan">
+              <div class="kpi-label">运行中任务</div>
+              <div class="kpi-value"><b id="fe-kpi-running">0</b><span class="kpi-unit">个</span></div>
+              <div class="kpi-foot">独立无头进程</div>
+            </div>
+            <div class="kpi-card">
+              <div class="kpi-label">已完成任务</div>
+              <div class="kpi-value"><b id="fe-kpi-done">0</b><span class="kpi-unit">个</span></div>
+              <div class="kpi-foot">本次会话</div>
+            </div>
+            <div class="kpi-card accent-blue">
+              <div class="kpi-label">累计帧数</div>
+              <div class="kpi-value"><b id="fe-kpi-frames">0</b><span class="kpi-unit">帧</span></div>
+              <div class="kpi-foot">全部实例合计</div>
+            </div>
+            <div class="kpi-card accent-green">
+              <div class="kpi-label">实时帧率</div>
+              <div class="kpi-value"><b id="fe-kpi-fps">0.0</b><span class="kpi-unit">fps</span></div>
+              <div class="kpi-foot">最近 5s 收帧</div>
+            </div>
+            <div class="kpi-card accent-amber">
+              <div class="kpi-label">当前 tick</div>
+              <div class="kpi-value"><b id="fe-kpi-tick">0</b><span class="kpi-unit">t</span></div>
+              <div class="kpi-foot">正在观战实例</div>
+            </div>
+          </section>
 
-            <section class="card replay-card">
-              <header class="card-head">
-                <h2>回放库 <span class="demo-chip" hidden>演示数据</span></h2>
-                <div class="head-actions">
-                  <span class="chip" id="replay-count">0</span>
-                  <button class="btn btn-sm btn-ghost" type="button" id="replay-refresh">刷新</button>
-                  <button class="btn btn-sm btn-rwpp" type="button" id="rwpp-record-btn"
-                          title="在宿主机启动真实 Rusted Warfare 1.15 无头对局并录制（约 40–60s，完成后自动进回放库）">
-                    <span class="rwpp-rec-dot"></span>真机录制
-                  </button>
+          <section class="dash-charts">
+            <div class="chart-card">
+              <header><span>实时帧率</span><span class="chart-legend" id="legend-fps">全部实例 · 最近 60s</span></header>
+              <div class="chart-box"><canvas id="fe-chart-fps"></canvas></div>
+            </div>
+            <div class="chart-card">
+              <header><span>双方血量比</span><span class="chart-legend"><i class="dot own"></i>我方 <i class="dot enemy"></i>敌方</span></header>
+              <div class="chart-box"><canvas id="fe-chart-hp"></canvas></div>
+            </div>
+            <div class="chart-card">
+              <header><span>存活单位数</span><span class="chart-legend"><i class="dot own"></i>我方 <i class="dot enemy"></i>敌方</span></header>
+              <div class="chart-box"><canvas id="fe-chart-alive"></canvas></div>
+            </div>
+          </section>
+
+              <section class="card task-strip">
+                <header class="card-head">
+                  <h2>并发任务 <span class="chip" id="fe-task-count">0</span></h2>
+                  <span class="hint" id="fe-task-summary">点击任务卡切换沙盘观看的实例</span>
+                </header>
+                <div class="task-cards" id="fe-task-cards">
+                  <div class="empty">尚未启动并发实例</div>
                 </div>
-              </header>
-              <div class="replay-table-wrap">
-                <table class="replay-table">
-                  <thead>
-                    <tr>
-                      <th>名称</th>
-                      <th>Checkpoint</th>
-                      <th>对手</th>
-                      <th>模拟</th>
-                      <th>结果</th>
-                      <th>回报</th>
-                      <th>局数</th>
-                      <th>帧数</th>
-                      <th>时间</th>
-                      <th>操作</th>
-                    </tr>
-                  </thead>
-                  <tbody id="replay-body">
-                    <tr><td colspan="10" class="empty">尚未加载回放</td></tr>
-                  </tbody>
-                </table>
-              </div>
-            </section>
+              </section>
+
+          <div class="dash-lower">
+            <div class="dash-main">
+              <section class="card sandbox-stage">
+                <header class="card-head">
+                  <h2>实机沙盘 <span class="demo-chip" id="sandbox-demo-chip" hidden>演示数据</span></h2>
+                  <div class="head-actions">
+                    <span class="status-pill idle" id="infer-status">空闲</span>
+                    <button class="btn btn-sm btn-ghost" type="button" id="record-btn">● 录制视频</button>
+                  </div>
+                </header>
+                <div class="map-toolbar">
+                  <label class="mini-field" title="交战跟随：镜头跟随双方单位并优先保证坦克可见（必要时左右留边）；全场显示整张地图">
+                    <span>视野</span>
+                    <select id="view-select" disabled>
+                      <option value="battle" selected>交战跟随</option>
+                      <option value="full">全场</option>
+                    </select>
+                  </label>
+                  <span class="mini-field" title="视觉迷雾：以我方单位 vision_radius 为可见半径">
+                    <span>迷雾</span>
+                    <button class="toggle-btn" type="button" id="fog-toggle" aria-pressed="false" disabled>关</button>
+                  </span>
+                  <span class="mini-field" title="地图道具层（建筑/资源点，静态）">
+                    <span>道具</span>
+                    <button class="toggle-btn" type="button" id="items-toggle" aria-pressed="true" disabled>开</button>
+                  </span>
+                  <span class="map-status" id="map-status">等待实机推理 · 地形仅视觉</span>
+                </div>
+                <div class="stage-wrap" id="stage-wrap">
+                  <canvas id="sandbox-canvas"></canvas>
+                  <div class="rec-badge" id="rec-badge" hidden><span class="rec-dot"></span>REC</div>
+                </div>
+                <div class="player-bar">
+                  <button class="btn btn-sm" type="button" id="play-btn">暂停</button>
+                  <button class="btn btn-sm btn-ghost" type="button" id="latest-btn">跳到最新</button>
+                  <label class="speed">
+                    <span>倍速</span>
+                    <select id="speed-select">
+                      <option value="0.5">0.5×</option>
+                      <option value="1" selected>1×</option>
+                      <option value="2">2×</option>
+                      <option value="4">4×</option>
+                    </select>
+                  </label>
+                  <input type="range" id="seek" min="0" max="0" step="1" value="0" aria-label="播放进度" />
+                  <div class="frame-label">
+                    <span id="frame-label">帧 — / —</span>
+                    <span class="frame-sub" id="frame-sub">—</span>
+                  </div>
+                </div>
+              </section>
+
+              <section class="card replay-card">
+                <header class="card-head">
+                  <h2>回放库 <span class="demo-chip" hidden>演示数据</span></h2>
+                  <div class="head-actions">
+                    <span class="chip" id="replay-count">0</span>
+                    <button class="btn btn-sm btn-ghost" type="button" id="replay-refresh">刷新</button>
+                    <button class="btn btn-sm btn-rwpp" type="button" id="rwpp-record-btn"
+                            title="在宿主机启动真实 Rusted Warfare 1.15 无头对局并录制（约 40–60s）">
+                      <span class="rwpp-rec-dot"></span>真机录制
+                    </button>
+                  </div>
+                </header>
+                <div class="replay-table-wrap">
+                  <table class="replay-table">
+                    <thead>
+                      <tr>
+                        <th>名称</th><th>Checkpoint</th><th>对手</th><th>模拟</th><th>结果</th>
+                        <th>回报</th><th>局数</th><th>帧数</th><th>时间</th><th>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody id="replay-body">
+                      <tr><td colspan="10" class="empty">尚未加载回放</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+
+            <aside class="dash-side">
+              <section class="card fe-setup">
+                <header class="card-head"><h2>实机推理</h2></header>
+                <div class="fe-badge-row">
+                  <span class="rwpp-status" id="rwpp-status" data-state="unknown"
+                        title="宿主机真机服务（python scripts/rwpp_real_service.py）">
+                    <i class="rwpp-dot"></i><span class="rwpp-status-text" id="rwpp-status-text">真机服务检测中…</span>
+                  </span>
+                </div>
+                <div class="form-grid">
+                  <label class="field field-wide">
+                    <span>地图</span>
+                    <select id="map-select"><option value="">加载中…</option></select>
+                  </label>
+                  <label class="field field-wide">
+                    <span>策略</span>
+                    <select id="fe-policy">
+                      <option value="scripted">scripted（脚本 AI 驱动）</option>
+                      <option value="model" disabled>模型策略（PPO 接入中）</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>时长 ticks</span>
+                    <input id="fe-ticks" type="number" min="120" max="20000" step="60" value="2400" />
+                  </label>
+                  <label class="field">
+                    <span>并发实例</span>
+                    <select id="fe-concurrency">
+                      <option value="1" selected>1 路</option>
+                      <option value="2">2 路</option>
+                      <option value="3">3 路</option>
+                      <option value="4">4 路</option>
+                    </select>
+                  </label>
+                  <button class="btn btn-primary field-wide" type="button" id="fe-start-btn">开始实机推理</button>
+                </div>
+                <div class="hint-line" id="fe-infer-status">空闲：选择地图、时长与并发后开始</div>
+                <div class="hint-line subtle">每个并发实例是一个独立无头游戏进程，各自串行推进 tick；并发 = 多开进程。服务端槽位见 KPI 卡。</div>
+              </section>
+
+              <section class="card fe-slots-card">
+                <header class="card-head"><h2>服务端槽位</h2></header>
+                <div class="slots-row">
+                  <span class="slots-label">并行上限</span>
+                  <span class="slots-value" id="fe-slots-max">—</span>
+                </div>
+                <div class="slots-row">
+                  <span class="slots-label">当前空闲</span>
+                  <span class="slots-value" id="fe-slots-free">—</span>
+                </div>
+                <div class="slots-row">
+                  <span class="slots-label">宿主机运行中</span>
+                  <span class="slots-value" id="fe-slots-running">—</span>
+                </div>
+              </section>
+            </aside>
           </div>
-
-          <aside class="infer-side">
-            <section class="card">
-              <header class="card-head"><h2>实机推理</h2></header>
-              <div class="fe-badge-row">
-                <span class="rwpp-status" id="rwpp-status" data-state="unknown"
-                      title="宿主机真机服务（python scripts/rwpp_real_service.py）">
-                  <i class="rwpp-dot"></i><span class="rwpp-status-text" id="rwpp-status-text">真机服务检测中…</span>
-                </span>
-              </div>
-              <div class="form-grid">
-                <label class="field field-wide">
-                  <span>地图</span>
-                  <select id="map-select">
-                    <option value="">加载中…</option>
-                  </select>
-                </label>
-                <label class="field field-wide">
-                  <span>策略</span>
-                  <select id="fe-policy">
-                    <option value="scripted">scripted（脚本 AI 驱动）</option>
-                    <option value="model" disabled>模型策略（PPO 接入中）</option>
-                  </select>
-                </label>
-                <label class="field field-wide">
-                  <span>时长 ticks（120–20000）</span>
-                  <input id="fe-ticks" type="number" min="120" max="20000" step="60" value="2400" />
-                </label>
-                <button class="btn btn-primary field-wide" type="button" id="fe-start-btn">开始实机推理</button>
-              </div>
-              <div class="hint-line" id="fe-infer-status">空闲：选择地图与时长后开始</div>
-              <div class="hint-line subtle">真实游戏在宿主机无头运行，逐帧回传到本页沙盘；完成后的对局自动进入下方回放库。</div>
-            </section>
-
-            <section class="card">
-              <header class="card-head"><h2>战况</h2></header>
-              <div class="scoreboard">
-                <div class="score-side own"><span class="dot"></span>我方 <strong id="score-own">—</strong></div>
-                <div class="vs">VS</div>
-                <div class="score-side enemy"><span class="dot"></span>敌方 <strong id="score-enemy">—</strong></div>
-              </div>
-              <div class="hp-bars">
-                <div class="hp-row">
-                  <span>我方血量</span>
-                  <div class="hp-track"><i id="hp-own" style="width:0%"></i></div>
-                  <b id="hp-own-val">—</b>
-                </div>
-                <div class="hp-row">
-                  <span>敌方血量</span>
-                  <div class="hp-track enemy"><i id="hp-enemy" style="width:0%"></i></div>
-                  <b id="hp-enemy-val">—</b>
-                </div>
-              </div>
-              <dl class="meta-list compact">
-                <div><dt>对局</dt><dd id="sb-ckpt">—</dd></div>
-                <div><dt>对手 / 种子</dt><dd id="sb-opponent">—</dd></div>
-                <div><dt>对局进度</dt><dd id="sb-episode">—</dd></div>
-                <div><dt>帧缓存</dt><dd id="sb-frames">—</dd></div>
-              </dl>
-            </section>
-
-            <section class="card event-card">
-              <header class="card-head"><h2>实时事件</h2></header>
-              <div class="event-feed" id="event-feed">
-                <div class="empty">暂无事件</div>
-              </div>
-            </section>
-          </aside>
         </div>
       </section>
 
-      <!-- ================= Page 2 · 实机训练 ================= -->
+      <!-- ================= Page 2 · 实机训练大屏 ================= -->
       <section class="tab-panel" id="panel-train" role="tabpanel">
-        <div class="fe-train-grid">
-          <section class="card">
-            <header class="card-head"><h2>实机训练 · 数据采集</h2></header>
-            <div class="fe-badge-row">
-              <span class="rwpp-status" id="rwpp-status-train" data-state="unknown"
-                    title="宿主机真机服务（python scripts/rwpp_real_service.py）">
-                <i class="rwpp-dot"></i><span class="rwpp-status-text" id="rwpp-status-train-text">真机服务检测中…</span>
-              </span>
+        <div class="dash-page">
+          <section class="dash-kpis" id="fe-train-kpis">
+            <div class="kpi-card accent-cyan">
+              <div class="kpi-label">总进度</div>
+              <div class="kpi-value"><b id="fe-train-kpi-progress">0</b><span class="kpi-unit" id="fe-train-kpi-progress-total">/ 0 局</span></div>
+              <div class="kpi-foot">episodes_done / total</div>
             </div>
-            <div class="form-grid">
-              <label class="field field-wide">
-                <span>地图</span>
-                <select id="fe-train-map">
-                  <option value="">加载中…</option>
-                </select>
-              </label>
-              <label class="field field-wide">
-                <span>策略</span>
-                <select id="fe-train-policy">
-                  <option value="scripted">scripted（脚本 AI 驱动）</option>
-                  <option value="model" disabled>模型策略（PPO 接入中）</option>
-                </select>
-              </label>
-              <label class="field">
-                <span>局数 episodes（1–50）</span>
-                <input id="fe-train-episodes" type="number" min="1" max="50" step="1" value="3" />
-              </label>
-              <label class="field">
-                <span>每局 ticks</span>
-                <input id="fe-train-ticks" type="number" min="120" max="20000" step="60" value="1200" />
-              </label>
-              <button class="btn btn-primary field-wide" type="button" id="fe-train-start">开始实机训练</button>
+            <div class="kpi-card">
+              <div class="kpi-label">已用秒数</div>
+              <div class="kpi-value"><b id="fe-train-kpi-seconds">0</b><span class="kpi-unit">s</span></div>
+              <div class="kpi-foot">任务运行时长</div>
             </div>
-            <div class="hint-line" id="fe-train-hint">当前阶段：真机数据采集——脚本策略驱动真实 1.15 对局并录制训练数据；PPO 真机训练器接入后本页直接切换。</div>
+            <div class="kpi-card accent-amber">
+              <div class="kpi-label">并行线程</div>
+              <div class="kpi-value"><b id="fe-train-kpi-threads">2</b><span class="kpi-unit">路</span></div>
+              <div class="kpi-foot">每线程独立采集一局</div>
+            </div>
+            <div class="kpi-card">
+              <div class="kpi-label">每局平均耗时</div>
+              <div class="kpi-value"><b id="fe-train-kpi-avg">0.0</b><span class="kpi-unit">s</span></div>
+              <div class="kpi-foot">已完成局均值</div>
+            </div>
+            <div class="kpi-card accent-blue">
+              <div class="kpi-label">累计采集帧</div>
+              <div class="kpi-value"><b id="fe-train-kpi-frames">0</b><span class="kpi-unit">帧</span></div>
+              <div class="kpi-foot">episodes_metrics 汇总</div>
+            </div>
+            <div class="kpi-card accent-green">
+              <div class="kpi-label">累计模拟 tick</div>
+              <div class="kpi-value"><b id="fe-train-kpi-ticks">0</b><span class="kpi-unit">t</span></div>
+              <div class="kpi-foot">已完成局合计</div>
+            </div>
           </section>
 
-          <div class="fe-train-main">
-            <section class="card">
-              <header class="card-head">
-                <h2>进度</h2>
-                <span class="status-pill idle" id="fe-train-status">空闲</span>
-              </header>
-              <div class="fe-progress">
-                <div class="fe-progress-track"><i id="fe-train-progress" style="width:0%"></i></div>
-                <div class="fe-progress-meta">
-                  <span id="fe-train-episodes-label">0 / 0 局</span>
-                  <span id="fe-train-current">等待开始</span>
-                  <span id="fe-train-seconds">0s</span>
-                </div>
-              </div>
-            </section>
+          <section class="dash-charts">
+            <div class="chart-card">
+              <header><span>每局耗时</span><span class="chart-legend" id="legend-train-duration">秒 / 局</span></header>
+              <div class="chart-box"><canvas id="fe-train-chart-duration"></canvas></div>
+            </div>
+            <div class="chart-card">
+              <header><span>累计采集帧数</span><span class="chart-legend">帧（累计）</span></header>
+              <div class="chart-box"><canvas id="fe-train-chart-frames"></canvas></div>
+            </div>
+            <div class="chart-card">
+              <header><span>每局 tick 数</span><span class="chart-legend">tick / 局</span></header>
+              <div class="chart-box"><canvas id="fe-train-chart-ticks"></canvas></div>
+            </div>
+          </section>
 
-            <section class="card">
-              <header class="card-head">
-                <h2>数据集产物 <span class="chip" id="fe-train-artifact-count">0</span></h2>
-                <button class="btn btn-sm btn-ghost" type="button" id="fe-train-refresh">刷新</button>
-              </header>
-              <div class="replay-table-wrap">
-                <table class="replay-table fe-artifacts">
-                  <thead>
-                    <tr>
-                      <th>名称</th>
-                      <th>模拟</th>
-                      <th>结果</th>
-                      <th>帧数</th>
-                      <th>时间</th>
-                      <th>操作</th>
-                    </tr>
-                  </thead>
-                  <tbody id="fe-train-artifacts">
-                    <tr><td colspan="6" class="empty">训练完成后显示本任务录制的回放</td></tr>
-                  </tbody>
-                </table>
-              </div>
-            </section>
+          <div class="dash-lower">
+            <div class="dash-main">
+              <section class="card train-console">
+                <header class="card-head">
+                  <h2>训练控制台</h2>
+                  <span class="status-pill idle" id="fe-train-status">空闲</span>
+                </header>
+                <div class="fe-progress">
+                  <div class="fe-progress-track"><i id="fe-train-progress"></i></div>
+                  <div class="fe-progress-meta">
+                    <span id="fe-train-episodes-label">0 / 0 局</span>
+                    <span id="fe-train-current">等待开始</span>
+                    <span id="fe-train-seconds">0s</span>
+                    <span class="dash-summary" id="fe-train-summary">—</span>
+                  </div>
+                </div>
+              </section>
+
+              <section class="card">
+                <header class="card-head">
+                  <h2>数据集产物 <span class="chip" id="fe-train-artifact-count">0</span></h2>
+                  <button class="btn btn-sm btn-ghost" type="button" id="fe-train-refresh">刷新</button>
+                </header>
+                <div class="replay-table-wrap">
+                  <table class="replay-table fe-artifacts">
+                    <thead>
+                      <tr><th>名称</th><th>模拟</th><th>结果</th><th>帧数</th><th>时间</th><th>操作</th></tr>
+                    </thead>
+                    <tbody id="fe-train-artifacts">
+                      <tr><td colspan="6" class="empty">训练完成后显示本任务录制的回放</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section class="card">
+                <header class="card-head"><h2>实时日志 / 状态</h2><span class="hint" id="fe-train-log-status">—</span></header>
+                <pre class="dash-log" id="fe-train-log">等待训练任务…</pre>
+              </section>
+            </div>
+
+            <aside class="dash-side">
+              <section class="card fe-setup">
+                <header class="card-head"><h2>实机训练 · 数据采集</h2></header>
+                <div class="fe-badge-row">
+                  <span class="rwpp-status" id="rwpp-status-train" data-state="unknown"
+                        title="宿主机真机服务（python scripts/rwpp_real_service.py）">
+                    <i class="rwpp-dot"></i><span class="rwpp-status-text" id="rwpp-status-train-text">真机服务检测中…</span>
+                  </span>
+                </div>
+                <div class="form-grid">
+                  <label class="field field-wide">
+                    <span>地图</span>
+                    <select id="fe-train-map"><option value="">加载中…</option></select>
+                  </label>
+                  <label class="field field-wide">
+                    <span>策略</span>
+                    <select id="fe-train-policy">
+                      <option value="scripted">scripted（脚本 AI 驱动）</option>
+                      <option value="model" disabled>模型策略（PPO 接入中）</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>局数 episodes</span>
+                    <input id="fe-train-episodes" type="number" min="1" max="50" step="1" value="3" />
+                  </label>
+                  <label class="field">
+                    <span>每局 ticks</span>
+                    <input id="fe-train-ticks" type="number" min="120" max="20000" step="60" value="1200" />
+                  </label>
+                  <label class="field field-wide">
+                    <span>并发线程</span>
+                    <select id="fe-train-concurrency">
+                      <option value="1">1 路（串行）</option>
+                      <option value="2" selected>2 路</option>
+                      <option value="3">3 路</option>
+                      <option value="4">4 路</option>
+                    </select>
+                  </label>
+                  <button class="btn btn-primary field-wide" type="button" id="fe-train-start">开始实机训练</button>
+                </div>
+                <div class="hint-line" id="fe-train-hint">并行跑多个真实游戏进程，每线程独立采集一局；当前阶段为真机数据采集。</div>
+              </section>
+            </aside>
           </div>
         </div>
       </section>

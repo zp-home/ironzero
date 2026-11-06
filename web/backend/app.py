@@ -85,6 +85,7 @@ class RwppRecordRequest(BaseModel):
     policy: str = Field(default="scripted", pattern="^(scripted|none)$")
     map_name: str | None = Field(default=None, max_length=128)
     episodes: int = Field(default=1, ge=1, le=50)
+    concurrency: int = Field(default=1, ge=1, le=4)
 
 
 # ----------------------------------------------------------------------
@@ -660,8 +661,15 @@ def _rwpp_call(path: str, payload: dict[str, Any] | None = None, timeout: float 
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")
-        raise HTTPException(status_code=502, detail=f"host rwpp service error: {detail}") from exc
+        raw = exc.read().decode("utf-8", "replace")
+        try:
+            detail = json.loads(raw).get("error") or raw
+        except (ValueError, AttributeError):
+            detail = raw
+        # Preserve actionable client errors (busy slots, bad payload) instead of
+        # masking them as a gateway failure.
+        status = exc.code if exc.code in (400, 404, 409, 429) else 502
+        raise HTTPException(status_code=status, detail=f"host rwpp service error: {detail}") from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             status_code=503,
@@ -684,6 +692,7 @@ def rwpp_record(request: RwppRecordRequest) -> dict[str, Any]:
 def rwpp_infer(request: RwppRecordRequest) -> dict[str, Any]:
     payload = request.model_dump()
     payload.pop("episodes", None)
+    payload.pop("concurrency", None)
     return _rwpp_call("/infer", payload, timeout=20.0)
 
 
@@ -709,6 +718,15 @@ def rwpp_infer_frames(job_id: str, after: int = Query(default=0, ge=0)) -> dict[
         "status": job.get("status"),
         "job": {key: job.get(key) for key in ("id", "kind", "status", "episodes_done", "episodes_total", "seconds", "replay_path", "frames_file")},
     }
+
+
+@app.get("/api/rwpp/jobs")
+def rwpp_jobs() -> dict[str, Any]:
+    """Recent real-game jobs (running first) for the dashboard cards."""
+    payload = _rwpp_call("/jobs", timeout=10.0)
+    jobs = payload.get("jobs", [])
+    jobs.sort(key=lambda job: (job.get("status") != "running", job.get("started_at") or ""), reverse=True)
+    return {"jobs": jobs}
 
 
 @app.get("/api/rwpp/jobs/{job_id}")

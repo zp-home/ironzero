@@ -87,18 +87,22 @@ python -m http.server 8000 --directory site
 一条命令启动平台（宿主机另需跑真机服务）：
 
 ```powershell
-python scripts\rwpp_real_service.py --port 8300     # 宿主机：真实 1.15 运行时 + IronZero 扩展
+python scripts\rwpp_real_service.py --port 8300 --max-parallel 4   # 宿主机：真实 1.15 运行时 + IronZero 扩展
 docker compose -f web/docker-compose.yml up -d --build
 start http://127.0.0.1:8000
 ```
 
-平台只保留两个主页面，都面向**真实《铁锈战争》1.15 无头对局**：
+平台只保留两个主页面，都面向**真实《铁锈战争》1.15 无头对局**，且都带监控大屏（KPI + 曲线）：
 
-- **实机推理**：选地图（73 张）+ 策略（scripted）+ 时长 → 宿主机拉起真实对局，动作桥驱动单位，帧实时回传；大沙盘按真实地图渲染、自动跟随、可录制 `.webm`
-- **实机训练**：选地图/局数/每局 ticks → 逐局真实对局数据采集，进度条 + 产物回放（播放跳回实机推理）
+- **实机推理**：选地图（73 张）+ 策略（scripted）+ 时长 + **并发实例 1..4** → 宿主机同时拉起 N 个独立真实对局，帧实时回传；大屏显示并发任务卡、实时帧率、双方血量/存活单位曲线，大沙盘按真实地图渲染、自动跟随、可录制 `.webm`
+- **实机训练**：选地图/局数/每局 ticks + **并发线程 1..4** → 并行跑多个真实游戏进程逐局采集，大屏显示进度 KPI、每局耗时柱状图、累计帧/tick 曲线 + 产物回放（播放跳回实机推理）
 - **真机回放**：每局落盘 `ironzero.replay/1`，回放库标注「真机」，点击即可按真实 Lake 地图播放
 
+> 并发说明：每个实例是一个独立无头游戏进程（独立 bridge 端口 5130+），游戏模拟本身单线程；并发提升的是批量采集吞吐，单局时长不变。实测 2 路并发推理 / 训练 2 局 `concurrency=2` 均无冲突（`python scripts/rwpp_concurrency_check.py` 可复验）。
+
 ![实机推理](docs/assets/platform_real_infer.png)
+
+![实机训练](docs/assets/platform_real_train.png)
 
 实机地图渲染需要先把本机 1.15 客户端资源复制到本地缓存（`.game_cache/`，已 gitignore，不提交不分发）：
 

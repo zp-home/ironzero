@@ -24,6 +24,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 RUNTIME = Path(r"E:\IronZeroBuild\rwpp-runtime-1.15")
@@ -98,10 +99,11 @@ def main(argv: list[str] | None = None) -> int:
     env["JAVA_HOME"] = str(JAVA_HOME)
     env["PATH"] = str(JAVA_HOME / "bin") + os.pathsep + env.get("PATH", "")
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    job_dir = Path(args.out_root) / f"real-rwpp-{stamp}"
+    unique = uuid.uuid4().hex[:6]
+    job_dir = Path(args.out_root) / f"real-rwpp-{stamp}-{unique}"
     replay_dir = job_dir / "replays"
     replay_dir.mkdir(parents=True, exist_ok=True)
-    server_log = Path("runs") / f"_rwpp_record_{stamp}.log"
+    server_log = Path("runs") / f"_rwpp_record_{stamp}_{unique}.log"
     server_log.parent.mkdir(parents=True, exist_ok=True)
     log = server_log.open("w", encoding="utf-8", errors="replace")
     process = subprocess.Popen(
@@ -225,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
             "return": 0.0,
             "source": "rwpp-bridge",
         }
-        replay_path = replay_dir / f"replay-rwpp-{stamp}.json"
+        replay_path = replay_dir / f"replay-rwpp-{stamp}-{unique}.json"
         replay_path.write_text(
             json.dumps(
                 {"schema": "ironzero.replay/1", "meta": meta, "episodes": [{"episode": 0}], "frames": frames},

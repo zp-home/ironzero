@@ -1291,3 +1291,288 @@ body::before {
   flex: 1 1 auto;
   min-height: 0;
 }
+
+
+/* ============================================================
+ * 指挥中心大屏（task-7）：KPI / 图表 / 任务卡 / 双页布局
+ * ============================================================ */
+.dash-page {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
+}
+
+.dash-kpis {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.kpi-card {
+  position: relative;
+  min-width: 0;
+  padding: 9px 12px 8px;
+  border: 1px solid rgba(56, 225, 255, 0.18);
+  border-radius: 10px;
+  background:
+    linear-gradient(180deg, rgba(12, 24, 40, 0.92), rgba(6, 12, 22, 0.94));
+  box-shadow: inset 0 0 0 1px rgba(56, 225, 255, 0.04), 0 0 18px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.kpi-card::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: linear-gradient(180deg, rgba(56, 225, 255, 0.9), rgba(26, 111, 212, 0.2));
+  opacity: 0.75;
+}
+
+.kpi-card.accent-blue::after { background: linear-gradient(180deg, #3fa9ff, rgba(63, 169, 255, 0.15)); }
+.kpi-card.accent-red::after { background: linear-gradient(180deg, #ff5a5a, rgba(255, 90, 90, 0.15)); }
+.kpi-card.accent-green::after { background: linear-gradient(180deg, #39e08b, rgba(57, 224, 139, 0.15)); }
+.kpi-card.accent-amber::after { background: linear-gradient(180deg, #ffc35c, rgba(255, 195, 92, 0.15)); }
+.kpi-card.accent-cyan::after { background: linear-gradient(180deg, #38e1ff, rgba(56, 225, 255, 0.15)); }
+
+.kpi-label {
+  font-size: 10px;
+  letter-spacing: 1.2px;
+  color: var(--muted-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kpi-value {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin-top: 1px;
+  font-family: "Consolas", "Cascadia Mono", "Courier New", monospace;
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+}
+
+.kpi-value b {
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.1;
+  color: #ecf9ff;
+  letter-spacing: 0.5px;
+  text-shadow: 0 0 14px rgba(56, 225, 255, 0.28);
+  white-space: nowrap;
+}
+
+.kpi-card.accent-blue .kpi-value b { color: #bfe3ff; text-shadow: 0 0 14px rgba(63, 169, 255, 0.35); }
+.kpi-card.accent-red .kpi-value b { color: #ffd0d0; text-shadow: 0 0 14px rgba(255, 90, 90, 0.3); }
+.kpi-card.accent-green .kpi-value b { color: #c9ffe6; text-shadow: 0 0 14px rgba(57, 224, 139, 0.3); }
+.kpi-card.accent-amber .kpi-value b { color: #ffe4b8; text-shadow: 0 0 14px rgba(255, 195, 92, 0.3); }
+
+.kpi-unit { font-size: 10px; color: var(--muted-2); white-space: nowrap; }
+.kpi-foot {
+  margin-top: 2px;
+  font-size: 9.5px;
+  color: var(--muted-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dash-charts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.chart-card {
+  min-width: 0;
+  padding: 8px 10px 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(7, 14, 24, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(56, 225, 255, 0.03);
+}
+
+.chart-card > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  letter-spacing: 0.8px;
+  color: #cfe8fb;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.chart-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 9.5px;
+  letter-spacing: 0.3px;
+  color: var(--muted-2);
+  white-space: nowrap;
+}
+
+.chart-legend .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; margin-right: 3px; }
+.chart-legend .dot.own { background: #3fa9ff; }
+.chart-legend .dot.enemy { background: #ff5a5a; }
+
+.chart-box { position: relative; height: 148px; min-width: 0; }
+.chart-box canvas { display: block; width: 100%; height: 100%; }
+
+.dash-lower {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 322px;
+  gap: 10px;
+  align-items: start;
+  min-width: 0;
+}
+
+.dash-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.dash-side { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+
+.dash-main .sandbox-stage { min-height: 600px; display: flex; flex-direction: column; }
+.dash-main .sandbox-stage .stage-wrap { flex: 1 1 auto; min-height: 340px; }
+
+.task-strip .card-head { border-bottom: none; }
+.task-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(188px, 1fr));
+  gap: 8px;
+  padding: 0 10px 10px;
+  max-height: 250px;
+  overflow: auto;
+}
+
+.task-card {
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  padding: 7px 9px;
+  background: rgba(9, 18, 30, 0.9);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  min-width: 0;
+}
+
+.task-card:hover { border-color: rgba(56, 225, 255, 0.45); }
+.task-card.active {
+  border-color: rgba(56, 225, 255, 0.75);
+  background: rgba(56, 225, 255, 0.08);
+  box-shadow: 0 0 12px rgba(56, 225, 255, 0.16);
+}
+.task-card.failed { border-color: rgba(255, 90, 90, 0.5); }
+
+.task-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+  color: #cfe8fb;
+  white-space: nowrap;
+}
+
+.task-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  margin-top: 5px;
+  font-family: "Consolas", monospace;
+  font-size: 10px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.fe-slots-card .slots-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px dashed rgba(56, 225, 255, 0.08);
+  font-size: 11px;
+  color: var(--muted);
+}
+.fe-slots-card .slots-row:last-child { border-bottom: none; }
+.slots-value { font-family: "Consolas", monospace; color: #cfe8fb; }
+
+.dash-summary { font-size: 10.5px; color: #7de3b0; }
+.dash-log {
+  margin: 0;
+  padding: 9px 12px;
+  max-height: 220px;
+  overflow: auto;
+  border-radius: 0 0 8px 8px;
+  background: rgba(4, 9, 16, 0.75);
+  color: #a9c6e2;
+  font-family: "Consolas", "Cascadia Mono", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.train-console .fe-progress { padding: 12px 12px 10px; }
+
+@media (max-width: 1466px) {
+  .dash-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .dash-lower { grid-template-columns: minmax(0, 1fr) 300px; }
+}
+
+@media (max-width: 1180px) {
+  .dash-lower { grid-template-columns: minmax(0, 1fr); }
+  .dash-side { flex-direction: row; flex-wrap: wrap; }
+  .dash-side > .card { flex: 1 1 300px; }
+  .dash-charts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 860px) {
+  .dash-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dash-charts { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* 禁止横向滚动 */
+.screen { overflow-x: hidden; }
+#panel-infer.active, #panel-train.active { overflow-x: hidden; }
+
+
+/* 任务卡条：放在图表下方、沙盘上方，单行常显 */
+.dash-page > .task-strip .task-cards {
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  max-height: none;
+  overflow: visible;
+  padding: 0 10px 10px;
+}
+.dash-page > .task-strip .task-card { padding: 6px 9px; }
+
+@media (max-width: 1466px) {
+  .chart-box { height: 120px; }
+  .kpi-value b { font-size: 22px; }
+  .kpi-card { padding: 7px 10px 6px; }
+  .dash-page > .task-strip .task-cards { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+}
+
+
+/* 大屏行高刚性：KPI/图表/任务卡不参与 flex 收缩 */
+.dash-page > .dash-kpis,
+.dash-page > .dash-charts,
+.dash-page > .task-strip {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+.dash-page > .task-strip > .card-head { flex: 0 0 auto; }
+.dash-page > .task-strip .task-cards { flex: 0 0 auto; }
+.dash-page > .dash-lower { flex: 1 1 auto; min-height: 0; }
+
+
+/* 沙盘画布加高，跟随相机按宽高比铺满 */
+.dash-main .sandbox-stage .stage-wrap { min-height: 520px; }
