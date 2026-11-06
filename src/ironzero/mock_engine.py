@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterable, Sequence
 
 from .micro_config import DEFAULT_CONFIG, MicroDuelConfig
+from .terrain import TerrainGrid
 
 ORDER_NAMES: dict[int, str] = {
     0: "idle",
@@ -39,6 +40,13 @@ ACTION_KINDS: tuple[str, ...] = (
 )
 
 TANK_TYPE_ID = 1
+
+# Terrain mode (real map) tuning. Arena mode never touches these values: with
+# ``terrain=None`` the engine keeps the exact original code path and numbers.
+TERRAIN_SPAWN_MARGIN_RATIO = 0.12  # spawn columns sit at 12% / 88% of map width
+TERRAIN_REPATH_TICKS = 20  # at most one A* re-plan per unit per 20 ticks
+TERRAIN_STUCK_LIMIT_TICKS = 30  # no progress for 0.5 s -> give up the order
+TERRAIN_MAX_PATH_NODES = 20000  # A* expansion cap per query
 
 # Rejection reasons mirror ironzero.protocol.ErrorCode on purpose.
 STALE_TICK = "STALE_TICK"
@@ -65,6 +73,40 @@ class Unit:
     target_id: int | None = None
     cooldown: int = 0
     alive: bool = True
+    # Terrain-mode only state (ignored in arena mode).
+    path: list[tuple[float, float]] | None = None
+    path_index: int = 0
+    path_goal: tuple[float, float] | None = None
+    path_goal_tile: tuple[int, int] | None = None
+    repath_at: int = 0
+    stuck_ticks: int = 0
+
+
+def make_terrain_config(
+    terrain: TerrainGrid,
+    config: MicroDuelConfig | None = None,
+) -> MicroDuelConfig:
+    """Return ``config`` rescaled to a real map's pixel dimensions.
+
+    The engine, the env encoder and the recorder all share this helper so the
+    observation normalisation, action grid projection and spawn logic agree on
+    the terrain map size. Arena configs are never modified.
+    """
+
+    base = config or DEFAULT_CONFIG
+    margin = round(terrain.width_px * TERRAIN_SPAWN_MARGIN_RATIO, 3)
+    # Real maps are much larger than the 1000 px arena: give the episode enough
+    # time for both sides to cross the map (2x the diagonal travel time).
+    diagonal = math.hypot(terrain.width_px, terrain.height_px)
+    travel_seconds = diagonal / max(1.0, base.unit_speed)
+    episode_ticks = max(base.episode_ticks, int(travel_seconds * 2.0 * base.tick_rate))
+    return replace(
+        base,
+        map_width=float(terrain.width_px),
+        map_height=float(terrain.height_px),
+        spawn_margin=margin,
+        episode_ticks=episode_ticks,
+    )
 
 
 class MicroDuelEngine:
@@ -74,8 +116,15 @@ class MicroDuelEngine:
         self,
         config: MicroDuelConfig | None = None,
         opponent: str | None = None,
+        terrain: TerrainGrid | None = None,
     ) -> None:
-        self.config = config or DEFAULT_CONFIG
+        self.terrain = terrain
+        base_config = config or DEFAULT_CONFIG
+        if terrain is not None:
+            # Terrain mode: the real map's pixel size replaces the arena size.
+            self.config = make_terrain_config(terrain, base_config)
+        else:
+            self.config = base_config
         self.opponent = opponent or self.config.opponent
         if self.opponent not in {"scripted", "idle", "random"}:
             raise ValueError(f"unknown opponent: {self.opponent}")
@@ -108,17 +157,78 @@ class MicroDuelEngine:
             "losses": {team: 0 for team in range(cfg.teams)},
         }
         per_team = cfg.units_per_team
+        if self.terrain is not None:
+            self._spawn_terrain_units()
+        else:
+            rows = max(1, math.ceil(per_team / 2))
+            spacing_y = min(72.0, (cfg.map_height - 2 * cfg.spawn_margin) / max(1, rows - 1)) if rows > 1 else 0.0
+            entity_id = 1
+            for team in range(cfg.teams):
+                side_x = cfg.spawn_margin if team == 0 else cfg.map_width - cfg.spawn_margin
+                for index in range(per_team):
+                    column = index % 2
+                    row = index // 2
+                    jitter = self._rng.uniform(-10.0, 10.0)
+                    x = side_x + (18.0 if team == 0 else -18.0) * column + jitter
+                    y = cfg.map_height / 2.0 + (row - (rows - 1) / 2.0) * spacing_y + jitter
+                    group = min(index // max(1, per_team // cfg.groups), cfg.groups - 1)
+                    self.units.append(
+                        Unit(
+                            entity_id=entity_id,
+                            team=team,
+                            group=group,
+                            x=x,
+                            y=y,
+                            max_hp=cfg.unit_hp,
+                            hp=cfg.unit_hp,
+                            tx=x,
+                            ty=y,
+                        )
+                    )
+                    entity_id += 1
+        self._phi_prev = self._potential()
+        self._pending_reward = 0.0
+
+    def _spawn_terrain_units(self) -> None:
+        """Spawn both teams on real passable ground, left vs right of the map.
+
+        Each unit gets a desired position (mirroring the arena layout, scaled to
+        map size) which is then snapped to the nearest passable tile *inside its
+        own half* of the map, so nobody starts in water and the two armies stay
+        on opposite sides. Jitter still comes from the seeded RNG, which keeps
+        spawns reproducible for a fixed ``(seed, terrain)``.
+        """
+
+        cfg = self.config
+        terrain = self.terrain
+        per_team = cfg.units_per_team
         rows = max(1, math.ceil(per_team / 2))
-        spacing_y = min(72.0, (cfg.map_height - 2 * cfg.spawn_margin) / max(1, rows - 1)) if rows > 1 else 0.0
+        margin = cfg.spawn_margin
+        vertical_span = max(1.0, cfg.map_height - 2.0 * margin)
+        spacing_y = min(cfg.map_height * 0.06, vertical_span / max(1, rows - 1)) if rows > 1 else 0.0
+        y_low = min(margin, cfg.map_height * 0.25)
+        y_high = max(cfg.map_height - margin, cfg.map_height * 0.75)
         entity_id = 1
         for team in range(cfg.teams):
-            side_x = cfg.spawn_margin if team == 0 else cfg.map_width - cfg.spawn_margin
+            left = team == 0
+            side_x = margin if left else cfg.map_width - margin
+            bounds = (
+                0.0 if left else cfg.map_width * 0.5,
+                y_low,
+                cfg.map_width * 0.5 if left else cfg.map_width,
+                y_high,
+            )
             for index in range(per_team):
                 column = index % 2
                 row = index // 2
                 jitter = self._rng.uniform(-10.0, 10.0)
-                x = side_x + (18.0 if team == 0 else -18.0) * column + jitter
-                y = cfg.map_height / 2.0 + (row - (rows - 1) / 2.0) * spacing_y + jitter
+                desired_x = side_x + (18.0 if left else -18.0) * column + jitter
+                desired_y = (
+                    cfg.map_height / 2.0
+                    + (row - (rows - 1) / 2.0) * spacing_y
+                    + jitter
+                )
+                x, y = terrain.nearest_passable_world(desired_x, desired_y, bounds=bounds)
                 group = min(index // max(1, per_team // cfg.groups), cfg.groups - 1)
                 self.units.append(
                     Unit(
@@ -134,8 +244,6 @@ class MicroDuelEngine:
                     )
                 )
                 entity_id += 1
-        self._phi_prev = self._potential()
-        self._pending_reward = 0.0
 
     def alive_units(self, team: int | None = None) -> list[Unit]:
         return [u for u in self.units if u.alive and (team is None or u.team == team)]
@@ -190,12 +298,17 @@ class MicroDuelEngine:
                 return INVALID_MESSAGE
             if not (0.0 <= x <= self.config.map_width and 0.0 <= y <= self.config.map_height):
                 return POSITION_BLOCKED
+            if self.terrain is not None:
+                # A target inside water means "move to the nearest shore".
+                x, y = self.terrain.nearest_passable_world(x, y)
             order = 1 if kind == "move_group" else 2
             for member in members:
                 member.order = order
                 member.tx = x
                 member.ty = y
                 member.target_id = None
+            if self.terrain is not None:
+                self._assign_group_path(members, (x, y))
             return None
 
         if kind == "attack_target":
@@ -208,6 +321,8 @@ class MicroDuelEngine:
             for member in members:
                 member.order = 3
                 member.target_id = target_id
+            if self.terrain is not None:
+                self._assign_group_path(members, (target.x, target.y))
             return None
 
         if kind == "stop":
@@ -216,6 +331,7 @@ class MicroDuelEngine:
                 member.target_id = None
                 member.tx = member.x
                 member.ty = member.y
+                self._reset_unit_path(member)
             return None
 
         # hold
@@ -224,6 +340,7 @@ class MicroDuelEngine:
             member.target_id = None
             member.tx = member.x
             member.ty = member.y
+            self._reset_unit_path(member)
         return None
 
     # ------------------------------------------------------------------
@@ -285,19 +402,33 @@ class MicroDuelEngine:
             return None
         if unit.order == 3 and unit.target_id is not None:
             target = self.unit_by_id(unit.target_id)
-            if target is not None and target.alive:
+            if target is not None and target.alive and self._visible_to(target, unit.team):
                 return target
             unit.order = 0
             unit.target_id = None
+            self._reset_unit_path(unit)
         best: Unit | None = None
         best_dist = math.inf
         for enemy in self.alive_units(1 - unit.team):
+            if not self._visible_to(enemy, unit.team):
+                continue
             dist = self._distance(unit, enemy)
             if dist < best_dist:
                 best, best_dist = enemy, dist
         return best
 
+    def _visible_to(self, target: Unit, team: int) -> bool:
+        """Fog of war check: is ``target`` within vision of any unit of ``team``?"""
+
+        radius = self.config.vision_radius
+        if radius <= 0.0:
+            return True
+        return any(self._distance(observer, target) <= radius for observer in self.alive_units(team))
+
     def _move(self, unit: Unit) -> None:
+        if self.terrain is not None:
+            self._move_terrain(unit)
+            return
         cfg = self.config
         speed = cfg.unit_speed / cfg.tick_rate
         if unit.order == 0:
@@ -327,6 +458,193 @@ class MicroDuelEngine:
         unit.y += dy / distance * step
         unit.x = _clamp(unit.x, 0.0, cfg.map_width)
         unit.y = _clamp(unit.y, 0.0, cfg.map_height)
+
+    # ------------------------------------------------------------------
+    # Terrain-mode movement (A* waypoint following with water collision)
+    # ------------------------------------------------------------------
+    def _move_terrain(self, unit: Unit) -> None:
+        cfg = self.config
+        terrain = self.terrain
+        assert terrain is not None
+        speed = cfg.unit_speed / cfg.tick_rate
+        if unit.order == 0 or unit.order == 4:
+            return
+
+        target: Unit | None = None
+        if unit.order == 3:
+            if unit.target_id is None:
+                unit.order = 0
+                return
+            target = self.unit_by_id(unit.target_id)
+            if target is None or not target.alive:
+                unit.order = 0
+                unit.target_id = None
+                self._reset_unit_path(unit)
+                return
+            stop_at = cfg.attack_range * 0.85
+            if self._distance(unit, target) <= stop_at:
+                self._reset_unit_path(unit)
+                return
+            goal = (target.x, target.y)
+        else:
+            stop_at = 2.0
+            goal = (unit.tx, unit.ty)
+            if math.hypot(goal[0] - unit.x, goal[1] - unit.y) <= stop_at:
+                # Mirrors arena semantics: attack_move completes, plain move
+                # keeps its order (plain move never auto-engages).
+                if unit.order == 2:
+                    unit.order = 0
+                self._reset_unit_path(unit)
+                return
+
+        # (Re)plan lazily: at order time a path is already installed, this only
+        # fires when the path was consumed, became stale, or failed to exist.
+        need_path = unit.path is None or unit.path_index >= len(unit.path)
+        if not need_path and self._path_stale(unit, goal):
+            need_path = True
+        if need_path and self.tick >= unit.repath_at:
+            self._repath_terrain(unit, goal)
+
+        if unit.path is not None and unit.path_index < len(unit.path):
+            waypoint = unit.path[unit.path_index]
+            moved, arrived = self._step_toward(unit, waypoint[0], waypoint[1], speed)
+            if arrived:
+                unit.path_index += 1
+        else:
+            # A* failed (no route): straight-line fallback with wall sliding.
+            moved, arrived = self._step_toward(unit, goal[0], goal[1], speed)
+            if arrived and unit.order == 3:
+                self._reset_unit_path(unit)
+
+        if moved:
+            unit.stuck_ticks = 0
+        else:
+            unit.stuck_ticks += 1
+            if unit.stuck_ticks > TERRAIN_STUCK_LIMIT_TICKS:
+                # No walkable route for half a second: stop and drop the order.
+                unit.order = 0
+                unit.target_id = None
+                unit.tx = unit.x
+                unit.ty = unit.y
+                unit.stuck_ticks = 0
+                self._reset_unit_path(unit)
+
+    def _assign_group_path(
+        self,
+        members: Sequence[Unit],
+        goal: tuple[float, float],
+    ) -> None:
+        """Plan once for the squad anchor and let the group share the waypoints.
+
+        Group members start within a tile or two of each other, so one A* per
+        group keeps terrain pathing cheap (4 A* per broadcast order at most)
+        while each tank still walks the path with its own collision checks.
+        """
+
+        assert self.terrain is not None
+        anchor = members[0]
+        path = self.terrain.find_path(
+            (anchor.x, anchor.y),
+            goal,
+            max_nodes=TERRAIN_MAX_PATH_NODES,
+            exact_goal=True,
+        )
+        goal_tile = self.terrain.world_to_tile(*goal)
+        for member in members:
+            member.path = path
+            member.path_index = 0
+            member.path_goal = goal
+            member.path_goal_tile = goal_tile
+            member.repath_at = self.tick + TERRAIN_REPATH_TICKS
+            member.stuck_ticks = 0
+
+    def _repath_terrain(self, unit: Unit, goal: tuple[float, float]) -> None:
+        assert self.terrain is not None
+        path = self.terrain.find_path(
+            (unit.x, unit.y),
+            goal,
+            max_nodes=TERRAIN_MAX_PATH_NODES,
+            exact_goal=True,
+        )
+        unit.path = path
+        unit.path_index = 0
+        unit.path_goal = goal
+        unit.path_goal_tile = self.terrain.world_to_tile(*goal)
+        unit.repath_at = self.tick + TERRAIN_REPATH_TICKS
+
+    def _path_stale(self, unit: Unit, goal: tuple[float, float]) -> bool:
+        assert self.terrain is not None
+        if unit.path_goal is None:
+            return True
+        if unit.order == 3:
+            return unit.path_goal_tile != self.terrain.world_to_tile(*goal)
+        return math.hypot(goal[0] - unit.path_goal[0], goal[1] - unit.path_goal[1]) > 0.5
+
+    @staticmethod
+    def _reset_unit_path(unit: Unit) -> None:
+        unit.path = None
+        unit.path_index = 0
+        unit.path_goal = None
+        unit.path_goal_tile = None
+        unit.repath_at = 0
+        unit.stuck_ticks = 0
+
+    def _step_toward(
+        self,
+        unit: Unit,
+        target_x: float,
+        target_y: float,
+        step: float,
+    ) -> tuple[bool, bool]:
+        """Move ``unit`` at most ``step`` px toward a point, never into water.
+
+        Returns ``(moved, arrived)``. The full step is tried first, then the
+        dominant axis alone (wall sliding), then a half step and a quarter step.
+        Every accepted position is validated against the blocked mask, so a unit
+        can never walk into a water tile even with a large per-tick step.
+        """
+
+        assert self.terrain is not None
+        dx = target_x - unit.x
+        dy = target_y - unit.y
+        distance = math.hypot(dx, dy)
+        if distance <= 1e-9:
+            return (False, True)
+        step = min(step, distance)
+        head_x = dx / distance
+        head_y = dy / distance
+        if self._try_offset(unit, head_x * step, head_y * step):
+            return (True, step >= distance - 1e-9)
+        # Slide along the dominant axis at full speed (capped by the remaining
+        # axis distance so it cannot oscillate around the goal): the classic
+        # "walk along the shore" behaviour when the direct heading is blocked.
+        axis_step_x = math.copysign(min(abs(dx), step), dx) if dx != 0.0 else 0.0
+        axis_step_y = math.copysign(min(abs(dy), step), dy) if dy != 0.0 else 0.0
+        offsets: list[tuple[float, float]] = []
+        if abs(head_x) >= abs(head_y):
+            offsets.append((axis_step_x, 0.0))
+            offsets.append((0.0, axis_step_y))
+        else:
+            offsets.append((0.0, axis_step_y))
+            offsets.append((axis_step_x, 0.0))
+        offsets.append((head_x * step * 0.5, head_y * step * 0.5))
+        offsets.append((head_x * step * 0.25, head_y * step * 0.25))
+        for offset_x, offset_y in offsets:
+            if offset_x == 0.0 and offset_y == 0.0:
+                continue
+            if self._try_offset(unit, offset_x, offset_y):
+                return (True, False)
+        return (False, False)
+
+    def _try_offset(self, unit: Unit, offset_x: float, offset_y: float) -> bool:
+        assert self.terrain is not None
+        new_x = unit.x + offset_x
+        new_y = unit.y + offset_y
+        if self.terrain.is_blocked_world(new_x, new_y):
+            return False
+        unit.x = _clamp(new_x, 0.0, self.config.map_width)
+        unit.y = _clamp(new_y, 0.0, self.config.map_height)
+        return True
 
     @staticmethod
     def _distance(a: Unit, b: Unit) -> float:
@@ -383,6 +701,45 @@ class MicroDuelEngine:
     # ------------------------------------------------------------------
     # Scripted opponents
     # ------------------------------------------------------------------
+    def scripted_actions(self, team: int = 0) -> list[dict[str, Any]]:
+        """Deterministic "attack the nearest enemy" orders for ``team``.
+
+        Under fog of war the scripted AI cannot target what it cannot see, so it
+        advances toward the nearest enemy position with an attack-move order and
+        switches to an explicit attack once the target is visible.
+        """
+
+        if self.done:
+            return []
+        own = self.alive_units(team)
+        enemies = self.alive_units(1 - team)
+        if not own or not enemies:
+            return []
+        actions: list[dict[str, Any]] = []
+        fog = self.config.vision_radius > 0.0
+        for group in sorted({unit.group for unit in own}):
+            members = [unit for unit in own if unit.group == group]
+            anchor = members[0]
+            nearest = min(enemies, key=lambda target: self._distance(anchor, target))
+            if fog and not self._visible_to(nearest, team):
+                actions.append(
+                    {
+                        "kind": "attack_move",
+                        "unit_group": group,
+                        "x": nearest.x,
+                        "y": nearest.y,
+                    }
+                )
+            else:
+                actions.append(
+                    {
+                        "kind": "attack_target",
+                        "unit_group": group,
+                        "target_entity_id": nearest.entity_id,
+                    }
+                )
+        return actions
+
     def _opponent_actions(self, team: int = 0) -> list[dict[str, Any]]:
         if self.done:
             return []
@@ -421,20 +778,8 @@ class MicroDuelEngine:
                     actions.append({"kind": kind, "unit_group": group})
                 _ = member
             return actions
-        # scripted aggressor: every group focuses the nearest enemy
-        actions = []
-        for group in sorted({u.group for u in own}):
-            members = [u for u in own if u.group == group]
-            anchor = members[0]
-            nearest = min(targets, key=lambda t: self._distance(anchor, t))
-            actions.append(
-                {
-                    "kind": "attack_target",
-                    "unit_group": group,
-                    "target_entity_id": nearest.entity_id,
-                }
-            )
-        return actions
+        # scripted aggressor: advance/target exactly like scripted_actions()
+        return self.scripted_actions(enemy_team)
 
     # ------------------------------------------------------------------
     # Observation payload (shape-compatible with ironzero/1 messages)
@@ -443,12 +788,16 @@ class MicroDuelEngine:
         cfg = self.config
         own = self.alive_units(team)
         enemies = self.alive_units(1 - team)
+        if cfg.vision_radius > 0.0:
+            enemies = [unit for unit in enemies if self._visible_to(unit, team)]
         own_hp = sum(u.hp for u in own)
         enemy_hp = sum(u.hp for u in enemies)
         return {
             "tick": self.tick,
             "game_time": self.tick / cfg.tick_rate,
             "controlled_team": team,
+            "fog": cfg.vision_radius > 0.0,
+            "vision_radius": cfg.vision_radius,
             "global_state": {
                 "unit_count": len(own),
                 "building_count": 0,
@@ -551,8 +900,14 @@ def _clamp(value: float, low: float, high: float) -> float:
 class MicroDuelAdapter:
     """Game-side adapter interface shared by the env and the TCP bridge."""
 
-    def __init__(self, config: MicroDuelConfig | None = None, opponent: str | None = None) -> None:
-        self.engine = MicroDuelEngine(config=config, opponent=opponent)
+    def __init__(
+        self,
+        config: MicroDuelConfig | None = None,
+        opponent: str | None = None,
+        terrain: TerrainGrid | None = None,
+    ) -> None:
+        self.engine = MicroDuelEngine(config=config, opponent=opponent, terrain=terrain)
+        self.terrain = terrain
         self.opponent = self.engine.opponent
         self.episode_id: str = "ep-0"
 

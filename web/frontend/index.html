@@ -220,6 +220,14 @@
                   <option value="full">全场</option>
                 </select>
               </label>
+              <span class="mini-field" title="视觉迷雾：以我方单位 vision_radius 为可见半径，敌方仅进入视野可见">
+                <span>迷雾</span>
+                <button class="toggle-btn" type="button" id="fog-toggle" aria-pressed="false" disabled>关</button>
+              </span>
+              <span class="mini-field" title="地图道具层（建筑/资源点/树木，来自地图静态数据；动态建造与采矿尚未模拟）">
+                <span>道具</span>
+                <button class="toggle-btn" type="button" id="items-toggle" aria-pressed="true" disabled>开</button>
+              </span>
               <span class="map-status" id="map-status">竞技场模式 · 抽象渲染</span>
             </div>
             <div class="stage-wrap" id="stage-wrap">
@@ -256,6 +264,13 @@
                     <option value="">加载中…</option>
                   </select>
                 </label>
+                <label class="field field-wide">
+                  <span>模拟</span>
+                  <select id="infer-sim" name="sim_mode">
+                    <option value="arena">竞技场（抽象）</option>
+                    <option value="terrain">实机地形（A* 绕水）</option>
+                  </select>
+                </label>
                 <label class="field">
                   <span>局数</span>
                   <input id="episodes-input" name="episodes" type="number" min="1" max="50" step="1" value="1" />
@@ -278,6 +293,7 @@
                     <option value="greedy">greedy</option>
                     <option value="sample">sample</option>
                     <option value="random">random</option>
+                    <option value="scripted">scripted 观战</option>
                   </select>
                 </label>
                 <button class="btn btn-primary field-wide" type="submit" id="infer-btn">开始推理</button>
@@ -339,6 +355,7 @@
                   <th>名称</th>
                   <th>Checkpoint</th>
                   <th>对手</th>
+                  <th>模拟</th>
                   <th>结果</th>
                   <th>回报</th>
                   <th>局数</th>
@@ -348,7 +365,7 @@
                 </tr>
               </thead>
               <tbody id="replay-body">
-                <tr><td colspan="9" class="empty">尚未加载回放</td></tr>
+                <tr><td colspan="10" class="empty">尚未加载回放</td></tr>
               </tbody>
             </table>
           </div>

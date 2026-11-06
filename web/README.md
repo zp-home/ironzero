@@ -75,15 +75,16 @@ checkpoint.pt   模型权重
 
 ### 对局沙盘（人工观测 agent 对打）
 
-- 选择 checkpoint（列表来自 `runs/**/checkpoint.pt`）、局数、对手、随机种子、动作模式（贪婪/采样/随机）
-- 后端逐帧推流，前端 canvas 实时渲染：坦克、血条、编号、指令箭头、shot 弹道、kill 爆炸
-- 支持播放 / 暂停 / 0.5–4 倍速 / 进度条 / 跳到最新
-- **实机地图渲染**：从 1.15 游戏资源解析 `.tmx` 地图与 tileset 图集，按真实地形绘制战场，单位使用游戏原版坦克贴图（车体 + 炮塔），支持 73 张可用地图选择
-- **视野切换**：`battle`（战场 1200×1200 陆地窗口，1:1 像素，接近实机）与 `full`（整张地图全景）
-- 「录制视频」：`canvas.captureStream(30)` + `MediaRecorder`，浏览器直接下载 `.webm`
-- 每局结束自动写入回放库；回放会记住当时选择的地图
-
-> 地形目前只用于观战渲染：训练/推理的引擎仍是确定性微操（不读取地形做寻路和碰撞），界面上会标注「地形仅视觉」。
+- 选择 checkpoint / 局数 / 对手 / 种子 / 策略模式（greedy / sample / random / **scripted 观战**）
+- **两种模拟模式**：
+  - `微操竞技场（arena）`：训练用的 1000×1000 确定性微操，抽象/地图皮肤渲染
+  - `实机地形（terrain）`：读取真实 `.tmx` 水面掩码，单位在陆地出生、A* 绕水行军、碰撞不穿墙；地图尺寸即真实像素尺寸
+- **地图选择**：73 张可用地图（按 skirmish/normal/survival 排序），`battle` 视野自动跟随交战区域（1:1 像素）、`full` 全场视野
+- **迷雾开关**：视觉层按我方单位 `vision_radius` 开视野；引擎级迷雾（推理时过滤不可见敌人、目标不可选）可通过推理参数 `fog` 开启
+- **道具层开关**：建筑/资源点来自地图 Items/Units 层（静态），可单独显示/隐藏
+- 单位使用原版坦克贴图（车体 + 炮塔 + 阵营环 + 血条），shot 弹道/枪口闪光、kill 爆炸
+- 支持播放 / 暂停 / 0.5–4 倍速 / 进度条 / 跳到最新；「录制视频」导出 `.webm`
+- 每局自动写入回放库；回放记住 `sim_mode`、地图、迷雾视觉设置
 
 ### 回放库
 
@@ -139,7 +140,9 @@ runs/                   产物（已 gitignore）
 
 ![训练监控](../docs/assets/platform_training.png)
 
-![对局沙盘（实机地图 · 战场视野）](../docs/assets/platform_sandbox.png)
+![对局沙盘（实机地形 · 自动跟随）](../docs/assets/platform_sandbox.png)
+
+![迷雾（视野 260px）](../docs/assets/platform_sandbox_fog.png)
 
 ![对局沙盘（全场视野）](../docs/assets/platform_sandbox_full.png)
 

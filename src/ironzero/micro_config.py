@@ -50,6 +50,10 @@ class MicroDuelConfig:
     unit_radius: float = 11.0
     unit_price: float = 350.0
 
+    # Fog of war: 0 disables it (default). When > 0, enemies farther than this
+    # distance from every friendly unit are hidden from observations/targeting.
+    vision_radius: float = 0.0
+
     # Observation / action shape
     max_entities: int = 8
     target_slots: int = 9  # 8 enemy slots + "no target"

@@ -69,9 +69,12 @@ class InferRequest(BaseModel):
     episodes: int = Field(default=3, ge=1, le=50)
     opponent: str = Field(default="scripted", pattern="^(scripted|idle|random)$")
     seed: int = Field(default=42, ge=0)
-    mode: str = Field(default="greedy", pattern="^(greedy|sample|random)$")
+    mode: str = Field(default="greedy", pattern="^(greedy|sample|random|scripted)$")
     max_decisions: int = Field(default=400, ge=10, le=2000)
     map_id: str = Field(default="", max_length=256)
+    sim_mode: str = Field(default="arena", pattern="^(arena|terrain)$")
+    fog: bool = Field(default=False)
+    vision_radius: float = Field(default=260.0, gt=0.0, le=5000.0)
 
 
 # ----------------------------------------------------------------------
@@ -408,11 +411,23 @@ def start_infer(request: InferRequest) -> dict[str, Any]:
         checkpoint = str(path)
     else:
         checkpoint = "random"
+
+    sim_mode = request.sim_mode
+    map_id = request.map_id.strip()
+    if sim_mode == "terrain" and not map_id:
+        raise HTTPException(status_code=400, detail="地形模拟需要先选择一张地图")
+    if map_id and sim_mode == "arena":
+        sim_mode = "terrain"
+
     job_id, job_dir = _new_job_dir("infer")
     replays = job_dir / "replays"
     config = request.model_dump()
     config["checkpoint"] = checkpoint
-    config["name"] = f"推理 {request.episodes} 局 × {request.opponent}"
+    config["sim_mode"] = sim_mode
+    config["name"] = (
+        f"推理 {request.episodes} 局 × {request.opponent}"
+        + (" · 地形" if sim_mode == "terrain" else " · 竞技场")
+    )
     command = [
         _python(),
         "-m",
@@ -438,10 +453,41 @@ def start_infer(request: InferRequest) -> dict[str, Any]:
         "--prefix",
         job_id,
     ]
-    if request.map_id:
-        command.extend(["--map-id", request.map_id])
+    if sim_mode == "terrain":
+        try:
+            map_payload = gamemaps.load_map(map_id)
+        except gamemaps.MapError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        blocked = gamemaps.blocked_mask(map_payload)
+        map_json = {
+            "id": map_payload["id"],
+            "name": map_payload["name"],
+            "width": map_payload["width"],
+            "height": map_payload["height"],
+            "tile_width": map_payload["tile_width"],
+            "tile_height": map_payload["tile_height"],
+            "width_px": map_payload["width_px"],
+            "height_px": map_payload["height_px"],
+            "blocked": blocked,
+        }
+        map_path = job_dir / "map.json"
+        map_path.write_text(json.dumps(map_json, ensure_ascii=False), encoding="utf-8")
+        config["map_id"] = map_id
+        config["map_name"] = map_payload["name"]
+        command.extend(["--sim-mode", "terrain", "--map-json", str(map_path)])
+    else:
+        # Arena mode keeps the historical worker command (no sim flags needed).
+        pass
+    if map_id:
+        command.extend(["--map-id", map_id])
+    if request.fog:
+        command.extend(["--fog", "--vision-radius", str(request.vision_radius)])
+        config["fog"] = True
+        config["vision_radius"] = request.vision_radius
+    else:
+        config["fog"] = False
     _spawn(job_id, job_dir, "infer", config, command)
-    return {"id": job_id, "status": "running", "dir": str(job_dir)}
+    return {"id": job_id, "status": "running", "dir": str(job_dir), "sim_mode": sim_mode}
 
 
 @app.get("/api/infer/{infer_id}")
@@ -493,6 +539,7 @@ def _replay_index(root: Path) -> list[dict[str, Any]]:
             continue
         meta = payload.get("meta") or {}
         relative = path.relative_to(root).as_posix()
+        map_meta = meta.get("map") or {}
         items.append(
             {
                 "id": relative,
@@ -506,6 +553,9 @@ def _replay_index(root: Path) -> list[dict[str, Any]]:
                 "frames": len(payload.get("frames", [])),
                 "created_at": meta.get("created_at"),
                 "mode": meta.get("mode"),
+                "sim_mode": meta.get("sim_mode", "arena"),
+                "map_id": map_meta.get("id"),
+                "map_name": map_meta.get("name"),
             }
         )
     items.sort(key=lambda item: (item.get("created_at") or "", item["id"]), reverse=True)

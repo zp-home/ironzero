@@ -207,12 +207,18 @@ function mulberry32(seed) {
 
 function normalizeMap(raw) {
   if (raw && typeof raw === 'object') {
+    const width = num(pickVal(raw, 'width_px', 'width', 'w'), 1000);
+    const height = num(pickVal(raw, 'height_px', 'height', 'h'), 1000);
     return {
-      width: Math.max(1, num(pickVal(raw, 'width', 'w'), 1000)),
-      height: Math.max(1, num(pickVal(raw, 'height', 'h'), 1000)),
+      width: Math.max(1, width),
+      height: Math.max(1, height),
+      id: raw.id || null,
+      name: raw.name || null,
+      tileWidth: num(pickVal(raw, 'tile_width', 'tileWidth'), 20),
+      tileHeight: num(pickVal(raw, 'tile_height', 'tileHeight'), 20),
     };
   }
-  return { width: 1000, height: 1000 };
+  return { width: 1000, height: 1000, id: null, name: null, tileWidth: 20, tileHeight: 20 };
 }
 
 /** 0 / 'own' / 'blue' → 'own'；1 / 'enemy' / 'red' → 'enemy' */
@@ -306,6 +312,9 @@ function normalizeReplay(raw) {
     episodes: numOrNull(pickVal(item, 'episodes')),
     frames: numOrNull(pickVal(item, 'frames')),
     created_at: pickVal(item, 'created_at', 'created') || null,
+    simMode: pickVal(item, 'sim_mode') === 'terrain' ? 'terrain' : 'arena',
+    mapId: pickVal(item, 'map_id') || ((item.map && item.map.id) || null),
+    mapName: pickVal(item, 'map_name') || ((item.map && item.map.name) || null),
   };
 }
 
@@ -350,9 +359,9 @@ function cacheEls() {
     'run-status', 'stop-btn', 'meta-run', 'meta-kind', 'meta-created', 'meta-config', 'meta-eval',
     'log-count', 'log-panel',
     'sandbox-demo-chip', 'infer-status', 'record-btn', 'stage-wrap', 'sandbox-canvas', 'rec-badge',
-    'map-select', 'view-select', 'map-status',
+    'map-select', 'view-select', 'map-status', 'fog-toggle', 'items-toggle',
     'play-btn', 'latest-btn', 'speed-select', 'seek', 'frame-label', 'frame-sub',
-    'infer-form', 'ckpt-select', 'episodes-input', 'infer-opponent', 'infer-seed', 'infer-mode', 'infer-btn', 'infer-hint',
+    'infer-form', 'ckpt-select', 'infer-sim', 'episodes-input', 'infer-opponent', 'infer-seed', 'infer-mode', 'infer-btn', 'infer-hint',
     'score-own', 'score-enemy', 'hp-own', 'hp-own-val', 'hp-enemy', 'hp-enemy-val',
     'sb-ckpt', 'sb-opponent', 'sb-episode', 'sb-frames', 'event-feed',
     'replay-count', 'replay-refresh', 'replay-body', 'toast-host',
@@ -382,12 +391,20 @@ function createSandboxState() {
     map: { width: 1000, height: 1000 },
     mapId: '',
     mapDetail: null,
-    terrain: null,
+    terrainView: null,
     terrainEntry: null,
     terrainLoading: false,
     terrainError: null,
     viewMode: 'battle',
     mapLoadToken: 0,
+    simMode: 'arena',
+    visionRadius: 260,
+    fog: false,
+    fogAvailable: false,
+    fogEnabled: false,
+    itemsEnabled: true,
+    mapLocked: false,
+    cameraRegion: null,
     meta: {},
     checkpoint: null,
     opponent: null,
@@ -1895,7 +1912,7 @@ function renderReplays() {
   if (!items.length) {
     const row = document.createElement('tr');
     const cell = document.createElement('td');
-    cell.colSpan = 9;
+    cell.colSpan = 10;
     cell.className = 'empty';
     cell.textContent = state.mode === 'demo' ? '暂无演示回放' : '尚无回放；运行一次推理后会自动入库';
     row.appendChild(cell);
@@ -1919,6 +1936,12 @@ function renderReplays() {
 
     const cellOpponent = document.createElement('td');
     cellOpponent.textContent = item.opponent || '—';
+
+    const cellSim = document.createElement('td');
+    const simTerrain = item.simMode === 'terrain';
+    cellSim.textContent = (simTerrain ? '地形' : '竞技场') + (simTerrain && item.mapName ? ' · ' + item.mapName : '');
+    cellSim.title = simTerrain ? ('实机地形模拟' + (item.mapName ? ' · ' + item.mapName : '')) : '抽象竞技场';
+    cellSim.className = 'cell-sim' + (simTerrain ? ' terrain' : '');
 
     const cellResult = document.createElement('td');
     const badge = document.createElement('span');
@@ -1965,6 +1988,7 @@ function renderReplays() {
     row.appendChild(cellName);
     row.appendChild(cellCheckpoint);
     row.appendChild(cellOpponent);
+    row.appendChild(cellSim);
     row.appendChild(cellResult);
     row.appendChild(cellReturn);
     row.appendChild(cellEpisodes);
@@ -2025,11 +2049,22 @@ async function openReplay(id) {
     sandbox.episodes = numOrNull(meta.episodes) === null ? 1 : meta.episodes;
     sandbox.results = [{ episode: num(meta.episode, 0), result: meta.result || null, ret: numOrNull(meta.return) }];
     sandbox.eventLog = collectFrameEvents(frames);
+    const simMode = meta.sim_mode === 'terrain' ? 'terrain' : 'arena';
+    const visionRadius = numOrNull(meta.vision_radius);
+    sandbox.simMode = simMode;
+    sandbox.visionRadius = visionRadius === null ? 260 : visionRadius;
+    sandbox.fog = meta.fog === true;
+    sandbox.fogAvailable = simMode === 'terrain' || sandbox.fog === true || visionRadius !== null;
+    sandbox.fogEnabled = sandbox.fog;
+    sandbox.itemsEnabled = true;
+    sandbox.mapLocked = simMode === 'terrain';
+    sandbox.cameraRegion = null;
+    const replayMapId = meta.map_id || (meta.map && meta.map.id) || '';
     if (els.sandboxDemoChip) els.sandboxDemoChip.hidden = state.mode !== 'demo';
-    if (meta.map_id) {
+    if (replayMapId) {
       if (!state.maps.ready) await loadMaps();
       if (state.maps.available) {
-        await selectMap(meta.map_id, { silent: true });
+        await selectMap(replayMapId, { silent: true });
       } else {
         syncMapSelect();
         syncMapStatus();
@@ -2037,6 +2072,10 @@ async function openReplay(id) {
     } else {
       syncMapSelect();
       syncMapStatus();
+    }
+    syncMapToggles();
+    if (sandbox.simMode === 'terrain' && !sandbox.mapDetail) {
+      toast('该地形回放缺少地图资源，暂按抽象网格回退渲染', 'error');
     }
     switchTab('sandbox');
     updatePlayerUi(true);
@@ -2091,18 +2130,28 @@ function applyInferStart(meta) {
   sandbox.opponent = meta.opponent || sandbox.opponent;
   sandbox.seed = numOrNull(meta.seed) !== null ? meta.seed : sandbox.seed;
   sandbox.episodes = numOrNull(meta.episodes) !== null ? meta.episodes : sandbox.episodes;
+  const simMode = meta.sim_mode === 'terrain' ? 'terrain' : 'arena';
+  const prevSim = sandbox.simMode;
+  sandbox.simMode = simMode;
+  const visionRadius = numOrNull(meta.vision_radius);
+  if (visionRadius !== null) sandbox.visionRadius = visionRadius;
+  sandbox.fog = meta.fog === true;
+  sandbox.fogAvailable = simMode === 'terrain' || sandbox.fog === true || visionRadius !== null;
+  if (!sandbox.fogAvailable) sandbox.fogEnabled = false;
+  sandbox.mapLocked = simMode === 'terrain';
+  sandbox.cameraRegion = null;
   const mapId = meta.map_id === undefined || meta.map_id === null ? null : String(meta.map_id);
-  if (mapId && mapId !== sandbox.mapId) {
-    if (state.maps.ready) {
-      if (state.maps.available) void selectMap(mapId, { silent: true });
-    } else {
-      void loadMaps().then(() => {
-        if (state.maps.available && mapId !== state.sandbox.mapId) {
-          void selectMap(mapId, { silent: true });
-        }
-      });
+  const applyMap = async () => {
+    if (mapId && mapId !== sandbox.mapId) {
+      if (!state.maps.ready) await loadMaps();
+      if (state.maps.available) await selectMap(mapId, { silent: true });
+    } else if (sandbox.mapDetail) {
+      await refreshTerrainView();
     }
-  }
+    syncMapToggles();
+    if (prevSim !== simMode && sandbox.mapDetail) await refreshTerrainView();
+  };
+  void applyMap().catch(() => {});
 }
 
 function applyInferBatch(batch, next) {
@@ -2175,6 +2224,13 @@ async function submitInfer(event) {
     toast('请选择 checkpoint（或选择随机策略）', 'error');
     return;
   }
+  const simMode = (els.inferSim && els.inferSim.value) === 'terrain' ? 'terrain' : 'arena';
+  const selectedMapId = state.sandbox.mapId || '';
+  const mapId = simMode === 'terrain' ? selectedMapId : '';
+  if (simMode === 'terrain' && !mapId) {
+    toast('实机地形模拟需要先选择地图（沙盘顶部「地图」下拉）', 'error');
+    return;
+  }
   const payload = {
     checkpoint: checkpoint,
     episodes: clampInt(els.episodesInput && els.episodesInput.value, 1, 50, 1),
@@ -2182,7 +2238,8 @@ async function submitInfer(event) {
     seed: clampInt(els.inferSeed && els.inferSeed.value, 0, 999999, 11),
     mode: (els.inferMode && els.inferMode.value) || 'greedy',
     max_decisions: 400,
-    map_id: state.sandbox.mapId || '',
+    map_id: mapId,
+    sim_mode: simMode,
   };
   if (els.inferBtn) {
     els.inferBtn.disabled = true;
@@ -2204,6 +2261,20 @@ async function submitInfer(event) {
     sandbox.opponent = payload.opponent;
     sandbox.seed = payload.seed;
     sandbox.episodes = payload.episodes;
+    sandbox.simMode = simMode;
+    sandbox.mapLocked = simMode === 'terrain';
+    sandbox.cameraRegion = null;
+    if (simMode === 'terrain') {
+      sandbox.fogAvailable = true;
+      if (simMode === 'terrain' && !sandbox.mapDetail && mapId && state.maps.available) {
+        await selectMap(mapId, { silent: true });
+      } else if (sandbox.mapDetail) {
+        await refreshTerrainView();
+      }
+    } else if (sandbox.mapDetail) {
+      await refreshTerrainView();
+    }
+    syncMapToggles();
     if (els.sandboxDemoChip) els.sandboxDemoChip.hidden = true;
     if (els.inferHint) els.inferHint.textContent = '推理任务已启动（' + id + '），正在接收实时帧…';
     switchTab('sandbox');
@@ -2350,9 +2421,17 @@ function resetSandbox(options) {
     state.sandbox.mapId = previous.mapId;
     state.sandbox.mapDetail = previous.mapDetail;
     state.sandbox.terrainEntry = previous.terrainEntry;
-    state.sandbox.terrain = previous.terrain;
+    state.sandbox.terrainView = previous.terrainView;
     state.sandbox.viewMode = previous.viewMode;
     state.sandbox.terrainLoading = false;
+    state.sandbox.simMode = previous.simMode;
+    state.sandbox.visionRadius = previous.visionRadius;
+    state.sandbox.fog = previous.fog;
+    state.sandbox.fogAvailable = previous.fogAvailable;
+    state.sandbox.fogEnabled = previous.fogEnabled;
+    state.sandbox.itemsEnabled = previous.itemsEnabled;
+    state.sandbox.mapLocked = previous.mapLocked;
+    state.sandbox.cameraRegion = null;
   }
   if (els.sandboxDemoChip) els.sandboxDemoChip.hidden = true;
   syncMapSelect();
@@ -2617,6 +2696,8 @@ function renderMapOptions() {
   }
   const exists = [...select.options].some((option) => option.value === current);
   select.value = exists ? current : '';
+  syncMapSelect();
+  syncMapToggles();
   syncMapStatus();
 }
 
@@ -2649,11 +2730,25 @@ function syncMapStatus() {
     setMapStatus('地图加载失败，已回退抽象渲染 · ' + sandbox.terrainError, 'bad');
     return;
   }
+  const modeLabel = sandbox.simMode === 'terrain' ? '地形模拟' : '竞技场';
   if (sandbox.mapDetail) {
-    setMapStatus('实机地图渲染 · 地形仅视觉 · ' + sandbox.mapDetail.name, 'ok');
+    let viewLabel;
+    if (sandbox.simMode === 'terrain') {
+      viewLabel = sandbox.viewMode === 'full' ? '全场' : '跟随交战区域';
+    } else {
+      viewLabel = sandbox.viewMode === 'full' ? '全场' : '战场 1:1';
+    }
+    const extras = [];
+    if (sandbox.fogEnabled) extras.push('迷雾');
+    if (sandbox.mapDetail && sandbox.itemsEnabled) extras.push('道具层');
+    setMapStatus(
+      modeLabel + ' · ' + (sandbox.mapDetail.name || '地图') + ' · ' + viewLabel
+        + (extras.length ? ' · ' + extras.join(' · ') : '') + ' · 地形仅视觉',
+      'ok'
+    );
     return;
   }
-  setMapStatus('竞技场模式 · 抽象渲染');
+  setMapStatus(modeLabel + ' · 抽象渲染');
 }
 
 function mapCrop(detail) {
@@ -2718,7 +2813,20 @@ function findTileset(tilesets, gid) {
   return null;
 }
 
-function renderTerrain(detail, region, scale, images) {
+function wholeMapRegion(detail) {
+  return {
+    x: 0,
+    y: 0,
+    width: Math.max(1, num(detail.width_px, 1000)),
+    height: Math.max(1, num(detail.height_px, 1000)),
+  };
+}
+
+function renderTerrain(detail, region, scale, images, options) {
+  const opts = options || {};
+  const layerNames = Array.isArray(opts.layers)
+    ? opts.layers.map((name) => String(name).toLowerCase())
+    : null;
   const tileW = num(detail.tile_width, 20);
   const tileH = num(detail.tile_height, 20);
   const canvas = document.createElement('canvas');
@@ -2727,8 +2835,10 @@ function renderTerrain(detail, region, scale, images) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return canvas;
   ctx.imageSmoothingEnabled = scale < 1;
-  ctx.fillStyle = '#0a141f';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  if (opts.background !== false) {
+    ctx.fillStyle = '#0a141f';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
 
   const tilesets = (detail.tilesets || []).slice().sort((left, right) => right.firstgid - left.firstgid);
   const columns = Math.max(1, num(detail.width, 1));
@@ -2739,6 +2849,10 @@ function renderTerrain(detail, region, scale, images) {
   const tileY1 = Math.min(rows - 1, Math.ceil((region.y + region.height) / tileH));
 
   for (const layer of detail.layers || []) {
+    if (layerNames) {
+      const name = String((layer && layer.name) || '').toLowerCase();
+      if (layerNames.indexOf(name) < 0) continue;
+    }
     const data = layer && layer.data;
     if (!Array.isArray(data)) continue;
     for (let ty = tileY0; ty <= tileY1; ty += 1) {
@@ -2785,18 +2899,177 @@ async function buildTerrainEntry(detail) {
   const entry = cached || {};
   entry.detail = detail;
   entry.images = images;
-  if (!entry.crop) entry.crop = renderTerrain(detail, crop, 1, images);
+  if (!entry.cropGround) {
+    entry.cropGround = renderTerrain(detail, crop, 1, images, { layers: ['Ground'] });
+  }
+  if (!entry.cropItems) {
+    entry.cropItems = renderTerrain(detail, crop, 1, images, { layers: ['Items', 'Units'], background: false });
+  }
   return entry;
 }
 
 function ensureFullTerrain(entry, detail) {
-  if (entry.full) return entry.full;
+  if (entry.fullGround && entry.fullItems) {
+    return { ground: entry.fullGround, items: entry.fullItems, scale: entry.fullScale };
+  }
   const width = Math.max(1, num(detail.width_px, 1000));
   const height = Math.max(1, num(detail.height_px, 1000));
   const scale = Math.min(1, 2048 / Math.max(width, height));
-  entry.full = renderTerrain(detail, { x: 0, y: 0, width: width, height: height }, scale, entry.images);
+  entry.fullGround = renderTerrain(detail, wholeMapRegion(detail), scale, entry.images, { layers: ['Ground'] });
+  entry.fullItems = renderTerrain(detail, wholeMapRegion(detail), scale, entry.images, {
+    layers: ['Items', 'Units'],
+    background: false,
+  });
   entry.fullScale = scale;
-  return entry.full;
+  return { ground: entry.fullGround, items: entry.fullItems, scale: scale };
+}
+
+function ensureTerrainMap(entry, detail) {
+  if (entry.mapGround && entry.mapItems) {
+    return { ground: entry.mapGround, items: entry.mapItems, scale: entry.mapScale };
+  }
+  const width = Math.max(1, num(detail.width_px, 1000));
+  const height = Math.max(1, num(detail.height_px, 1000));
+  const scale = Math.min(1, 3000 / Math.max(width, height));
+  entry.mapGround = renderTerrain(detail, wholeMapRegion(detail), scale, entry.images, { layers: ['Ground'] });
+  entry.mapItems = renderTerrain(detail, wholeMapRegion(detail), scale, entry.images, {
+    layers: ['Items', 'Units'],
+    background: false,
+  });
+  entry.mapScale = scale;
+  return { ground: entry.mapGround, items: entry.mapItems, scale: scale };
+}
+
+function updateTerrainView(sandbox) {
+  const detail = sandbox.mapDetail;
+  const entry = sandbox.terrainEntry;
+  if (!detail || !entry) {
+    sandbox.terrainView = null;
+    return;
+  }
+  if (sandbox.simMode === 'terrain') {
+    const map = ensureTerrainMap(entry, detail);
+    sandbox.terrainView = {
+      ground: map.ground,
+      items: map.items,
+      region: wholeMapRegion(detail),
+      scale: map.scale,
+    };
+    return;
+  }
+  if (sandbox.viewMode === 'full') {
+    const full = ensureFullTerrain(entry, detail);
+    sandbox.terrainView = {
+      ground: full.ground,
+      items: full.items,
+      region: wholeMapRegion(detail),
+      scale: full.scale,
+    };
+    return;
+  }
+  const crop = mapCrop(detail);
+  sandbox.terrainView = {
+    ground: entry.cropGround,
+    items: entry.cropItems,
+    region: crop,
+    scale: 1,
+  };
+}
+
+async function refreshTerrainView() {
+  const sandbox = state.sandbox;
+  if (!sandbox.mapDetail || !sandbox.terrainEntry) {
+    sandbox.terrainView = null;
+    syncMapStatus();
+    return;
+  }
+  const entry = sandbox.terrainEntry;
+  const heavy = (sandbox.simMode === 'terrain' && !entry.mapGround)
+    || (sandbox.simMode !== 'terrain' && sandbox.viewMode === 'full' && !entry.fullGround);
+  if (heavy) {
+    setMapStatus('地形渲染中…');
+    await new Promise((resolve) => setTimeout(resolve, 16));
+  }
+  updateTerrainView(sandbox);
+  sandbox.cameraRegion = null;
+  syncMapStatus();
+  syncMapSelect();
+  syncMapToggles();
+  drawSandbox();
+}
+
+function computeFollowRegion(sandbox, detail, units) {
+  const mapWidth = Math.max(1, num(detail.width_px, 1000));
+  const mapHeight = Math.max(1, num(detail.height_px, 1000));
+  const minWindow = Math.min(900, Math.max(200, Math.min(mapWidth, mapHeight)));
+  const margin = 400;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const unit of units) {
+    if (!Number.isFinite(unit.x) || !Number.isFinite(unit.y)) continue;
+    minX = Math.min(minX, unit.x);
+    minY = Math.min(minY, unit.y);
+    maxX = Math.max(maxX, unit.x);
+    maxY = Math.max(maxY, unit.y);
+  }
+  let target;
+  if (!Number.isFinite(minX) || !Number.isFinite(maxX)) {
+    target = sandbox.cameraRegion
+      ? { x: sandbox.cameraRegion.x, y: sandbox.cameraRegion.y, width: sandbox.cameraRegion.width, height: sandbox.cameraRegion.height }
+      : {
+          x: Math.max(0, (mapWidth - minWindow) / 2),
+          y: Math.max(0, (mapHeight - minWindow) / 2),
+          width: Math.min(mapWidth, minWindow),
+          height: Math.min(mapHeight, minWindow),
+        };
+  } else {
+    let windowWidth = Math.max(minWindow, (maxX - minX) + margin * 2);
+    let windowHeight = Math.max(minWindow, (maxY - minY) + margin * 2);
+    windowWidth = Math.min(mapWidth, windowWidth);
+    windowHeight = Math.min(mapHeight, windowHeight);
+    const centerX = clamp((minX + maxX) / 2, windowWidth / 2, mapWidth - windowWidth / 2);
+    const centerY = clamp((minY + maxY) / 2, windowHeight / 2, mapHeight - windowHeight / 2);
+    target = {
+      x: centerX - windowWidth / 2,
+      y: centerY - windowHeight / 2,
+      width: windowWidth,
+      height: windowHeight,
+    };
+  }
+  const previous = sandbox.cameraRegion;
+  if (!previous) {
+    sandbox.cameraRegion = { x: target.x, y: target.y, width: target.width, height: target.height };
+    return sandbox.cameraRegion;
+  }
+  const smoothing = 0.16;
+  const next = {
+    x: previous.x + (target.x - previous.x) * smoothing,
+    y: previous.y + (target.y - previous.y) * smoothing,
+    width: previous.width + (target.width - previous.width) * smoothing,
+    height: previous.height + (target.height - previous.height) * smoothing,
+  };
+  if (Math.abs(next.x - target.x) < 0.5 && Math.abs(next.y - target.y) < 0.5) {
+    next.x = target.x;
+    next.y = target.y;
+  }
+  if (Math.abs(next.width - target.width) < 0.5 && Math.abs(next.height - target.height) < 0.5) {
+    next.width = target.width;
+    next.height = target.height;
+  }
+  sandbox.cameraRegion = next;
+  return sandbox.cameraRegion;
+}
+
+function isUnitVisible(sandbox, unit, ownUnits) {
+  if (!sandbox.fogEnabled) return true;
+  if (unit.team === 'own') return true;
+  const radius = num(sandbox.visionRadius, 260);
+  for (const own of ownUnits) {
+    if (Math.hypot(unit.x - own.x, unit.y - own.y) <= radius) return true;
+  }
+  return false;
 }
 
 async function selectMap(mapId, options) {
@@ -2806,17 +3079,19 @@ async function selectMap(mapId, options) {
   if (!nextId) {
     sandbox.mapId = '';
     sandbox.mapDetail = null;
-    sandbox.terrain = null;
+    sandbox.terrainView = null;
     sandbox.terrainEntry = null;
     sandbox.terrainLoading = false;
     sandbox.terrainError = null;
     sandbox.viewMode = 'battle';
+    sandbox.cameraRegion = null;
     if (els.mapSelect) els.mapSelect.value = '';
     if (els.viewSelect) {
       els.viewSelect.value = 'battle';
       els.viewSelect.disabled = true;
     }
     syncMapStatus();
+    syncMapToggles();
     drawSandbox();
     return;
   }
@@ -2829,10 +3104,11 @@ async function selectMap(mapId, options) {
   sandbox.mapLoadToken = token;
   sandbox.mapId = nextId;
   sandbox.mapDetail = null;
-  sandbox.terrain = null;
+  sandbox.terrainView = null;
   sandbox.terrainEntry = null;
   sandbox.terrainError = null;
   sandbox.terrainLoading = true;
+  sandbox.cameraRegion = null;
   if (els.mapSelect) els.mapSelect.value = nextId;
   if (els.viewSelect) els.viewSelect.disabled = false;
   syncMapStatus();
@@ -2846,15 +3122,8 @@ async function selectMap(mapId, options) {
     if (sandbox.mapLoadToken !== token) return;
     sandbox.mapDetail = detail;
     sandbox.terrainEntry = entry;
-    sandbox.terrain = entry.crop;
     sandbox.terrainLoading = false;
-    if (sandbox.viewMode === 'full') {
-      setMapStatus('地形渲染中…');
-      await new Promise((resolve) => setTimeout(resolve, 16));
-      sandbox.terrain = ensureFullTerrain(entry, detail);
-    }
-    syncMapStatus();
-    drawSandbox();
+    await refreshTerrainView();
     if (!opts.silent) toast('已加载地图 · ' + (detail.name || nextId), 'ok');
   } catch (error) {
     if (sandbox.mapLoadToken !== token) return;
@@ -2863,9 +3132,11 @@ async function selectMap(mapId, options) {
     sandbox.mapDetail = null;
     sandbox.mapId = '';
     sandbox.terrainEntry = null;
+    sandbox.terrainView = null;
     if (els.mapSelect) els.mapSelect.value = '';
     if (els.viewSelect) els.viewSelect.disabled = true;
     syncMapStatus();
+    syncMapToggles();
     drawSandbox();
     toast('地图加载失败，已回退抽象渲染：' + error.message, 'error');
   }
@@ -2875,26 +3146,45 @@ async function applyViewMode(mode) {
   const sandbox = state.sandbox;
   sandbox.viewMode = mode === 'full' ? 'full' : 'battle';
   if (els.viewSelect) els.viewSelect.value = sandbox.viewMode;
-  const entry = sandbox.terrainEntry;
-  if (sandbox.mapDetail && entry && sandbox.viewMode === 'full' && !entry.full) {
-    setMapStatus('地形渲染中…');
-    await new Promise((resolve) => setTimeout(resolve, 16));
-    sandbox.terrain = ensureFullTerrain(entry, sandbox.mapDetail);
-  } else if (entry) {
-    sandbox.terrain = sandbox.viewMode === 'full' ? entry.full : entry.crop;
+  sandbox.cameraRegion = null;
+  if (sandbox.mapDetail) {
+    await refreshTerrainView();
+  } else {
+    syncMapStatus();
+    drawSandbox();
   }
-  syncMapStatus();
-  drawSandbox();
 }
 
 function syncMapSelect() {
-  if (!els.mapSelect) return;
-  const id = state.sandbox.mapId || '';
-  const exists = [...els.mapSelect.options].some((option) => option.value === id);
-  els.mapSelect.value = exists ? id : '';
+  if (els.mapSelect) {
+    const id = state.sandbox.mapId || '';
+    const exists = [...els.mapSelect.options].some((option) => option.value === id);
+    els.mapSelect.value = exists ? id : '';
+    els.mapSelect.disabled = !!state.sandbox.mapLocked;
+    els.mapSelect.title = state.sandbox.mapLocked
+      ? '该回放使用该地图（地形模拟固定地图）'
+      : '选择用于渲染观战的实机地图（来自游戏资源缓存）';
+  }
   if (els.viewSelect) {
     els.viewSelect.disabled = !state.sandbox.mapDetail;
     els.viewSelect.value = state.sandbox.viewMode || 'battle';
+  }
+  if (els.inferSim) {
+    els.inferSim.value = state.sandbox.simMode === 'terrain' ? 'terrain' : 'arena';
+  }
+}
+
+function syncMapToggles() {
+  const sandbox = state.sandbox;
+  if (els.fogToggle) {
+    els.fogToggle.disabled = !sandbox.fogAvailable;
+    els.fogToggle.setAttribute('aria-pressed', sandbox.fogEnabled ? 'true' : 'false');
+    els.fogToggle.textContent = sandbox.fogEnabled ? '开' : '关';
+  }
+  if (els.itemsToggle) {
+    els.itemsToggle.disabled = !sandbox.mapDetail;
+    els.itemsToggle.setAttribute('aria-pressed', sandbox.itemsEnabled ? 'true' : 'false');
+    els.itemsToggle.textContent = sandbox.itemsEnabled ? '开' : '关';
   }
 }
 
@@ -3042,15 +3332,64 @@ function drawSandbox() {
 
   const sandbox = state.sandbox;
   const detail = sandbox.mapDetail;
-  const mapMode = !!(detail && sandbox.terrain);
-  const region = detail ? mapViewRegion(sandbox, detail) : { x: 0, y: 0, width: 1000, height: 1000 };
+  const terrainSim = sandbox.simMode === 'terrain';
+  const frames = sandbox.frames;
+
+  let frame = null;
+  let nextFrame = null;
+  let units = [];
+  if (frames.length) {
+    const maxIndex = frames.length - 1;
+    const playback = clamp(sandbox.playback, 0, maxIndex);
+    const index = Math.floor(playback);
+    const nextIndex = Math.min(index + 1, maxIndex);
+    const fraction = playback - index;
+    frame = frames[index];
+    nextFrame = frames[nextIndex];
+    units = interpolateUnits(frame, nextFrame, fraction);
+    updateUnitAngles(frame, index > 0 ? frames[index - 1] : null);
+  }
+
+  let region;
+  if (detail) {
+    if (sandbox.viewMode === 'full') {
+      region = wholeMapRegion(detail);
+    } else if (terrainSim) {
+      region = computeFollowRegion(sandbox, detail, units);
+    } else {
+      region = mapCrop(detail);
+    }
+  } else if (terrainSim && sandbox.map && sandbox.map.width > 1000) {
+    region = {
+      x: 0,
+      y: 0,
+      width: Math.max(1, num(sandbox.map.width, 1000)),
+      height: Math.max(1, num(sandbox.map.height, 1000)),
+    };
+  } else {
+    region = { x: 0, y: 0, width: 1000, height: 1000 };
+  }
+
+  const mapMode = !!(detail && sandbox.terrainView);
   const cam = mapCamera(width, height, region, mapMode ? 0 : 20);
   const offsetX = cam.ox + cam.region.x * cam.scale;
   const offsetY = cam.oy + cam.region.y * cam.scale;
   const drawnWidth = cam.region.width * cam.scale;
   const drawnHeight = cam.region.height * cam.scale;
-  const mapX = (x) => (detail ? cam.ox + engineToMapPixel(x, 0, detail).x * cam.scale : cam.ox + num(x, 0) * cam.scale);
-  const mapY = (y) => (detail ? cam.oy + engineToMapPixel(0, y, detail).y * cam.scale : cam.oy + num(y, 0) * cam.scale);
+  const mapX = (x) => {
+    if (detail) {
+      if (terrainSim) return cam.ox + num(x, 0) * cam.scale;
+      return cam.ox + engineToMapPixel(x, 0, detail).x * cam.scale;
+    }
+    return cam.ox + num(x, 0) * cam.scale;
+  };
+  const mapY = (y) => {
+    if (detail) {
+      if (terrainSim) return cam.oy + num(y, 0) * cam.scale;
+      return cam.oy + engineToMapPixel(0, y, detail).y * cam.scale;
+    }
+    return cam.oy + num(y, 0) * cam.scale;
+  };
   sandbox.view = {
     ox: cam.ox,
     oy: cam.oy,
@@ -3061,6 +3400,7 @@ function drawSandbox() {
     screenHeight: height,
     region: cam.region,
     detail: detail || null,
+    simMode: sandbox.simMode,
     corners: { x: offsetX, y: offsetY, width: drawnWidth, height: drawnHeight },
     project: (x, y) => ({ x: mapX(x), y: mapY(y) }),
   };
@@ -3071,18 +3411,31 @@ function drawSandbox() {
   ctx.clip();
 
   if (mapMode) {
+    const view = sandbox.terrainView;
+    const sx = (cam.region.x - view.region.x) * view.scale;
+    const sy = (cam.region.y - view.region.y) * view.scale;
+    const sw = Math.max(1, cam.region.width * view.scale);
+    const sh = Math.max(1, cam.region.height * view.scale);
     ctx.imageSmoothingEnabled = true;
-    ctx.drawImage(sandbox.terrain, offsetX, offsetY, drawnWidth, drawnHeight);
+    try {
+      ctx.drawImage(view.ground, sx, sy, sw, sh, offsetX, offsetY, drawnWidth, drawnHeight);
+      if (sandbox.itemsEnabled && view.items) {
+        ctx.drawImage(view.items, sx, sy, sw, sh, offsetX, offsetY, drawnWidth, drawnHeight);
+      }
+    } catch (error) {
+      // 画布绘制失败时保持暗色底，不阻塞单位渲染
+    }
+
     const shade = ctx.createRadialGradient(
       width / 2, height / 2, Math.min(width, height) * 0.18,
       width / 2, height / 2, Math.max(width, height) * 0.72
     );
     shade.addColorStop(0, 'rgba(3, 8, 14, 0)');
-    shade.addColorStop(1, 'rgba(3, 8, 14, 0.5)');
+    shade.addColorStop(1, 'rgba(3, 8, 14, 0.45)');
     ctx.fillStyle = shade;
     ctx.fillRect(offsetX, offsetY, drawnWidth, drawnHeight);
 
-    if (detail && sandbox.viewMode === 'full') {
+    if (!terrainSim && detail && sandbox.viewMode === 'full') {
       const crop = mapCrop(detail);
       const bx = cam.ox + crop.x * cam.scale;
       const by = cam.oy + crop.y * cam.scale;
@@ -3101,7 +3454,7 @@ function drawSandbox() {
       ctx.fillText('交战区域', bx + 6, by + 8);
       ctx.restore();
     }
-  } else if (detail) {
+  } else if (detail || (terrainSim && sandbox.map && sandbox.map.width > 1000)) {
     ctx.fillStyle = '#07111c';
     ctx.fillRect(offsetX, offsetY, drawnWidth, drawnHeight);
     ctx.save();
@@ -3112,100 +3465,104 @@ function drawSandbox() {
     ctx.fillText(sandbox.terrainError ? '地图加载失败，回退抽象渲染' : '地图加载中…', width / 2, height / 2);
     ctx.restore();
   } else {
-    const mapWidth = 1000;
-    const mapHeight = 1000;
+    const mapWidth = Math.max(1, region.width);
+    const mapHeight = Math.max(1, region.height);
     const mapGradient = ctx.createRadialGradient(
-    offsetX + drawnWidth / 2, offsetY + drawnHeight / 2, 20,
-    offsetX + drawnWidth / 2, offsetY + drawnHeight / 2, Math.max(drawnWidth, drawnHeight) * 0.8
-  );
-  mapGradient.addColorStop(0, '#0a1727');
-  mapGradient.addColorStop(1, '#050b13');
-  ctx.fillStyle = mapGradient;
-  ctx.fillRect(offsetX, offsetY, drawnWidth, drawnHeight);
+      offsetX + drawnWidth / 2, offsetY + drawnHeight / 2, 20,
+      offsetX + drawnWidth / 2, offsetY + drawnHeight / 2, Math.max(drawnWidth, drawnHeight) * 0.8
+    );
+    mapGradient.addColorStop(0, '#0a1727');
+    mapGradient.addColorStop(1, '#050b13');
+    ctx.fillStyle = mapGradient;
+    ctx.fillRect(offsetX, offsetY, drawnWidth, drawnHeight);
 
-  // 双方部署区氛围色
-  const ownGlow = ctx.createRadialGradient(
-    offsetX + drawnWidth * 0.1, offsetY + drawnHeight / 2, 8,
-    offsetX + drawnWidth * 0.1, offsetY + drawnHeight / 2, drawnWidth * 0.55
-  );
-  ownGlow.addColorStop(0, 'rgba(77, 163, 255, 0.12)');
-  ownGlow.addColorStop(1, 'rgba(77, 163, 255, 0)');
-  ctx.fillStyle = ownGlow;
-  ctx.fillRect(offsetX, offsetY, drawnWidth, drawnHeight);
-  const enemyGlow = ctx.createRadialGradient(
-    offsetX + drawnWidth * 0.9, offsetY + drawnHeight / 2, 8,
-    offsetX + drawnWidth * 0.9, offsetY + drawnHeight / 2, drawnWidth * 0.55
-  );
-  enemyGlow.addColorStop(0, 'rgba(255, 95, 109, 0.1)');
-  enemyGlow.addColorStop(1, 'rgba(255, 95, 109, 0)');
-  ctx.fillStyle = enemyGlow;
-  ctx.fillRect(offsetX, offsetY, drawnWidth, drawnHeight);
+    const ownGlow = ctx.createRadialGradient(
+      offsetX + drawnWidth * 0.1, offsetY + drawnHeight / 2, 8,
+      offsetX + drawnWidth * 0.1, offsetY + drawnHeight / 2, drawnWidth * 0.55
+    );
+    ownGlow.addColorStop(0, 'rgba(77, 163, 255, 0.12)');
+    ownGlow.addColorStop(1, 'rgba(77, 163, 255, 0)');
+    ctx.fillStyle = ownGlow;
+    ctx.fillRect(offsetX, offsetY, drawnWidth, drawnHeight);
+    const enemyGlow = ctx.createRadialGradient(
+      offsetX + drawnWidth * 0.9, offsetY + drawnHeight / 2, 8,
+      offsetX + drawnWidth * 0.9, offsetY + drawnHeight / 2, drawnWidth * 0.55
+    );
+    enemyGlow.addColorStop(0, 'rgba(255, 95, 109, 0.1)');
+    enemyGlow.addColorStop(1, 'rgba(255, 95, 109, 0)');
+    ctx.fillStyle = enemyGlow;
+    ctx.fillRect(offsetX, offsetY, drawnWidth, drawnHeight);
 
-  const gridStep = 100;
-  for (let gridX = 0; gridX <= mapWidth; gridX += gridStep) {
-    const screenX = mapX(gridX);
-    ctx.strokeStyle = gridX % 500 === 0 ? SANDBOX_COLORS.gridStrong : SANDBOX_COLORS.grid;
-    ctx.lineWidth = 1;
+    const gridStep = Math.max(50, Math.round(Math.max(mapWidth, mapHeight) / 10 / 50) * 50);
+    for (let gridX = 0; gridX <= mapWidth; gridX += gridStep) {
+      const screenX = mapX(gridX);
+      ctx.strokeStyle = gridX % (gridStep * 5) === 0 ? SANDBOX_COLORS.gridStrong : SANDBOX_COLORS.grid;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(screenX, offsetY);
+      ctx.lineTo(screenX, offsetY + drawnHeight);
+      ctx.stroke();
+    }
+    for (let gridY = 0; gridY <= mapHeight; gridY += gridStep) {
+      const screenY = mapY(gridY);
+      ctx.strokeStyle = gridY % (gridStep * 5) === 0 ? SANDBOX_COLORS.gridStrong : SANDBOX_COLORS.grid;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(offsetX, screenY);
+      ctx.lineTo(offsetX + drawnWidth, screenY);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = 'rgba(56, 225, 255, 0.12)';
+    ctx.setLineDash([6, 8]);
     ctx.beginPath();
-    ctx.moveTo(screenX, offsetY);
-    ctx.lineTo(screenX, offsetY + drawnHeight);
+    ctx.moveTo(offsetX + drawnWidth / 2, offsetY);
+    ctx.lineTo(offsetX + drawnWidth / 2, offsetY + drawnHeight);
     ctx.stroke();
-  }
-  for (let gridY = 0; gridY <= mapHeight; gridY += gridStep) {
-    const screenY = mapY(gridY);
-    ctx.strokeStyle = gridY % 500 === 0 ? SANDBOX_COLORS.gridStrong : SANDBOX_COLORS.grid;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(offsetX, screenY);
-    ctx.lineTo(offsetX + drawnWidth, screenY);
-    ctx.stroke();
-  }
-  // 中线
-  ctx.strokeStyle = 'rgba(56, 225, 255, 0.12)';
-  ctx.setLineDash([6, 8]);
-  ctx.beginPath();
-  ctx.moveTo(offsetX + drawnWidth / 2, offsetY);
-  ctx.lineTo(offsetX + drawnWidth / 2, offsetY + drawnHeight);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  // 部署区标注
-  ctx.save();
-  ctx.font = '10px "Microsoft YaHei", "Segoe UI", sans-serif';
-  ctx.textBaseline = 'bottom';
-  if (drawnWidth > 420) {
-    ctx.textAlign = 'left';
-    ctx.fillStyle = 'rgba(77, 163, 255, 0.45)';
-    ctx.fillText('我方部署区', offsetX + 12, offsetY + drawnHeight - 10);
-    ctx.textAlign = 'right';
-    ctx.fillStyle = 'rgba(255, 95, 109, 0.42)';
-    ctx.fillText('敌方部署区', offsetX + drawnWidth - 12, offsetY + drawnHeight - 10);
-  }
-  ctx.restore();
+    ctx.setLineDash([]);
+    if (!terrainSim) {
+      ctx.save();
+      ctx.font = '10px "Microsoft YaHei", "Segoe UI", sans-serif';
+      ctx.textBaseline = 'bottom';
+      if (drawnWidth > 420) {
+        ctx.textAlign = 'left';
+        ctx.fillStyle = 'rgba(77, 163, 255, 0.45)';
+        ctx.fillText('我方部署区', offsetX + 12, offsetY + drawnHeight - 10);
+        ctx.textAlign = 'right';
+        ctx.fillStyle = 'rgba(255, 95, 109, 0.42)';
+        ctx.fillText('敌方部署区', offsetX + drawnWidth - 12, offsetY + drawnHeight - 10);
+      }
+      ctx.restore();
+    }
   }
 
-  const frames = sandbox.frames;
   if (!frames.length) {
+    if (mapMode && sandbox.fogEnabled) {
+      drawFogLayer(ctx, sandbox, units, mapX, mapY, cam, offsetX, offsetY, drawnWidth, drawnHeight, width, height);
+    }
     ctx.restore();
     drawSandboxChrome(ctx, width, height, offsetX, offsetY, drawnWidth, drawnHeight);
     drawSandboxEmpty(ctx, width, height);
     return;
   }
 
-  const maxIndex = frames.length - 1;
-  const playback = clamp(sandbox.playback, 0, maxIndex);
-  const index = Math.floor(playback);
-  const nextIndex = Math.min(index + 1, maxIndex);
-  const fraction = playback - index;
-  const frame = frames[index];
-  const nextFrame = frames[nextIndex];
-  const units = interpolateUnits(frame, nextFrame, fraction);
-  updateUnitAngles(frame, index > 0 ? frames[index - 1] : null);
+  const ownUnits = units.filter((unit) => unit.team === 'own');
+  const visibleUnits = units.filter((unit) => isUnitVisible(sandbox, unit, ownUnits));
+  const hiddenEnemyIds = new Set(
+    frame.units
+      .filter((unit) => unit.team !== 'own' && !isUnitVisible(sandbox, unit, ownUnits))
+      .map((unit) => unit.id)
+  );
+
+  if (mapMode && sandbox.fogEnabled) {
+    drawFogLayer(ctx, sandbox, ownUnits, mapX, mapY, cam, offsetX, offsetY, drawnWidth, drawnHeight, width, height);
+  }
 
   // 指令箭头（画在单位下层）
   const positions = new Map();
   for (const unit of frame.units) positions.set(unit.id, { x: unit.x, y: unit.y });
-  for (const unit of units) {
+  for (const unit of visibleUnits) {
     if (unit.target === null || unit.target === undefined) continue;
+    if (hiddenEnemyIds.has(unit.id) || hiddenEnemyIds.has(unit.target)) continue;
     const target = positions.get(unit.target);
     if (!target) continue;
     const selected = unit.id === sandbox.selectedId;
@@ -3222,7 +3579,7 @@ function drawSandbox() {
   }
 
   // 单位（按 y 排序，制造俯视层次）
-  const sorted = units.slice().sort((left, right) => left.y - right.y);
+  const sorted = visibleUnits.slice().sort((left, right) => left.y - right.y);
   const leaders = new Set();
   const seenGroups = new Set();
   for (const unit of sorted) {
@@ -3241,9 +3598,13 @@ function drawSandbox() {
     }
   }
 
+  const eventVisible = sandbox.fogEnabled
+    ? (event) => !hiddenEnemyIds.has(event.source) && !hiddenEnemyIds.has(event.target)
+    : null;
+
   // 当前帧事件（暂停时静态显示，播放时由实时特效呈现）
   if (!sandbox.playing) {
-    drawFrameEvents(ctx, frame, mapX, mapY, 1);
+    drawFrameEvents(ctx, frame, mapX, mapY, 1, eventVisible);
   }
 
   // 实时特效（弹道 / 爆炸，随帧推进生成）
@@ -3251,6 +3612,11 @@ function drawSandbox() {
   for (const effect of sandbox.effects) {
     const age = (now - effect.born) / effect.life;
     if (age >= 1) continue;
+    if (sandbox.fogEnabled && (
+      (effect.fromId !== undefined && hiddenEnemyIds.has(effect.fromId))
+      || (effect.toId !== undefined && hiddenEnemyIds.has(effect.toId))
+      || (effect.targetId !== undefined && hiddenEnemyIds.has(effect.targetId))
+    )) continue;
     if (effect.kind === 'shot') {
       drawShotLine(ctx, mapX(effect.from.x), mapY(effect.from.y), mapX(effect.to.x), mapY(effect.to.y), (1 - age) * 0.95);
     } else if (effect.kind === 'kill') {
@@ -3272,6 +3638,58 @@ function drawSandbox() {
     ctx.fillText('演示数据 · DEMO', width - 14, height - 10);
     ctx.restore();
   }
+}
+
+const fogLayer = { canvas: null, ctx: null };
+
+function ensureFogLayer(width, height) {
+  if (!fogLayer.canvas) {
+    fogLayer.canvas = document.createElement('canvas');
+    fogLayer.ctx = fogLayer.canvas.getContext('2d');
+  }
+  const targetWidth = Math.max(1, Math.ceil(width));
+  const targetHeight = Math.max(1, Math.ceil(height));
+  if (fogLayer.canvas.width !== targetWidth || fogLayer.canvas.height !== targetHeight) {
+    fogLayer.canvas.width = targetWidth;
+    fogLayer.canvas.height = targetHeight;
+  }
+  return fogLayer;
+}
+
+function drawFogLayer(ctx, sandbox, ownUnits, mapX, mapY, cam, offsetX, offsetY, drawnWidth, drawnHeight, width, height) {
+  const layer = ensureFogLayer(width, height);
+  const fog = layer.ctx;
+  if (!fog) return;
+  fog.setTransform(1, 0, 0, 1, 0, 0);
+  fog.clearRect(0, 0, width, height);
+  fog.save();
+  fog.beginPath();
+  fog.rect(offsetX, offsetY, drawnWidth, drawnHeight);
+  fog.clip();
+  fog.fillStyle = 'rgba(2, 6, 12, 0.78)';
+  fog.fillRect(offsetX, offsetY, drawnWidth, drawnHeight);
+
+  const radius = Math.max(12, num(sandbox.visionRadius, 260) * cam.scale);
+  fog.globalCompositeOperation = 'destination-out';
+  for (const unit of ownUnits) {
+    const x = mapX(unit.x);
+    const y = mapY(unit.y);
+    const gradient = fog.createRadialGradient(x, y, radius * 0.32, x, y, radius);
+    gradient.addColorStop(0, 'rgba(0, 0, 0, 1)');
+    gradient.addColorStop(0.62, 'rgba(0, 0, 0, 0.9)');
+    gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    fog.fillStyle = gradient;
+    fog.beginPath();
+    fog.arc(x, y, radius, 0, Math.PI * 2);
+    fog.fill();
+  }
+  fog.globalCompositeOperation = 'source-over';
+  fog.restore();
+
+  ctx.save();
+  ctx.globalAlpha = 0.94;
+  ctx.drawImage(layer.canvas, 0, 0, width, height);
+  ctx.restore();
 }
 
 function drawSandboxChrome(ctx, width, height, offsetX, offsetY, drawnWidth, drawnHeight) {
@@ -3329,14 +3747,22 @@ function drawSandboxHud(ctx, sandbox, frame, width, height) {
     ? '#' + (frame.episode + 1) + ' · tick ' + frame.tick + ' · t=' + fmtNum(frame.time, 1) + 's'
     : '等待推理数据';
   ctx.fillText(info, 14, 12);
-  if (sandbox.mapDetail) {
-    ctx.save();
-    ctx.font = '10px "Microsoft YaHei", "Segoe UI", sans-serif';
-    ctx.fillStyle = 'rgba(124, 160, 190, 0.9)';
-    const viewLabel = sandbox.viewMode === 'full' ? '全场' : '战场 1:1';
-    ctx.fillText((sandbox.mapDetail.name || '地图') + ' · ' + viewLabel + ' · 地形仅视觉', 14, 27);
-    ctx.restore();
+
+  const modeLabel = sandbox.simMode === 'terrain' ? '地形模拟' : '竞技场';
+  const mapLabel = sandbox.mapDetail ? (sandbox.mapDetail.name || '地图') : '抽象竞技场';
+  let viewLabel;
+  if (sandbox.simMode === 'terrain') {
+    viewLabel = sandbox.viewMode === 'full' ? '全场' : '跟随交战区域';
+  } else {
+    viewLabel = sandbox.viewMode === 'full' ? '全场' : '战场 1:1';
   }
+  ctx.save();
+  ctx.font = '10px "Microsoft YaHei", "Segoe UI", sans-serif';
+  ctx.fillStyle = sandbox.simMode === 'terrain' ? 'rgba(125, 227, 176, 0.95)' : 'rgba(124, 160, 190, 0.9)';
+  let metaLine = modeLabel + ' · ' + mapLabel + ' · ' + viewLabel;
+  if (sandbox.fogEnabled) metaLine += ' · 迷雾';
+  ctx.fillText(metaLine, 14, 27);
+  ctx.restore();
 
   // 血量条
   const barWidth = 120;
@@ -3382,6 +3808,20 @@ function drawSandboxHud(ctx, sandbox, frame, width, height) {
   ctx.fill();
   ctx.fillStyle = 'rgba(200, 228, 250, 0.8)';
   ctx.fillText('击毁', 197, legendY);
+
+  // 右下角说明：道具层 / 迷雾
+  ctx.textAlign = 'right';
+  ctx.font = '9.5px "Microsoft YaHei", "Segoe UI", sans-serif';
+  let noteY = height - 12;
+  if (sandbox.mapDetail && sandbox.itemsEnabled) {
+    ctx.fillStyle = 'rgba(150, 178, 205, 0.62)';
+    ctx.fillText('建筑/资源点：地图道具层（静态，未模拟建造）', width - 14, noteY);
+    noteY -= 13;
+  }
+  if (sandbox.fogEnabled) {
+    ctx.fillStyle = 'rgba(150, 178, 205, 0.62)';
+    ctx.fillText('迷雾：视觉层（按我方视野 ' + Math.round(num(sandbox.visionRadius, 260)) + 'px）', width - 14, noteY);
+  }
   ctx.restore();
 }
 
@@ -3451,11 +3891,12 @@ function drawSandboxUnit(ctx, unit, mapX, mapY, selected, leader, time) {
   ctx.fillRect(barX, barY, barWidth * hpFraction, barHeight);
 }
 
-function drawFrameEvents(ctx, frame, mapX, mapY, alpha) {
+function drawFrameEvents(ctx, frame, mapX, mapY, alpha, isVisible) {
   const positions = new Map();
   for (const unit of frame.units) positions.set(unit.id, { x: unit.x, y: unit.y });
   const phase = (performance.now() % 900) / 900;
   for (const event of frame.events) {
+    if (isVisible && !isVisible(event)) continue;
     if (event.type === 'shot') {
       const from = positions.get(event.source);
       const to = positions.get(event.target);
@@ -3567,13 +4008,13 @@ function spawnFrameEffects(frame) {
     if (event.type === 'shot') {
       const from = positions.get(event.source);
       const to = positions.get(event.target);
-      if (from && to) sandbox.effects.push({ kind: 'shot', from: from, to: to, born: now, life: 340 });
+      if (from && to) sandbox.effects.push({ kind: 'shot', from: from, to: to, fromId: event.source, toId: event.target, born: now, life: 340 });
     } else if (event.type === 'kill') {
       const target = positions.get(event.target);
       const x = target ? target.x : event.x;
       const y = target ? target.y : event.y;
       if (x !== undefined && y !== undefined && x !== null && y !== null) {
-        sandbox.effects.push({ kind: 'kill', x: x, y: y, born: now, life: 780 });
+        sandbox.effects.push({ kind: 'kill', x: x, y: y, targetId: event.target, born: now, life: 780 });
       }
     }
   }
@@ -3824,6 +4265,26 @@ function bindEvents() {
   if (els.mapSelect) {
     els.mapSelect.addEventListener('change', () => {
       selectMap(els.mapSelect.value || '');
+    });
+  }
+  if (els.fogToggle) {
+    els.fogToggle.addEventListener('click', () => {
+      const sandbox = state.sandbox;
+      if (!sandbox.fogAvailable) return;
+      sandbox.fogEnabled = !sandbox.fogEnabled;
+      syncMapToggles();
+      syncMapStatus();
+      drawSandbox();
+    });
+  }
+  if (els.itemsToggle) {
+    els.itemsToggle.addEventListener('click', () => {
+      const sandbox = state.sandbox;
+      if (!sandbox.mapDetail) return;
+      sandbox.itemsEnabled = !sandbox.itemsEnabled;
+      syncMapToggles();
+      syncMapStatus();
+      drawSandbox();
     });
   }
   if (els.viewSelect) {

@@ -338,6 +338,34 @@ def resolve_asset(relative: str) -> Path:
     return path
 
 
+def blocked_mask(payload: dict[str, Any]) -> list[int]:
+    """1 = blocked (water) tile for the terrain simulation, row-major."""
+
+    width = int(payload.get("width", 0))
+    height = int(payload.get("height", 0))
+    blocked = [0] * (width * height)
+    ground = None
+    for layer in payload.get("layers", []):
+        if str(layer.get("name", "")).lower() == "ground":
+            ground = layer.get("data")
+            break
+    if ground is None:
+        return blocked
+    tilesets = sorted(payload.get("tilesets", []), key=lambda item: item["firstgid"])
+    for index, gid in enumerate(ground[: width * height]):
+        if gid <= 0:
+            continue
+        tileset = None
+        for candidate in tilesets:
+            if gid >= candidate["firstgid"]:
+                tileset = candidate
+            else:
+                break
+        if tileset is not None and tileset.get("water"):
+            blocked[index] = 1
+    return blocked
+
+
 def unit_sprites() -> dict[str, str]:
     folder = ASSETS_ROOT / "units" / "tanks"
     if not folder.is_dir():
@@ -361,6 +389,7 @@ __all__ = [
     "ASSETS_ROOT",
     "MapError",
     "assets_available",
+    "blocked_mask",
     "list_maps",
     "load_map",
     "map_id_for",

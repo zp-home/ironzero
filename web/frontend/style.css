@@ -759,6 +759,30 @@ body::before {
 
 .mini-field select:disabled { opacity: 0.45; cursor: not-allowed; }
 .mini-field select:focus { outline: none; border-color: rgba(56, 225, 255, 0.55); }
+.mini-field > span { color: var(--muted-2); }
+
+.toggle-btn {
+  min-width: 44px;
+  padding: 3px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 5px;
+  background: rgba(5, 12, 22, 0.92);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+}
+
+.toggle-btn[aria-pressed="true"] {
+  border-color: rgba(56, 225, 255, 0.55);
+  background: rgba(56, 225, 255, 0.14);
+  color: #9fe8ff;
+  box-shadow: 0 0 8px rgba(56, 225, 255, 0.18);
+}
+
+.toggle-btn:disabled { opacity: 0.35; cursor: not-allowed; box-shadow: none; }
+.toggle-btn:focus { outline: none; border-color: rgba(56, 225, 255, 0.7); }
 
 .map-status {
   margin-left: auto;
@@ -774,6 +798,10 @@ body::before {
 .map-status.ok { color: #7de3b0; }
 .map-status.warn { color: #ffc35c; }
 .map-status.bad { color: #ff9aa4; }
+
+.cell-sim { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.cell-sim.terrain { color: #7de3b0; }
+
 
 .stage-wrap {
   position: relative;

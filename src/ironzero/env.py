@@ -117,7 +117,11 @@ class MicroDuelEnv:
         action = np.asarray(action, dtype=np.int64).reshape(-1)
         if action.shape != self.action_space.shape:
             raise ValueError(f"action must have shape {self.action_space.shape}, got {action.shape}")
-        protocol_actions = self.decode_actions(action)
+        return self.step_actions(self.decode_actions(action))
+
+    def step_actions(self, protocol_actions: list[dict]):
+        """Step with already-decoded protocol actions (scripted/demo policies)."""
+
         result = self.adapter.step(protocol_actions)
         self.state = result
         self.masks = build_masks(self.state, self.config)

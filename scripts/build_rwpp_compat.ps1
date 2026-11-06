@@ -12,7 +12,9 @@ param(
     [switch]$PlanOnly
 )
 
-$ErrorActionPreference = "Stop"
+# Native tools (java, tar, gradlew) legitimately write to stderr; "Continue" keeps
+# PowerShell 5.1 from turning those lines into terminating NativeCommandError.
+$ErrorActionPreference = "Continue"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $manifestPath = Join-Path $repoRoot "vendor\rwpp\pinned-versions.json"
 $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json
