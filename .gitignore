@@ -56,3 +56,7 @@ Thumbs.db
 *.local
 secret.toml
 config.local.*
+
+# Dashboard temp screenshots
+web/frontend/_*.png
+web/frontend/.gitkeep

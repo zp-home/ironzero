@@ -84,6 +84,7 @@ class MicroDuelEngine:
         self.tick = 0
         self.done = False
         self.result: str | None = None
+        self.events: list[dict[str, Any]] = []
         self.stats: dict[str, Any] = {}
         self._phi_prev = 0.0
         self._pending_reward = 0.0
@@ -98,6 +99,7 @@ class MicroDuelEngine:
         self.tick = 0
         self.done = False
         self.result = None
+        self.events = []
         self.units = []
         self.stats = {
             "damage_dealt": {team: 0.0 for team in range(cfg.teams)},
@@ -241,6 +243,7 @@ class MicroDuelEngine:
         team: int = 0,
     ) -> dict[str, Any]:
         """Apply one decision, run the opponent, advance a decision window."""
+        self.events = []
         receipts = self.apply_actions(actions, team=team)
         opponent_actions = self._opponent_actions(team=team)
         if opponent_actions:
@@ -254,6 +257,7 @@ class MicroDuelEngine:
                 "truncated": self.done and self.result == "timeout",
                 "result": self.result,
                 "receipts": receipts,
+                "events": list(self.events),
                 "decision_id": None,
             }
         )
@@ -335,11 +339,32 @@ class MicroDuelEngine:
         target.hp -= actual
         self.stats["damage_dealt"][source.team] += actual
         self.stats["damage_taken"][target.team] += actual
+        self.events.append(
+            {
+                "type": "shot",
+                "source": source.entity_id,
+                "target": target.entity_id,
+                "team": source.team,
+                "amount": round(actual, 3),
+                "tick": self.tick,
+            }
+        )
         if target.hp <= 0.0:
             target.alive = False
             target.hp = 0.0
             self.stats["kills"][source.team] += 1
             self.stats["losses"][target.team] += 1
+            self.events.append(
+                {
+                    "type": "kill",
+                    "source": source.entity_id,
+                    "target": target.entity_id,
+                    "team": source.team,
+                    "x": round(target.x, 3),
+                    "y": round(target.y, 3),
+                    "tick": self.tick,
+                }
+            )
 
     def _check_done(self) -> None:
         cfg = self.config

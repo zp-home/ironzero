@@ -55,6 +55,7 @@ def state_to_observation_message(
         "result": state.get("result"),
         "target_ids": list(state.get("target_ids", [])),
         "receipts": state.get("receipts", []),
+        "events": list(state.get("events", [])),
         "eval": state.get("eval"),
     }
     if info_extra:

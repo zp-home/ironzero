@@ -65,12 +65,19 @@ class PPOTrainer:
         config: PPOConfig | None = None,
         *,
         micro_config: MicroDuelConfig | None = None,
+        live_path: str | Path | None = None,
     ) -> None:
         self.config = config or PPOConfig()
         self.micro = micro_config or DEFAULT_CONFIG
         self.device = self.config.resolved_device()
         torch.manual_seed(self.config.seed)
         np.random.seed(self.config.seed)
+        self.live_path = Path(live_path) if live_path else None
+        self._live_handle = None
+        self._live_seq = 0
+        if self.live_path is not None:
+            self.live_path.parent.mkdir(parents=True, exist_ok=True)
+            self._live_handle = self.live_path.open("a", encoding="utf-8")
         self.vec = VecMicroEnv(
             self.config.num_envs,
             config=self.micro,
@@ -85,6 +92,22 @@ class PPOTrainer:
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.config.lr, eps=1e-5)
         self.history: list[dict[str, Any]] = []
         self.start_time = time.time()
+
+    # ------------------------------------------------------------------
+    # Live event stream (dashboard)
+    # ------------------------------------------------------------------
+    def _emit(self, kind: str, payload: dict[str, Any]) -> None:
+        if self._live_handle is None:
+            return
+        self._live_seq += 1
+        event = {"seq": self._live_seq, "kind": kind, "payload": payload}
+        self._live_handle.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
+        self._live_handle.flush()
+
+    def close(self) -> None:
+        if self._live_handle is not None:
+            self._live_handle.close()
+            self._live_handle = None
 
     # ------------------------------------------------------------------
     # Rollout collection
@@ -209,6 +232,15 @@ class PPOTrainer:
             episodes=cfg.eval_episodes, config=self.micro, opponent=cfg.opponent
         )
         print(f"[baseline] random: {json.dumps(random_baseline, ensure_ascii=False)}")
+        self._emit(
+            "start",
+            {
+                "config": asdict(cfg),
+                "device": str(self.device),
+                "random_baseline": random_baseline,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            },
+        )
         metrics: dict[str, Any] = {
             "config": asdict(cfg),
             "device": str(self.device),
@@ -233,6 +265,7 @@ class PPOTrainer:
                 "elapsed_s": round(time.time() - self.start_time, 2),
             }
             metrics["updates"].append(record)
+            self._emit("update", record)
             if update % cfg.log_every == 0 or update == 1:
                 print(
                     "[train] update {update:03d} return={mean_return:+.3f} win={win_rate:.2f} "
@@ -257,6 +290,7 @@ class PPOTrainer:
                 )
                 evaluations = {"update": update, **evaluation}
                 metrics["evaluations"].append(evaluations)
+                self._emit("eval", evaluations)
                 print(
                     "[eval ] update {update:03d} win={win_rate:.2f} loss={loss_rate:.2f} "
                     "timeout={timeout_rate:.2f} return={mean_return:+.3f} own_hp={mean_own_hp_frac:.2f}".format(
@@ -270,6 +304,15 @@ class PPOTrainer:
         self.save(out_dir, cfg.total_updates, metrics)
         with (out_dir / "metrics.json").open("w", encoding="utf-8") as handle:
             json.dump(metrics, handle, ensure_ascii=False, indent=2)
+        self._emit(
+            "done",
+            {
+                "final_eval": final_eval,
+                "total_seconds": metrics["total_seconds"],
+                "checkpoint": str(out_dir / "checkpoint.pt"),
+            },
+        )
+        self.close()
         return metrics
 
     # ------------------------------------------------------------------

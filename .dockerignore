@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Apache-2.0
+# Docker build context: the repository root.
+
+.git
+.gitignore
+.github
+runs
+docs
+site
+vendor
+tests
+tools
+node_modules
+**/__pycache__
+**/*.pyc
+*.pt
+*.log
+artifacts
+web/frontend/_*.png

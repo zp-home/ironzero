@@ -29,6 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-episodes", type=int, default=24)
     parser.add_argument("--opponent", default="scripted", choices=["scripted", "idle", "random"])
     parser.add_argument("--out", default="runs/micro_duel", help="output directory")
+    parser.add_argument("--live", default="", help="JSONL live event stream path (dashboard)")
     parser.add_argument("--decision-interval", type=int, default=None, help="override ticks per decision")
     return parser
 
@@ -56,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
         opponent=args.opponent,
         out_dir=args.out,
     )
-    trainer = PPOTrainer(config, micro_config=micro)
+    trainer = PPOTrainer(config, micro_config=micro, live_path=args.live or None)
     metrics = trainer.train()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)

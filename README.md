@@ -11,7 +11,7 @@
 
 > 当前状态：M1 无头环境验证已通过，本机已确认同一 1.15 Build #28 游戏资源（21.4 MiB assets、84 张地图）。
 >
-> 平台进度：`ironzero/1` Bridge（NDJSON/TCP）、Gymnasium 兼容环境、动作掩码、确定性微操参考环境、PPO + GAE 训练与评估闭环**已实现并通过 63 项测试**；参考环境按真实 1.15 坦克数值校准（HP 210 / 伤害 25 / 射程 130 / 75 tick 射速 / 66 单位每秒），200 轮 PPO 对脚本 AI 的评估胜率 0% → 100%（随机基线 0%，平均回报 −1.33 → +1.21）。真机 RWPP 运行时仍缺 JDK 25 与 RWPP/RWML 构建产物，接入步骤见 [平台搭建方案](./docs/平台搭建方案.md)。
+> 平台进度：`ironzero/1` Bridge（NDJSON/TCP）、Gymnasium 兼容环境、动作掩码、确定性微操参考环境、PPO + GAE 训练与评估闭环**已实现并通过 63 项测试**；参考环境按真实 1.15 坦克数值校准（HP 210 / 伤害 25 / 射程 130 / 75 tick 射速 / 66 单位每秒），200 轮 PPO 对脚本 AI 的评估胜率 0% → 100%（随机基线 0%，平均回报 −1.33 → +1.21）。训练/推理 Web 平台（Docker + 监控大屏 + 对局沙盘 + 回放/录制）已可运行。真机 RWPP 运行时仍缺 JDK 25 与 RWPP/RWML 构建产物，接入步骤见 [平台搭建方案](./docs/平台搭建方案.md)。
 
 > 开源许可：代码 Apache-2.0，文档 CC BY 4.0。详见 [许可证说明](./LICENSING.md)。
 
@@ -79,6 +79,23 @@ PC 版通过 Steam 官方渠道获取：
 ```powershell
 python -m http.server 8000 --directory site
 ```
+
+## 训练与推理平台（大屏）
+
+一条命令启动，浏览器里训练、看指标、看 agent 对打、录视频：
+
+```powershell
+docker compose -f web/docker-compose.yml up -d --build
+start http://127.0.0.1:8000
+```
+
+- **训练监控**：启动/停止 PPO，胜率与回报曲线、KPI、实时日志
+- **对局沙盘**：载入 checkpoint 逐帧推理，canvas 渲染 8v8 坦克、血条、弹道、爆炸，支持倍速/进度条
+- **回放库**：每局自动落盘 `ironzero.replay/1` JSON，可重放、删除；「录制视频」导出 `.webm`
+
+![对局沙盘](docs/assets/platform_sandbox.png)
+
+Dockerfile / compose / API / 目录说明见 [web/README.md](./web/README.md)。
 
 ## 开发入口
 
