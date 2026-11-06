@@ -14,13 +14,13 @@
 1. **AlphaStar 之前**：AlphaStar 2019 年登上《星际争霸 II》，此前已经有 TD-Gammon、DQN、AlphaGo、OpenAI Five 等经典案例。
 2. **《星际争霸》强化学习之前**：在 PySC2、TorchCraft 和 AlphaStar 之前，RTS 研究更多来自传统游戏 AI、规划、脚本 AI 和 MicroRTS 这类小型环境。
 
-这两个脉络对 RWRL 都重要：前者提供通用 RL 方法，后者提供 RTS 环境设计和动作抽象经验。
+这两个脉络对 IronZero 都重要：前者提供通用 RL 方法，后者提供 RTS 环境设计和动作抽象经验。
 
 ---
 
 ## 2. 通用游戏强化学习时间线
 
-| 年份 | 案例 | 关键贡献 | 对 RWRL 的启示 |
+| 年份 | 案例 | 关键贡献 | 对 IronZero 的启示 |
 |---|---|---|---|
 | 1959 | Samuel Checkers | 自博弈、启发式搜索和机器学习结合 | 自博弈与评估对手池不是新概念，但必须可复现 |
 | 1989 | Q-learning | 离策略时序差分控制 | 可作为教学基线，不建议直接用于复杂 RTS |
@@ -65,7 +65,7 @@ MicroRTS 是一个小型开源 RTS 环境，保留资源、生产、单位和战
 
 启示：
 
-- RWRL 的第一阶段应该做 `micro_duel`，而不是完整 1v1。
+- IronZero 的第一阶段应该做 `micro_duel`，而不是完整 1v1。
 - 固定地图、少量单位、关闭经济，是验证环境的正确起点。
 - 胜负、单位价值差和战斗结果比“像人一样操作”更适合早期指标。
 
@@ -85,7 +85,7 @@ TorchCraft 为《星际争霸：母巢之战》提供机器学习接口，把游
 
 启示：
 
-- RWRL Bridge 的职责与 TorchCraft 类似：状态序列化、命令回注、协议和错误处理。
+- IronZero Bridge 的职责与 TorchCraft 类似：状态序列化、命令回注、协议和错误处理。
 - 动作必须是结构化命令，不应以屏幕坐标点击作为主要接口。
 
 参考：
@@ -105,7 +105,7 @@ DeepMind 在 2017 年发布 PySC2 和《StarCraft II: A New Challenge for Reinfo
 
 启示：
 
-- RWRL 的 `Observation` 和 `Action` schema 必须版本化。
+- IronZero 的 `Observation` 和 `Action` schema 必须版本化。
 - 需要从微型任务逐步扩展到经济和完整对局。
 - 回放、评估和人类数据接口应从一开始预留。
 
@@ -120,7 +120,7 @@ DeepMind 在 2017 年发布 PySC2 和《StarCraft II: A New Challenge for Reinfo
 
 启示：
 
-- RWRL 应该把单位视为实体集合，而不是一个固定长度的大向量。
+- IronZero 应该把单位视为实体集合，而不是一个固定长度的大向量。
 - 实体数量变化时，Transformer、DeepSets 或关系网络比 MLP 更自然。
 - 单位类型、队伍、距离和可见性都可以作为实体关系特征。
 
@@ -162,7 +162,7 @@ AlphaStar 在 2019 年达到《星际争霸 II》大师级水平，结合了模�
 
 ## 4. 对本项目的直接决策
 
-| 经典经验 | RWRL 决策 |
+| 经典经验 | IronZero 决策 |
 |---|---|
 | BWAPI 先解决接口 | 先做只读 Bridge，再做动作桥 |
 | MicroRTS 先做小环境 | 第一阶段固定 `micro_8v8` |

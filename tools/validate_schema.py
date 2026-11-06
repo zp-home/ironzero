@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_PATH = ROOT / "schemas" / "rwrl" / "1" / "messages.schema.json"
+SCHEMA_PATH = ROOT / "schemas" / "ironzero" / "1" / "messages.schema.json"
 
 try:
     from jsonschema import Draft202012Validator
@@ -18,7 +18,7 @@ except ImportError as exc:
 
 SAMPLES = [
     {
-        "protocol": "rwrl/1",
+        "protocol": "ironzero/1",
         "type": "hello",
         "message_id": "m-1",
         "adapter_version": "0.1.0",
@@ -26,7 +26,7 @@ SAMPLES = [
         "capabilities": ["ndjson"],
     },
     {
-        "protocol": "rwrl/1",
+        "protocol": "ironzero/1",
         "type": "reset",
         "message_id": "m-2",
         "episode_id": "e-1",
@@ -35,7 +35,7 @@ SAMPLES = [
         "map_id": "fixed_micro_01",
     },
     {
-        "protocol": "rwrl/1",
+        "protocol": "ironzero/1",
         "type": "step",
         "message_id": "m-3",
         "episode_id": "e-1",
@@ -46,7 +46,7 @@ SAMPLES = [
         ],
     },
     {
-        "protocol": "rwrl/1",
+        "protocol": "ironzero/1",
         "type": "obs",
         "message_id": "m-4",
         "episode_id": "e-1",
@@ -65,7 +65,7 @@ SAMPLES = [
         },
     },
     {
-        "protocol": "rwrl/1",
+        "protocol": "ironzero/1",
         "type": "receipt",
         "message_id": "m-5",
         "episode_id": "e-1",
@@ -75,7 +75,7 @@ SAMPLES = [
         "executed_at_tick": 13,
     },
     {
-        "protocol": "rwrl/1",
+        "protocol": "ironzero/1",
         "type": "done",
         "message_id": "m-6",
         "episode_id": "e-1",

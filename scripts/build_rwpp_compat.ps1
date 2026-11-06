@@ -3,7 +3,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$GameDir,
-    [string]$BuildRoot = (Join-Path $env:LOCALAPPDATA "RWRL"),
+    [string]$BuildRoot = (Join-Path $env:LOCALAPPDATA "IronZero"),
     [string]$JavaHome,
     [string]$ProxyUrl,
     [switch]$ReuseSources,

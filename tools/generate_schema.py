@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Generate the checked-in RWRL v1 JSON Schema."""
+"""Generate the checked-in IronZero v1 JSON Schema."""
 
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from rwrl.protocol import message_schema  # noqa: E402
+from ironzero.protocol import message_schema  # noqa: E402
 
 
 def main() -> None:
-    output = ROOT / "schemas" / "rwrl" / "1" / "messages.schema.json"
+    output = ROOT / "schemas" / "ironzero" / "1" / "messages.schema.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
         json.dumps(message_schema(), ensure_ascii=False, indent=2) + "\n",

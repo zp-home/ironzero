@@ -108,8 +108,8 @@
       "additionalProperties": false,
       "properties": {
         "protocol": {
-          "const": "rwrl/1",
-          "default": "rwrl/1",
+          "const": "ironzero/1",
+          "default": "ironzero/1",
           "title": "Protocol",
           "type": "string"
         },
@@ -421,8 +421,8 @@
       "additionalProperties": false,
       "properties": {
         "protocol": {
-          "const": "rwrl/1",
-          "default": "rwrl/1",
+          "const": "ironzero/1",
+          "default": "ironzero/1",
           "title": "Protocol",
           "type": "string"
         },
@@ -652,8 +652,8 @@
       "additionalProperties": false,
       "properties": {
         "protocol": {
-          "const": "rwrl/1",
-          "default": "rwrl/1",
+          "const": "ironzero/1",
+          "default": "ironzero/1",
           "title": "Protocol",
           "type": "string"
         },
@@ -745,8 +745,8 @@
       "additionalProperties": false,
       "properties": {
         "protocol": {
-          "const": "rwrl/1",
-          "default": "rwrl/1",
+          "const": "ironzero/1",
+          "default": "ironzero/1",
           "title": "Protocol",
           "type": "string"
         },
@@ -887,8 +887,8 @@
       "additionalProperties": false,
       "properties": {
         "protocol": {
-          "const": "rwrl/1",
-          "default": "rwrl/1",
+          "const": "ironzero/1",
+          "default": "ironzero/1",
           "title": "Protocol",
           "type": "string"
         },
@@ -1035,8 +1035,8 @@
       "additionalProperties": false,
       "properties": {
         "protocol": {
-          "const": "rwrl/1",
-          "default": "rwrl/1",
+          "const": "ironzero/1",
+          "default": "ironzero/1",
           "title": "Protocol",
           "type": "string"
         },
@@ -1125,8 +1125,8 @@
       "additionalProperties": false,
       "properties": {
         "protocol": {
-          "const": "rwrl/1",
-          "default": "rwrl/1",
+          "const": "ironzero/1",
+          "default": "ironzero/1",
           "title": "Protocol",
           "type": "string"
         },
@@ -1211,8 +1211,8 @@
       "additionalProperties": false,
       "properties": {
         "protocol": {
-          "const": "rwrl/1",
-          "default": "rwrl/1",
+          "const": "ironzero/1",
+          "default": "ironzero/1",
           "title": "Protocol",
           "type": "string"
         },
@@ -1298,8 +1298,8 @@
       "additionalProperties": false,
       "properties": {
         "protocol": {
-          "const": "rwrl/1",
-          "default": "rwrl/1",
+          "const": "ironzero/1",
+          "default": "ironzero/1",
           "title": "Protocol",
           "type": "string"
         },
@@ -1458,8 +1458,8 @@
     }
   ],
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/zp-home/rusted-warfare-rl/schemas/rwrl/1/messages.schema.json",
-  "title": "RWRL v1 bridge message",
+  "$id": "https://github.com/zp-home/ironzero/schemas/ironzero/1/messages.schema.json",
+  "title": "IronZero v1 bridge message",
   "x-schema-version": "1.0.0",
   "x-license": "Apache-2.0"
 }

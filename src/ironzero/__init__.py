@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Rusted Warfare reinforcement learning package."""
+"""IronZero: reinforcement learning environment for Rusted Warfare."""
 
 from .protocol import (
     PROTOCOL_VERSION,

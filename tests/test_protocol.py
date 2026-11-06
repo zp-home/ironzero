@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from rwrl.protocol import (
+from ironzero.protocol import (
     ActionMasks,
     ActionKind,
     AttackMoveAction,
@@ -46,7 +46,7 @@ class ProtocolTests(unittest.TestCase):
     def test_step_accepts_discriminated_actions(self) -> None:
         message = parse_message(
             {
-                "protocol": "rwrl/1",
+                "protocol": "ironzero/1",
                 "type": "step",
                 "message_id": "m-2",
                 "episode_id": "e-1",
@@ -66,7 +66,7 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             parse_message(
                 {
-                    "protocol": "rwrl/1",
+                    "protocol": "ironzero/1",
                     "type": "step",
                     "message_id": "m-3",
                     "episode_id": "e-1",
@@ -80,7 +80,7 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             parse_message(
                 {
-                    "protocol": "rwrl/1",
+                    "protocol": "ironzero/1",
                     "type": "step",
                     "message_id": "m-4",
                     "episode_id": "e-1",
@@ -174,7 +174,7 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             parse_message(
                 {
-                    "protocol": "rwrl/1",
+                    "protocol": "ironzero/1",
                     "type": "hello",
                     "message_id": "m-11",
                     "adapter_version": "0.1.0",

@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_PATH = ROOT / "schemas" / "rwrl" / "1" / "messages.schema.json"
+SCHEMA_PATH = ROOT / "schemas" / "ironzero" / "1" / "messages.schema.json"
 
 
 class SchemaArtifactTests(unittest.TestCase):

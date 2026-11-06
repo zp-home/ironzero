@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Versioned wire protocol for the Rusted Warfare RL bridge.
+"""Versioned wire protocol for the IronZero bridge.
 
 The protocol is intentionally transport-agnostic. The first transport is
 newline-delimited JSON (NDJSON) over loopback TCP.
@@ -20,7 +20,7 @@ from pydantic import (
     model_validator,
 )
 
-PROTOCOL_VERSION = "rwrl/1"
+PROTOCOL_VERSION = "ironzero/1"
 SCHEMA_VERSION = "1.0.0"
 
 
@@ -69,7 +69,7 @@ class MessageBase(BaseModel):
         allow_inf_nan=False,
     )
 
-    protocol: Literal["rwrl/1"] = PROTOCOL_VERSION
+    protocol: Literal["ironzero/1"] = PROTOCOL_VERSION
     message_id: str = Field(min_length=1, max_length=128)
     episode_id: str | None = Field(default=None, max_length=128)
     tick: int | None = Field(default=None, ge=0)
@@ -337,8 +337,8 @@ def message_schema() -> dict[str, Any]:
 
     schema = EnvelopeAdapter.json_schema()
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    schema["$id"] = "https://github.com/zp-home/rusted-warfare-rl/schemas/rwrl/1/messages.schema.json"
-    schema["title"] = "RWRL v1 bridge message"
+    schema["$id"] = "https://github.com/zp-home/ironzero/schemas/ironzero/1/messages.schema.json"
+    schema["title"] = "IronZero v1 bridge message"
     schema["x-schema-version"] = SCHEMA_VERSION
     schema["x-license"] = "Apache-2.0"
     return schema

@@ -44,7 +44,7 @@ Copyright 2026 周培智
 建议未来的目录边界：
 
 ```text
-src/rwrl/              Apache-2.0
+src/ironzero/              Apache-2.0
 game-agent/rwpp-extension/  按 RWPP 要求单独标注，可能为 AGPL-3.0
 ```
 

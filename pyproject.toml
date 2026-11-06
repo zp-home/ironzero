@@ -4,7 +4,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rust-war-rl"
+name = "ironzero"
 version = "0.1.0"
 description = "Rusted Warfare reinforcement learning environment and bridge"
 readme = "README.md"
@@ -18,7 +18,7 @@ classifiers = [
 dependencies = ["pydantic>=2.8,<3"]
 
 [project.urls]
-Repository = "https://github.com/zp-home/rusted-warfare-rl"
+Repository = "https://github.com/zp-home/ironzero"
 
 [project.optional-dependencies]
 dev = ["jsonschema>=4.23,<5", "pytest>=8,<9"]

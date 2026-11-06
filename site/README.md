@@ -1,5 +1,5 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
-# RWRL Lab 展示页
+# IronZero Lab 展示页
 
 这是一个无外部依赖的静态单页站点，入口为 `index.html`。
 

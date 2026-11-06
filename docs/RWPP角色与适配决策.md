@@ -12,7 +12,7 @@
 
 1. 把 RWPP 作为《铁锈战争》的无头运行宿主和游戏 API。
 2. 深度适配 RWPP 的扩展 API、tick 事件、游戏线程调度和 AI Controller。
-3. 自己实现 RWRL Bridge、Gymnasium 环境、动作安全层、训练和评测。
+3. 自己实现 IronZero Bridge、Gymnasium 环境、动作安全层、训练和评测。
 4. 对上游版本做固定，不跟随 `main` 自动滚动。
 5. 维护少量、可审计、可提交上游的兼容补丁。
 6. 不深度分叉 RWPP 客户端、画面系统或游戏引擎。
@@ -25,17 +25,17 @@ RWPP 是基础设施，不是强化学习框架。真正属于本项目的是“
 
 ```text
 ┌────────────────────────────────────────────┐
-│ RWRL Trainer / Evaluator                   │
+│ IronZero Trainer / Evaluator                   │
 │ PPO、课程、模型、指标                       │
 └──────────────────┬─────────────────────────┘
                    │ Gymnasium
 ┌──────────────────▼─────────────────────────┐
-│ RWRL Environment                           │
+│ IronZero Environment                           │
 │ reset / step / reward / masks              │
 └──────────────────┬─────────────────────────┘
-                   │ RWRL Bridge / NDJSON
+                   │ IronZero Bridge / NDJSON
 ┌──────────────────▼─────────────────────────┐
-│ RWRL RWPP Extension                        │
+│ IronZero RWPP Extension                        │
 │ observation、action queue、receipt、safety  │
 └──────────────────┬─────────────────────────┘
                    │ RWPP API + RWML
@@ -82,7 +82,7 @@ RWPP 是基础设施，不是强化学习框架。真正属于本项目的是“
 - `AiManager` 和自定义 AI Controller。
 - 命令执行与扩展事件。
 
-这是 RWRL 最值得深入适配的层。
+这是 IronZero 最值得深入适配的层。
 
 ### 2.3 RWML
 
@@ -95,9 +95,9 @@ RWPP 是基础设施，不是强化学习框架。真正属于本项目的是“
 
 它不负责游戏状态建模、RL 协议或训练。
 
-### 2.4 RWRL 自己负责
+### 2.4 IronZero 自己负责
 
-- `rwrl/1` Bridge 协议。
+- `ironzero/1` Bridge 协议。
 - 观测 schema 和可见性过滤。
 - 动作 schema、动作掩码和执行前校验。
 - `reset/step/reward/terminated/truncated`。
@@ -125,13 +125,13 @@ RWPP 是基础设施，不是强化学习框架。真正属于本项目的是“
 
 结论：不够。
 
-### 方案 B：薄补丁 + RWRL 扩展
+### 方案 B：薄补丁 + IronZero 扩展
 
 特点：
 
 - 固定 RWPP/RWML/game-lib 版本。
 - 只维护少量 API 兼容补丁。
-- 主要逻辑在 RWRL Extension。
+- 主要逻辑在 IronZero Extension。
 - 通过官方扩展点接入 tick 和游戏线程。
 
 优点：
@@ -347,7 +347,7 @@ PR 3：M1 集成测试
 - 先从 `main` 创建独立分支。
 - 一个 PR 只解决一个主题。
 - 不提交本机路径、代理配置和游戏资源。
-- 不混入 RWRL 业务代码。
+- 不混入 IronZero 业务代码。
 - 附上构建日志和冒烟结果。
 - 说明对旧映射版本的影响。
 
@@ -384,7 +384,7 @@ RWML 1.0.2 使用 RWPP-Team Shield License，不是 OSI 开源许可证。其附
 ### 8.3 建议的目录边界
 
 ```text
-src/rwrl/                    Apache-2.0
+src/ironzero/                    Apache-2.0
 schemas/                     Apache-2.0
 docs/                        CC BY 4.0
 game-agent/rwpp-extension/   单独许可证，按 RWPP 要求
@@ -401,7 +401,7 @@ vendor/rwpp/patches/         单独记录许可证和来源
 M1.1  固定版本清单和构建脚本
 M1.2  自动化创建 runtime 和复制 assets
 M1.3  长时运行和端口/进程清理测试
-M1.4  RWRL Extension 只读探针
+M1.4  IronZero Extension 只读探针
 M2    状态快照和 episode 生命周期
 M3    动作桥和动作回执
 M4    Gymnasium + PPO
@@ -417,4 +417,4 @@ M4    Gymnasium + PPO
 
 一句话概括：
 
-> RWPP 负责“让游戏可运行、可扩展、可 tick 控制”，RWRL 负责“把游戏变成可训练、可复现、可安全推理的强化学习环境”。
+> RWPP 负责“让游戏可运行、可扩展、可 tick 控制”，IronZero 负责“把游戏变成可训练、可复现、可安全推理的强化学习环境”。

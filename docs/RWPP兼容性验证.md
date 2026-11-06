@@ -283,7 +283,7 @@ artifacts/smoke/20261104-160400/report.json
 ```powershell
 .\scripts\build_rwpp_compat.ps1 `
   -GameDir "D:\path\to\Rusted Warfare" `
-  -BuildRoot "$env:LOCALAPPDATA\RWRL" `
+  -BuildRoot "$env:LOCALAPPDATA\IronZero" `
   -ProxyUrl "http://127.0.0.1:7897"
 ```
 
