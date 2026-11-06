@@ -6,7 +6,8 @@ param(
     [int]$Port = 5123
 )
 
-$ErrorActionPreference = "Stop"
+# Native tools echo to stderr on PowerShell 5.1; keep going and rely on explicit checks.
+$ErrorActionPreference = "Continue"
 $checks = [System.Collections.Generic.List[object]]::new()
 
 function Add-Check {

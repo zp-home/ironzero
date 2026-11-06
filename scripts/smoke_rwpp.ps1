@@ -8,7 +8,8 @@ param(
     [int]$TimeoutSeconds = 180
 )
 
-$ErrorActionPreference = "Stop"
+# Native tools echo to stderr on PowerShell 5.1; keep going and rely on explicit checks.
+$ErrorActionPreference = "Continue"
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
 if (-not $RuntimeDir) {
@@ -62,6 +63,9 @@ $process = Start-Process `
     -RedirectStandardOutput $stdoutPath `
     -RedirectStandardError $stderrPath
 
+# Force the process handle so ExitCode is populated on PowerShell 5.1
+# (Start-Process -PassThru otherwise reports a null exit code).
+$null = $process.Handle
 $finished = $process.WaitForExit($TimeoutSeconds * 1000)
 if (-not $finished) {
     Stop-ProcessTree -Id $process.Id
