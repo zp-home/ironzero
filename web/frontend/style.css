@@ -725,8 +725,59 @@ body::before {
 
 .sandbox-stage { min-height: 0; }
 
+.map-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(8, 16, 28, 0.72);
+  flex: 0 0 auto;
+}
+
+.mini-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.mini-field select {
+  max-width: 300px;
+  padding: 3px 8px;
+  border: 1px solid var(--line-2);
+  border-radius: 5px;
+  background: rgba(5, 12, 22, 0.92);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+}
+
+.mini-field select:disabled { opacity: 0.45; cursor: not-allowed; }
+.mini-field select:focus { outline: none; border-color: rgba(56, 225, 255, 0.55); }
+
+.map-status {
+  margin-left: auto;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  letter-spacing: 0.4px;
+  color: var(--muted-2);
+}
+
+.map-status.ok { color: #7de3b0; }
+.map-status.warn { color: #ffc35c; }
+.map-status.bad { color: #ff9aa4; }
+
 .stage-wrap {
   position: relative;
+
   flex: 1 1 auto;
   min-height: 0;
   background: #04090f;

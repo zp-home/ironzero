@@ -78,8 +78,12 @@ checkpoint.pt   模型权重
 - 选择 checkpoint（列表来自 `runs/**/checkpoint.pt`）、局数、对手、随机种子、动作模式（贪婪/采样/随机）
 - 后端逐帧推流，前端 canvas 实时渲染：坦克、血条、编号、指令箭头、shot 弹道、kill 爆炸
 - 支持播放 / 暂停 / 0.5–4 倍速 / 进度条 / 跳到最新
+- **实机地图渲染**：从 1.15 游戏资源解析 `.tmx` 地图与 tileset 图集，按真实地形绘制战场，单位使用游戏原版坦克贴图（车体 + 炮塔），支持 73 张可用地图选择
+- **视野切换**：`battle`（战场 1200×1200 陆地窗口，1:1 像素，接近实机）与 `full`（整张地图全景）
 - 「录制视频」：`canvas.captureStream(30)` + `MediaRecorder`，浏览器直接下载 `.webm`
-- 每局结束自动写入回放库
+- 每局结束自动写入回放库；回放会记住当时选择的地图
+
+> 地形目前只用于观战渲染：训练/推理的引擎仍是确定性微操（不读取地形做寻路和碰撞），界面上会标注「地形仅视觉」。
 
 ### 回放库
 
@@ -87,7 +91,17 @@ checkpoint.pt   模型权重
 - 点击载入沙盘重放；支持删除
 - 回放是纯 JSON（`ironzero.replay/1`），可以直接用别的工具消费
 
-## 4. API 速查
+## 4. 准备游戏资源（实机地图渲染）
+
+沙盘的地形与坦克贴图来自本机 1.15 客户端资源，需要先复制一份到本地缓存（`.game_cache/`，已 gitignore，**不会提交、不会分发**）：
+
+```powershell
+.\web\scripts\prepare_assets.ps1 -GameDir "E:\qwq\强化学习笔记\Rusted Warfare1.15PC"
+```
+
+脚本会复制 `assets/tilesets`（图集）、`assets/maps`（84 张 .tmx）与坦克贴图，约 5 MB。Docker 启动时以只读方式挂载 `.game_cache` 到 `/app/game_cache`；没有缓存时平台照常运行，沙盘自动回退抽象圆点渲染。
+
+## 5. API 速查
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -97,34 +111,41 @@ checkpoint.pt   模型权重
 | GET | `/api/runs/{id}/events?after=N` | 增量训练事件 |
 | POST | `/api/runs/{id}/stop` | 停止训练 |
 | GET | `/api/checkpoints` | 可用模型 |
-| POST | `/api/infer` | 启动推理（逐帧推流） |
+| POST | `/api/infer` | 启动推理（逐帧推流，可带 `map_id`） |
 | GET | `/api/infer/{id}` | 推理状态 |
 | GET | `/api/infer/{id}/frames?after=N` | 增量帧 |
 | GET | `/api/replays` | 回放列表 |
 | GET/DELETE | `/api/replays/{id}` | 读取 / 删除回放 |
+| GET | `/api/maps` | 可用地图列表 + 单位贴图清单 |
+| GET | `/api/maps/{id}` | 地图详情（图层 gid、tileset 图集、战场窗口） |
+| GET | `/api/assets/{path}` | 游戏图集/贴图文件（只读，路径校验） |
 
-## 5. 目录
+## 6. 目录
 
 ```text
 web/
   backend/app.py        FastAPI 服务（任务、事件、回放）
+  backend/maps.py       Rusted Warfare 地图/图集解析（.tmx、gid、战场窗口）
   frontend/             纯静态大屏（index.html / app.js / style.css）
   Dockerfile            平台镜像（python:3.12-slim + CPU torch）
-  docker-compose.yml    一键启动
-  scripts/              开发/运维小脚本
+  docker-compose.yml    一键启动（runs/、frontend/、.game_cache/ 挂载）
+  scripts/              开发/运维小脚本（含 prepare_assets.ps1）
 src/ironzero/           训练、环境、回放、协议（被平台调用）
 runs/                   产物（已 gitignore）
+.game_cache/            本机游戏资源缓存（已 gitignore，不提交）
 ```
 
-## 6. 界面
+## 7. 界面
 
 ![训练监控](../docs/assets/platform_training.png)
 
-![对局沙盘](../docs/assets/platform_sandbox.png)
+![对局沙盘（实机地图 · 战场视野）](../docs/assets/platform_sandbox.png)
+
+![对局沙盘（全场视野）](../docs/assets/platform_sandbox_full.png)
 
 ![回放库](../docs/assets/platform_replays.png)
 
-## 7. 边界
+## 8. 边界
 
 - 平台当前跑的是**离线参考环境**（按真实 1.15 坦克数值校准的 8v8 微操），不是游戏本体；真机 RWPP 接入后只需把后端里的训练/推理命令换成 TCP 适配器版本。
 - 平台默认只在本机/内网使用，不要暴露到公网。

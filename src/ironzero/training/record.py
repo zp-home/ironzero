@@ -66,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-decisions", type=int, default=400)
     parser.add_argument("--prefix", default="replay")
     parser.add_argument("--interpolate", type=int, default=1, help="record every N decisions (1 = every frame)")
+    parser.add_argument("--map-id", default="", help="selected dashboard map id, stored in the replay meta")
     return parser
 
 
@@ -95,6 +96,8 @@ def main(argv: list[str] | None = None) -> int:
         mode=policy_mode,
         created_at=created_at,
     )
+    if args.map_id:
+        meta["map_id"] = args.map_id
     stream.emit({"type": "start", "meta": meta})
     episode_summaries: list[dict] = []
     rng = np.random.default_rng(args.seed)

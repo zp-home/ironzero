@@ -21,9 +21,12 @@ services:
     environment:
       IRONZERO_RUNS: /app/runs/platform
       IRONZERO_CHECKPOINT_ROOTS: /app/runs
+      IRONZERO_GAME_ASSETS: /app/game_cache
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../runs:/app/runs
       # Live frontend mount: edit web/frontend/* and refresh the browser without rebuilding.
       - ../web/frontend:/app/web/frontend:ro
+      # Local copy of game tilesets/maps/sprites for the in-game sandbox renderer.
+      - ../.game_cache:/app/game_cache:ro
     restart: unless-stopped

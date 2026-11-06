@@ -98,6 +98,9 @@ const Api = {
   replays: () => api('/api/replays'),
   replay: (id) => api('/api/replays/' + encodePathId(id)),
   deleteReplay: (id) => api('/api/replays/' + encodePathId(id), { method: 'DELETE' }),
+  maps: () => api('/api/maps'),
+  mapDetail: (id) => api('/api/maps/' + encodeURIComponent(id)),
+  assetUrl: (relative) => apiBase() + '/api/assets/' + String(relative || '').split('/').map(encodeURIComponent).join('/'),
 };
 
 /* ============================================================
@@ -347,6 +350,7 @@ function cacheEls() {
     'run-status', 'stop-btn', 'meta-run', 'meta-kind', 'meta-created', 'meta-config', 'meta-eval',
     'log-count', 'log-panel',
     'sandbox-demo-chip', 'infer-status', 'record-btn', 'stage-wrap', 'sandbox-canvas', 'rec-badge',
+    'map-select', 'view-select', 'map-status',
     'play-btn', 'latest-btn', 'speed-select', 'seek', 'frame-label', 'frame-sub',
     'infer-form', 'ckpt-select', 'episodes-input', 'infer-opponent', 'infer-seed', 'infer-mode', 'infer-btn', 'infer-hint',
     'score-own', 'score-enemy', 'hp-own', 'hp-own-val', 'hp-enemy', 'hp-enemy-val',
@@ -376,6 +380,14 @@ function createSandboxState() {
     pollErrors: 0,
     polling: false,
     map: { width: 1000, height: 1000 },
+    mapId: '',
+    mapDetail: null,
+    terrain: null,
+    terrainEntry: null,
+    terrainLoading: false,
+    terrainError: null,
+    viewMode: 'battle',
+    mapLoadToken: 0,
     meta: {},
     checkpoint: null,
     opponent: null,
@@ -417,6 +429,7 @@ const state = {
   dirtyCharts: true,
   checkpoints: [],
   replays: [],
+  maps: { ready: false, available: false, error: null, list: [], units: {}, attempts: 0 },
   sandbox: createSandboxState(),
   mainBusy: false,
   inferTimer: null,
@@ -878,6 +891,7 @@ function enterDemo() {
   renderCheckpoints(DEMO.checkpoints);
   if (els.inferHint) els.inferHint.textContent = '后端未连接：可播放内置演示对局（演示数据，仅用于界面预览）。';
   if (DEMO.runs.length) selectDemoRun(DEMO.runs[0].id);
+  syncMapStatus();
   if (state.tab === 'sandbox') ensureSandboxContent();
 }
 
@@ -2012,6 +2026,18 @@ async function openReplay(id) {
     sandbox.results = [{ episode: num(meta.episode, 0), result: meta.result || null, ret: numOrNull(meta.return) }];
     sandbox.eventLog = collectFrameEvents(frames);
     if (els.sandboxDemoChip) els.sandboxDemoChip.hidden = state.mode !== 'demo';
+    if (meta.map_id) {
+      if (!state.maps.ready) await loadMaps();
+      if (state.maps.available) {
+        await selectMap(meta.map_id, { silent: true });
+      } else {
+        syncMapSelect();
+        syncMapStatus();
+      }
+    } else {
+      syncMapSelect();
+      syncMapStatus();
+    }
     switchTab('sandbox');
     updatePlayerUi(true);
     toast('已加载回放 · ' + frames.length + ' 帧', 'ok');
@@ -2065,6 +2091,18 @@ function applyInferStart(meta) {
   sandbox.opponent = meta.opponent || sandbox.opponent;
   sandbox.seed = numOrNull(meta.seed) !== null ? meta.seed : sandbox.seed;
   sandbox.episodes = numOrNull(meta.episodes) !== null ? meta.episodes : sandbox.episodes;
+  const mapId = meta.map_id === undefined || meta.map_id === null ? null : String(meta.map_id);
+  if (mapId && mapId !== sandbox.mapId) {
+    if (state.maps.ready) {
+      if (state.maps.available) void selectMap(mapId, { silent: true });
+    } else {
+      void loadMaps().then(() => {
+        if (state.maps.available && mapId !== state.sandbox.mapId) {
+          void selectMap(mapId, { silent: true });
+        }
+      });
+    }
+  }
 }
 
 function applyInferBatch(batch, next) {
@@ -2144,6 +2182,7 @@ async function submitInfer(event) {
     seed: clampInt(els.inferSeed && els.inferSeed.value, 0, 999999, 11),
     mode: (els.inferMode && els.inferMode.value) || 'greedy',
     max_decisions: 400,
+    map_id: state.sandbox.mapId || '',
   };
   if (els.inferBtn) {
     els.inferBtn.disabled = true;
@@ -2153,7 +2192,7 @@ async function submitInfer(event) {
     const response = await Api.startInfer(payload);
     const id = response && (response.id || response.job_id);
     if (!id) throw new Error('后端未返回推理任务 id');
-    resetSandbox();
+    resetSandbox({ keepMap: true });
     const sandbox = state.sandbox;
     sandbox.source = 'infer';
     sandbox.inferId = id;
@@ -2303,10 +2342,21 @@ function playerStatus(sandbox) {
   return { label: '空闲', cls: 'idle' };
 }
 
-function resetSandbox() {
+function resetSandbox(options) {
   cancelRecording();
+  const previous = state.sandbox;
   state.sandbox = createSandboxState();
+  if (options && options.keepMap && previous.mapId && previous.mapDetail) {
+    state.sandbox.mapId = previous.mapId;
+    state.sandbox.mapDetail = previous.mapDetail;
+    state.sandbox.terrainEntry = previous.terrainEntry;
+    state.sandbox.terrain = previous.terrain;
+    state.sandbox.viewMode = previous.viewMode;
+    state.sandbox.terrainLoading = false;
+  }
   if (els.sandboxDemoChip) els.sandboxDemoChip.hidden = true;
+  syncMapSelect();
+  syncMapStatus();
   updatePlayerUi(true);
   drawSandbox();
 }
@@ -2474,6 +2524,497 @@ const SANDBOX_COLORS = {
   gridStrong: 'rgba(56, 225, 255, 0.15)',
 };
 
+/* ============================================================
+ * 实机地图：目录 / 地形预渲染 / 相机 / 单位贴图
+ * ============================================================ */
+
+const UNIT_TILE_WIDTH = 16;
+const UNIT_TILE_HEIGHT = 30;
+const TURRET_TILE_WIDTH = 10;
+const TURRET_TILE_HEIGHT = 40;
+
+const spriteCache = { tank: null, turret: null, pending: null, failed: false };
+const unitAngleCache = new Map();
+const terrainCache = new Map();
+
+function loadImage(url) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('图片加载失败：' + url));
+    image.src = url;
+  });
+}
+
+async function ensureUnitSprites() {
+  if (spriteCache.tank && spriteCache.turret) return true;
+  if (spriteCache.pending) return spriteCache.pending;
+  spriteCache.pending = (async () => {
+    const units = state.maps.units || {};
+    const tankRel = units.tank || 'units/tanks/tank.png';
+    const turretRel = units.tank_turret || 'units/tanks/tank_turret.png';
+    try {
+      const loaded = await Promise.all([loadImage(Api.assetUrl(tankRel)), loadImage(Api.assetUrl(turretRel))]);
+      spriteCache.tank = loaded[0];
+      spriteCache.turret = loaded[1];
+      spriteCache.failed = false;
+      return true;
+    } catch (error) {
+      spriteCache.failed = true;
+      return false;
+    } finally {
+      spriteCache.pending = null;
+    }
+  })();
+  return spriteCache.pending;
+}
+
+async function loadMaps(force) {
+  if (state.maps.ready && !force) return;
+  state.maps.attempts += 1;
+  if (!force && state.maps.attempts > 3) return;
+  try {
+    const payload = await Api.maps();
+    const list = payload && Array.isArray(payload.maps) ? payload.maps : [];
+    state.maps.available = !!(payload && payload.available);
+    state.maps.list = list.filter((item) => item && !item.broken);
+    state.maps.units = (payload && payload.units) || {};
+    state.maps.error = null;
+  } catch (error) {
+    state.maps.available = false;
+    state.maps.list = [];
+    state.maps.error = error.message || String(error);
+  }
+  state.maps.ready = true;
+  renderMapOptions();
+  return;
+}
+
+function renderMapOptions() {
+  const select = els.mapSelect;
+  if (!select) return;
+  const current = state.sandbox.mapId || '';
+  while (select.options.length > 1) select.remove(1);
+  if (state.maps.available) {
+    const folderRank = { skirmish: 0, normal: 1, survival: 2, challenge: 3, testing: 4, menu_background: 5 };
+    const sorted = state.maps.list.slice().sort((left, right) => {
+      const rankLeft = folderRank[left.folder] === undefined ? 9 : folderRank[left.folder];
+      const rankRight = folderRank[right.folder] === undefined ? 9 : folderRank[right.folder];
+      if (rankLeft !== rankRight) return rankLeft - rankRight;
+      const playersLeft = num(left.players, 0);
+      const playersRight = num(right.players, 0);
+      if (playersLeft !== playersRight) return playersRight - playersLeft;
+      return String(left.name || '').localeCompare(String(right.name || ''));
+    });
+    for (const item of sorted) {
+      const option = document.createElement('option');
+      option.value = item.id;
+      const people = item.players ? item.players + 'P · ' : '';
+      option.textContent = item.name + ' · ' + people + (item.folder || 'map');
+      option.title = (item.relative || '') + ' · ' + item.width_px + '×' + item.height_px;
+      select.appendChild(option);
+    }
+  }
+  const exists = [...select.options].some((option) => option.value === current);
+  select.value = exists ? current : '';
+  syncMapStatus();
+}
+
+function setMapStatus(text, tone) {
+  if (!els.mapStatus) return;
+  els.mapStatus.textContent = text;
+  els.mapStatus.className = 'map-status' + (tone ? ' ' + tone : '');
+}
+
+function syncMapStatus() {
+  const sandbox = state.sandbox;
+  if (state.mode === 'demo') {
+    setMapStatus('演示模式 · 抽象沙盘');
+    return;
+  }
+  if (!state.maps.available) {
+    setMapStatus(
+      state.maps.ready
+        ? '未安装游戏资源缓存：请运行 web/scripts/prepare_assets.ps1'
+        : '正在读取地图列表…',
+      state.maps.ready ? 'warn' : ''
+    );
+    return;
+  }
+  if (sandbox.terrainLoading) {
+    setMapStatus('地图加载中…');
+    return;
+  }
+  if (sandbox.terrainError) {
+    setMapStatus('地图加载失败，已回退抽象渲染 · ' + sandbox.terrainError, 'bad');
+    return;
+  }
+  if (sandbox.mapDetail) {
+    setMapStatus('实机地图渲染 · 地形仅视觉 · ' + sandbox.mapDetail.name, 'ok');
+    return;
+  }
+  setMapStatus('竞技场模式 · 抽象渲染');
+}
+
+function mapCrop(detail) {
+  if (detail.crop && detail.crop.width && detail.crop.height) {
+    return {
+      x: num(detail.crop.x, 0),
+      y: num(detail.crop.y, 0),
+      width: num(detail.crop.width, 1200),
+      height: num(detail.crop.height, 1200),
+    };
+  }
+  const tileW = num(detail.tile_width, 20);
+  const tileH = num(detail.tile_height, 20);
+  return {
+    x: 0,
+    y: 0,
+    width: Math.max(1, num(detail.width_px, num(detail.width, 1000) * tileW)),
+    height: Math.max(1, num(detail.height_px, num(detail.height, 1000) * tileH)),
+  };
+}
+
+function engineToMapPixel(x, y, detail) {
+  const crop = mapCrop(detail);
+  return {
+    x: crop.x + (clamp(num(x, 0), 0, 1000) / 1000) * crop.width,
+    y: crop.y + (clamp(num(y, 0), 0, 1000) / 1000) * crop.height,
+  };
+}
+
+function mapViewRegion(sandbox, detail) {
+  const crop = mapCrop(detail);
+  if (sandbox.viewMode === 'full') {
+    return {
+      x: 0,
+      y: 0,
+      width: Math.max(1, num(detail.width_px, crop.width)),
+      height: Math.max(1, num(detail.height_px, crop.height)),
+    };
+  }
+  return { x: crop.x, y: crop.y, width: crop.width, height: crop.height };
+}
+
+function mapCamera(width, height, region, padding) {
+  const pad = num(padding, 0);
+  const rw = Math.max(1, region.width);
+  const rh = Math.max(1, region.height);
+  const scale = Math.max(0.0001, Math.min((width - pad * 2) / rw, (height - pad * 2) / rh));
+  return {
+    region: { x: region.x, y: region.y, width: rw, height: rh },
+    scale: scale,
+    ox: (width - rw * scale) / 2 - region.x * scale,
+    oy: (height - rh * scale) / 2 - region.y * scale,
+    width: width,
+    height: height,
+  };
+}
+
+function findTileset(tilesets, gid) {
+  for (const set of tilesets) {
+    if (gid >= set.firstgid) return set;
+  }
+  return null;
+}
+
+function renderTerrain(detail, region, scale, images) {
+  const tileW = num(detail.tile_width, 20);
+  const tileH = num(detail.tile_height, 20);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.ceil(region.width * scale));
+  canvas.height = Math.max(1, Math.ceil(region.height * scale));
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return canvas;
+  ctx.imageSmoothingEnabled = scale < 1;
+  ctx.fillStyle = '#0a141f';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const tilesets = (detail.tilesets || []).slice().sort((left, right) => right.firstgid - left.firstgid);
+  const columns = Math.max(1, num(detail.width, 1));
+  const rows = Math.max(1, num(detail.height, 1));
+  const tileX0 = Math.max(0, Math.floor(region.x / tileW));
+  const tileY0 = Math.max(0, Math.floor(region.y / tileH));
+  const tileX1 = Math.min(columns - 1, Math.ceil((region.x + region.width) / tileW));
+  const tileY1 = Math.min(rows - 1, Math.ceil((region.y + region.height) / tileH));
+
+  for (const layer of detail.layers || []) {
+    const data = layer && layer.data;
+    if (!Array.isArray(data)) continue;
+    for (let ty = tileY0; ty <= tileY1; ty += 1) {
+      const rowOffset = ty * columns;
+      for (let tx = tileX0; tx <= tileX1; tx += 1) {
+        const raw = data[rowOffset + tx];
+        if (!raw) continue;
+        const gid = raw & 0x1fffffff;
+        if (!gid) continue;
+        const set = findTileset(tilesets, gid);
+        if (!set) continue;
+        const image = images.get(set.firstgid);
+        if (!image) continue;
+        const local = gid - set.firstgid;
+        const col = local % Math.max(1, set.columns);
+        const row = Math.floor(local / Math.max(1, set.columns));
+        if (row >= Math.max(1, set.rows) || col >= Math.max(1, set.columns)) continue;
+        const sw = num(set.tile_width, tileW);
+        const sh = num(set.tile_height, tileH);
+        const dx = (tx * tileW - region.x) * scale;
+        const dy = (ty * tileH - region.y) * scale;
+        ctx.drawImage(image, col * sw, row * sh, sw, sh, dx, dy, tileW * scale, tileH * scale);
+      }
+    }
+  }
+  return canvas;
+}
+
+async function buildTerrainEntry(detail) {
+  const cacheKey = detail.id || String(detail.relative || detail.name);
+  const cached = terrainCache.get(cacheKey);
+  const images = new Map();
+  await Promise.all(
+    (detail.tilesets || []).map(async (set) => {
+      if (!set || !set.image) return;
+      try {
+        images.set(set.firstgid, await loadImage(Api.assetUrl(set.image)));
+      } catch (error) {
+        // 单个 tileset 失败不阻塞整图渲染，缺失区域保留底色
+      }
+    })
+  );
+  const crop = mapCrop(detail);
+  const entry = cached || {};
+  entry.detail = detail;
+  entry.images = images;
+  if (!entry.crop) entry.crop = renderTerrain(detail, crop, 1, images);
+  return entry;
+}
+
+function ensureFullTerrain(entry, detail) {
+  if (entry.full) return entry.full;
+  const width = Math.max(1, num(detail.width_px, 1000));
+  const height = Math.max(1, num(detail.height_px, 1000));
+  const scale = Math.min(1, 2048 / Math.max(width, height));
+  entry.full = renderTerrain(detail, { x: 0, y: 0, width: width, height: height }, scale, entry.images);
+  entry.fullScale = scale;
+  return entry.full;
+}
+
+async function selectMap(mapId, options) {
+  const sandbox = state.sandbox;
+  const opts = options || {};
+  const nextId = mapId || '';
+  if (!nextId) {
+    sandbox.mapId = '';
+    sandbox.mapDetail = null;
+    sandbox.terrain = null;
+    sandbox.terrainEntry = null;
+    sandbox.terrainLoading = false;
+    sandbox.terrainError = null;
+    sandbox.viewMode = 'battle';
+    if (els.mapSelect) els.mapSelect.value = '';
+    if (els.viewSelect) {
+      els.viewSelect.value = 'battle';
+      els.viewSelect.disabled = true;
+    }
+    syncMapStatus();
+    drawSandbox();
+    return;
+  }
+  if (!state.maps.available) {
+    toast('地图资源不可用：请先准备游戏资源缓存', 'error');
+    if (els.mapSelect) els.mapSelect.value = '';
+    return;
+  }
+  const token = (sandbox.mapLoadToken || 0) + 1;
+  sandbox.mapLoadToken = token;
+  sandbox.mapId = nextId;
+  sandbox.mapDetail = null;
+  sandbox.terrain = null;
+  sandbox.terrainEntry = null;
+  sandbox.terrainError = null;
+  sandbox.terrainLoading = true;
+  if (els.mapSelect) els.mapSelect.value = nextId;
+  if (els.viewSelect) els.viewSelect.disabled = false;
+  syncMapStatus();
+  drawSandbox();
+  try {
+    const detail = await Api.mapDetail(nextId);
+    if (sandbox.mapLoadToken !== token) return;
+    const entry = await buildTerrainEntry(detail);
+    if (sandbox.mapLoadToken !== token) return;
+    await ensureUnitSprites();
+    if (sandbox.mapLoadToken !== token) return;
+    sandbox.mapDetail = detail;
+    sandbox.terrainEntry = entry;
+    sandbox.terrain = entry.crop;
+    sandbox.terrainLoading = false;
+    if (sandbox.viewMode === 'full') {
+      setMapStatus('地形渲染中…');
+      await new Promise((resolve) => setTimeout(resolve, 16));
+      sandbox.terrain = ensureFullTerrain(entry, detail);
+    }
+    syncMapStatus();
+    drawSandbox();
+    if (!opts.silent) toast('已加载地图 · ' + (detail.name || nextId), 'ok');
+  } catch (error) {
+    if (sandbox.mapLoadToken !== token) return;
+    sandbox.terrainLoading = false;
+    sandbox.terrainError = error.message || String(error);
+    sandbox.mapDetail = null;
+    sandbox.mapId = '';
+    sandbox.terrainEntry = null;
+    if (els.mapSelect) els.mapSelect.value = '';
+    if (els.viewSelect) els.viewSelect.disabled = true;
+    syncMapStatus();
+    drawSandbox();
+    toast('地图加载失败，已回退抽象渲染：' + error.message, 'error');
+  }
+}
+
+async function applyViewMode(mode) {
+  const sandbox = state.sandbox;
+  sandbox.viewMode = mode === 'full' ? 'full' : 'battle';
+  if (els.viewSelect) els.viewSelect.value = sandbox.viewMode;
+  const entry = sandbox.terrainEntry;
+  if (sandbox.mapDetail && entry && sandbox.viewMode === 'full' && !entry.full) {
+    setMapStatus('地形渲染中…');
+    await new Promise((resolve) => setTimeout(resolve, 16));
+    sandbox.terrain = ensureFullTerrain(entry, sandbox.mapDetail);
+  } else if (entry) {
+    sandbox.terrain = sandbox.viewMode === 'full' ? entry.full : entry.crop;
+  }
+  syncMapStatus();
+  drawSandbox();
+}
+
+function syncMapSelect() {
+  if (!els.mapSelect) return;
+  const id = state.sandbox.mapId || '';
+  const exists = [...els.mapSelect.options].some((option) => option.value === id);
+  els.mapSelect.value = exists ? id : '';
+  if (els.viewSelect) {
+    els.viewSelect.disabled = !state.sandbox.mapDetail;
+    els.viewSelect.value = state.sandbox.viewMode || 'battle';
+  }
+}
+
+function updateUnitAngles(frame, previousFrame) {
+  const previous = new Map();
+  if (previousFrame) {
+    for (const unit of previousFrame.units) previous.set(unit.id, unit);
+  }
+  const positions = new Map();
+  for (const unit of frame.units) positions.set(unit.id, unit);
+  for (const unit of frame.units) {
+    const record = unitAngleCache.get(unit.id) || { heading: -Math.PI / 2, turret: -Math.PI / 2 };
+    const before = previous.get(unit.id);
+    if (before) {
+      const dx = unit.x - before.x;
+      const dy = unit.y - before.y;
+      if (Math.hypot(dx, dy) > 0.6) record.heading = Math.atan2(dy, dx);
+    }
+    let target = null;
+    if (unit.target !== null && unit.target !== undefined) target = positions.get(unit.target) || null;
+    if (!target) {
+      let bestDistance = Infinity;
+      for (const item of frame.units) {
+        if (item.team === unit.team) continue;
+        const distance = Math.hypot(item.x - unit.x, item.y - unit.y);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          target = item;
+        }
+      }
+    }
+    if (target) record.turret = Math.atan2(target.y - unit.y, target.x - unit.x);
+    unitAngleCache.set(unit.id, record);
+  }
+}
+
+function drawSandboxSpriteUnit(ctx, unit, x, y, selected, leader, time, options) {
+  const own = unit.team === 'own';
+  const color = own ? SANDBOX_COLORS.own : SANDBOX_COLORS.enemy;
+  const size = Math.max(8, num(options && options.size, 30));
+  const bodyWidth = size * (UNIT_TILE_WIDTH / UNIT_TILE_HEIGHT);
+  const hpFraction = clamp(unit.hp / Math.max(1, unit.maxHp), 0, 1);
+  const angles = unitAngleCache.get(unit.id) || { heading: -Math.PI / 2, turret: -Math.PI / 2 };
+
+  // 阵营色环（脚下）
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(x, y + size * 0.2, size * 0.42, size * 0.26, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = own ? 'rgba(63, 169, 255, 0.9)' : 'rgba(255, 90, 90, 0.9)';
+  ctx.lineWidth = Math.max(1, size * 0.055);
+  ctx.shadowColor = color;
+  ctx.shadowBlur = size * 0.25;
+  ctx.stroke();
+  ctx.restore();
+
+  if (selected || leader) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, size * 0.62, 0, Math.PI * 2);
+    ctx.strokeStyle = selected ? 'rgba(234, 252, 255, 0.95)' : 'rgba(56, 225, 255, 0.32)';
+    ctx.lineWidth = selected ? 1.8 : 1;
+    if (selected) {
+      ctx.setLineDash([5, 4]);
+      ctx.lineDashOffset = -time * 14;
+    } else {
+      ctx.setLineDash([3, 5]);
+      ctx.lineDashOffset = time * 8;
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  if (spriteCache.tank) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angles.heading + Math.PI / 2);
+    ctx.drawImage(spriteCache.tank, 0, 0, UNIT_TILE_WIDTH, UNIT_TILE_HEIGHT, -bodyWidth / 2, -size / 2, bodyWidth, size);
+    ctx.restore();
+    if (spriteCache.turret) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angles.turret + Math.PI / 2);
+      const turretWidth = size * (TURRET_TILE_WIDTH / TURRET_TILE_HEIGHT) * 1.05;
+      const turretHeight = size * 1.02;
+      ctx.drawImage(
+        spriteCache.turret,
+        0, 0, TURRET_TILE_WIDTH, TURRET_TILE_HEIGHT,
+        -turretWidth / 2, -turretHeight * 0.7, turretWidth, turretHeight
+      );
+      ctx.restore();
+    }
+  } else {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, size * 0.32, 0, Math.PI * 2);
+    ctx.fillStyle = own ? '#2f6fbf' : '#b5303c';
+    ctx.fill();
+    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = color;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // 血条
+  const barWidth = Math.max(14, size * 0.66);
+  const barHeight = Math.max(2.5, size * 0.09);
+  const barX = x - barWidth / 2;
+  const barY = y - size * 0.62;
+  ctx.fillStyle = 'rgba(2, 6, 12, 0.8)';
+  ctx.fillRect(barX - 1, barY - 1, barWidth + 2, barHeight + 2);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.14)';
+  ctx.fillRect(barX, barY, barWidth, barHeight);
+  ctx.fillStyle = hpFraction > 0.6 ? '#39e08b' : (hpFraction > 0.3 ? '#ffc35c' : '#ff5f6d');
+  ctx.fillRect(barX, barY, barWidth * hpFraction, barHeight);
+}
+
+/* ============================================================
+ * 对局沙盘渲染
+ * ============================================================ */
+
 function drawSandbox() {
   const canvas = els.sandboxCanvas;
   const wrap = els.stageWrap;
@@ -2500,25 +3041,80 @@ function drawSandbox() {
   ctx.fillRect(0, 0, width, height);
 
   const sandbox = state.sandbox;
-  const map = sandbox.map || { width: 1000, height: 1000 };
-  const mapWidth = Math.max(1, num(map.width, 1000));
-  const mapHeight = Math.max(1, num(map.height, 1000));
-  const padding = 20;
-  const scale = Math.max(0.0001, Math.min((width - padding * 2) / mapWidth, (height - padding * 2) / mapHeight));
-  const drawnWidth = mapWidth * scale;
-  const drawnHeight = mapHeight * scale;
-  const offsetX = (width - drawnWidth) / 2;
-  const offsetY = (height - drawnHeight) / 2;
-  sandbox.view = { ox: offsetX, oy: offsetY, scale: scale, width: drawnWidth, height: drawnHeight, screenWidth: width, screenHeight: height };
-  const mapX = (x) => offsetX + x * scale;
-  const mapY = (y) => offsetY + y * scale;
+  const detail = sandbox.mapDetail;
+  const mapMode = !!(detail && sandbox.terrain);
+  const region = detail ? mapViewRegion(sandbox, detail) : { x: 0, y: 0, width: 1000, height: 1000 };
+  const cam = mapCamera(width, height, region, mapMode ? 0 : 20);
+  const offsetX = cam.ox + cam.region.x * cam.scale;
+  const offsetY = cam.oy + cam.region.y * cam.scale;
+  const drawnWidth = cam.region.width * cam.scale;
+  const drawnHeight = cam.region.height * cam.scale;
+  const mapX = (x) => (detail ? cam.ox + engineToMapPixel(x, 0, detail).x * cam.scale : cam.ox + num(x, 0) * cam.scale);
+  const mapY = (y) => (detail ? cam.oy + engineToMapPixel(0, y, detail).y * cam.scale : cam.oy + num(y, 0) * cam.scale);
+  sandbox.view = {
+    ox: cam.ox,
+    oy: cam.oy,
+    scale: cam.scale,
+    width: drawnWidth,
+    height: drawnHeight,
+    screenWidth: width,
+    screenHeight: height,
+    region: cam.region,
+    detail: detail || null,
+    corners: { x: offsetX, y: offsetY, width: drawnWidth, height: drawnHeight },
+    project: (x, y) => ({ x: mapX(x), y: mapY(y) }),
+  };
 
   ctx.save();
   ctx.beginPath();
   ctx.rect(offsetX, offsetY, drawnWidth, drawnHeight);
   ctx.clip();
 
-  const mapGradient = ctx.createRadialGradient(
+  if (mapMode) {
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(sandbox.terrain, offsetX, offsetY, drawnWidth, drawnHeight);
+    const shade = ctx.createRadialGradient(
+      width / 2, height / 2, Math.min(width, height) * 0.18,
+      width / 2, height / 2, Math.max(width, height) * 0.72
+    );
+    shade.addColorStop(0, 'rgba(3, 8, 14, 0)');
+    shade.addColorStop(1, 'rgba(3, 8, 14, 0.5)');
+    ctx.fillStyle = shade;
+    ctx.fillRect(offsetX, offsetY, drawnWidth, drawnHeight);
+
+    if (detail && sandbox.viewMode === 'full') {
+      const crop = mapCrop(detail);
+      const bx = cam.ox + crop.x * cam.scale;
+      const by = cam.oy + crop.y * cam.scale;
+      const bw = crop.width * cam.scale;
+      const bh = crop.height * cam.scale;
+      ctx.save();
+      ctx.setLineDash([6, 6]);
+      ctx.strokeStyle = 'rgba(56, 225, 255, 0.6)';
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(bx, by, bw, bh);
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(56, 225, 255, 0.92)';
+      ctx.font = '10px "Microsoft YaHei", "Segoe UI", sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText('交战区域', bx + 6, by + 8);
+      ctx.restore();
+    }
+  } else if (detail) {
+    ctx.fillStyle = '#07111c';
+    ctx.fillRect(offsetX, offsetY, drawnWidth, drawnHeight);
+    ctx.save();
+    ctx.fillStyle = 'rgba(160, 200, 230, 0.78)';
+    ctx.font = '13px "Microsoft YaHei", "Segoe UI", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(sandbox.terrainError ? '地图加载失败，回退抽象渲染' : '地图加载中…', width / 2, height / 2);
+    ctx.restore();
+  } else {
+    const mapWidth = 1000;
+    const mapHeight = 1000;
+    const mapGradient = ctx.createRadialGradient(
     offsetX + drawnWidth / 2, offsetY + drawnHeight / 2, 20,
     offsetX + drawnWidth / 2, offsetY + drawnHeight / 2, Math.max(drawnWidth, drawnHeight) * 0.8
   );
@@ -2585,6 +3181,7 @@ function drawSandbox() {
     ctx.fillText('敌方部署区', offsetX + drawnWidth - 12, offsetY + drawnHeight - 10);
   }
   ctx.restore();
+  }
 
   const frames = sandbox.frames;
   if (!frames.length) {
@@ -2602,6 +3199,7 @@ function drawSandbox() {
   const frame = frames[index];
   const nextFrame = frames[nextIndex];
   const units = interpolateUnits(frame, nextFrame, fraction);
+  updateUnitAngles(frame, index > 0 ? frames[index - 1] : null);
 
   // 指令箭头（画在单位下层）
   const positions = new Map();
@@ -2634,8 +3232,13 @@ function drawSandbox() {
     leaders.add(unit.id);
   }
   const time = performance.now() / 1000;
+  const spriteSize = sandbox.viewMode === 'full' ? 18 : 32;
   for (const unit of sorted) {
-    drawSandboxUnit(ctx, unit, mapX, mapY, unit.id === sandbox.selectedId, leaders.has(unit.id), time);
+    if (mapMode && spriteCache.tank) {
+      drawSandboxSpriteUnit(ctx, unit, mapX(unit.x), mapY(unit.y), unit.id === sandbox.selectedId, leaders.has(unit.id), time, { size: spriteSize });
+    } else {
+      drawSandboxUnit(ctx, unit, mapX, mapY, unit.id === sandbox.selectedId, leaders.has(unit.id), time);
+    }
   }
 
   // 当前帧事件（暂停时静态显示，播放时由实时特效呈现）
@@ -2726,6 +3329,14 @@ function drawSandboxHud(ctx, sandbox, frame, width, height) {
     ? '#' + (frame.episode + 1) + ' · tick ' + frame.tick + ' · t=' + fmtNum(frame.time, 1) + 's'
     : '等待推理数据';
   ctx.fillText(info, 14, 12);
+  if (sandbox.mapDetail) {
+    ctx.save();
+    ctx.font = '10px "Microsoft YaHei", "Segoe UI", sans-serif';
+    ctx.fillStyle = 'rgba(124, 160, 190, 0.9)';
+    const viewLabel = sandbox.viewMode === 'full' ? '全场' : '战场 1:1';
+    ctx.fillText((sandbox.mapDetail.name || '地图') + ' · ' + viewLabel + ' · 地形仅视觉', 14, 27);
+    ctx.restore();
+  }
 
   // 血量条
   const barWidth = 120;
@@ -2874,6 +3485,18 @@ function drawShotLine(ctx, x1, y1, x2, y2, alpha) {
   ctx.lineTo(x2, y2);
   ctx.stroke();
   ctx.restore();
+  // 枪口闪光
+  ctx.save();
+  ctx.globalAlpha = strength * 0.9;
+  const muzzle = ctx.createRadialGradient(x1, y1, 0, x1, y1, 7);
+  muzzle.addColorStop(0, 'rgba(255, 255, 235, 0.95)');
+  muzzle.addColorStop(1, 'rgba(255, 190, 60, 0)');
+  ctx.fillStyle = muzzle;
+  ctx.beginPath();
+  ctx.arc(x1, y1, 7, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  // 命中点
   ctx.save();
   ctx.globalAlpha = strength * 0.8;
   ctx.fillStyle = '#fff5c9';
@@ -3164,9 +3787,8 @@ function handleSandboxClick(event) {
   let best = null;
   let bestDistance = 22;
   for (const unit of frame.units) {
-    const screenX = view.ox + unit.x * view.scale;
-    const screenY = view.oy + unit.y * view.scale;
-    const distance = Math.hypot(screenX - mouseX, screenY - mouseY);
+    const projected = view.project ? view.project(unit.x, unit.y) : { x: view.ox + unit.x * view.scale, y: view.oy + unit.y * view.scale };
+    const distance = Math.hypot(projected.x - mouseX, projected.y - mouseY);
     if (distance < bestDistance) {
       bestDistance = distance;
       best = unit;
@@ -3199,6 +3821,16 @@ function bindEvents() {
   if (els.replayRefresh) els.replayRefresh.addEventListener('click', () => { loadReplays(); });
   if (els.demoRetry) els.demoRetry.addEventListener('click', retryConnection);
   if (els.recordBtn) els.recordBtn.addEventListener('click', toggleRecording);
+  if (els.mapSelect) {
+    els.mapSelect.addEventListener('change', () => {
+      selectMap(els.mapSelect.value || '');
+    });
+  }
+  if (els.viewSelect) {
+    els.viewSelect.addEventListener('change', () => {
+      applyViewMode(els.viewSelect.value);
+    });
+  }
 
   if (els.playBtn) {
     els.playBtn.addEventListener('click', () => {
@@ -3338,6 +3970,7 @@ async function tickMain() {
     if (state.currentRunId) await refreshCurrentRun();
     if (state.tab === 'replays') await loadReplays();
     if (!state.checkpoints.length) await loadCheckpoints();
+    if (!state.maps.ready) await loadMaps();
     renderConn();
   } finally {
     state.mainBusy = false;
@@ -3360,6 +3993,7 @@ async function boot() {
     await refreshRuns();
     if (state.runs.length && !state.currentRunId) await selectRun(state.runs[0].id);
     await loadCheckpoints();
+    await loadMaps();
     await loadReplays();
   } else {
     enterDemo();

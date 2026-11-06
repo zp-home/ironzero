@@ -25,9 +25,11 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+
+from . import maps as gamemaps
 
 APP_VERSION = "0.1.0"
 REPO_ROOT = Path(os.environ.get("IRONZERO_REPO_ROOT", Path(__file__).resolve().parents[2])).resolve()
@@ -69,6 +71,7 @@ class InferRequest(BaseModel):
     seed: int = Field(default=42, ge=0)
     mode: str = Field(default="greedy", pattern="^(greedy|sample|random)$")
     max_decisions: int = Field(default=400, ge=10, le=2000)
+    map_id: str = Field(default="", max_length=256)
 
 
 # ----------------------------------------------------------------------
@@ -435,6 +438,8 @@ def start_infer(request: InferRequest) -> dict[str, Any]:
         "--prefix",
         job_id,
     ]
+    if request.map_id:
+        command.extend(["--map-id", request.map_id])
     _spawn(job_id, job_dir, "infer", config, command)
     return {"id": job_id, "status": "running", "dir": str(job_dir)}
 
@@ -535,6 +540,51 @@ def delete_replay(replay_id: str) -> dict[str, Any]:
 @app.get("/api/checkpoints")
 def list_checkpoints() -> list[dict[str, Any]]:
     return _find_checkpoints()
+
+
+# ----------------------------------------------------------------------
+# Real game assets: maps, tilesets, unit sprites (local cache only)
+# ----------------------------------------------------------------------
+_map_list_cache: dict[str, Any] = {"at": 0.0, "payload": None}
+
+
+@app.get("/api/maps")
+def api_maps(force: bool = False) -> dict[str, Any]:
+    now = time.time()
+    if (
+        force
+        or _map_list_cache["payload"] is None
+        or now - float(_map_list_cache["at"]) > 30.0
+    ):
+        available = gamemaps.assets_available()
+        payload = {
+            "available": available,
+            "assets_root": str(gamemaps.ASSETS_ROOT),
+            "maps": gamemaps.list_maps() if available else [],
+            "units": gamemaps.unit_sprites() if available else {},
+        }
+        _map_list_cache["payload"] = payload
+        _map_list_cache["at"] = now
+    return _map_list_cache["payload"]
+
+
+@app.get("/api/maps/{map_id}")
+def api_map(map_id: str) -> JSONResponse:
+    try:
+        payload = gamemaps.load_map(map_id)
+    except gamemaps.MapError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return JSONResponse(payload)
+
+
+@app.get("/api/assets/{asset_path:path}")
+def api_asset(asset_path: str) -> FileResponse:
+    try:
+        path = gamemaps.resolve_asset(asset_path)
+    except gamemaps.MapError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(path)
+
 
 
 # Static frontend assets

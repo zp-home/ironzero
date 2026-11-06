@@ -89,8 +89,15 @@ docker compose -f web/docker-compose.yml up -d --build
 start http://127.0.0.1:8000
 ```
 
+实机地图渲染需要先把本机 1.15 客户端资源复制到本地缓存（`.game_cache/`，已 gitignore，不提交不分发）：
+
+```powershell
+.\web\scripts\prepare_assets.ps1 -GameDir "E:\path\to\Rusted Warfare1.15PC"
+```
+
 - **训练监控**：启动/停止 PPO，胜率与回报曲线、KPI、实时日志
 - **对局沙盘**：载入 checkpoint 逐帧推理，canvas 渲染 8v8 坦克、血条、弹道、爆炸，支持倍速/进度条
+- **实机地图**：解析 1.15 客户端 `.tmx`/tileset/坦克贴图，真实地形观战，73 张地图可选，`battle`/`full` 视野（地形仅视觉，训练引擎不变）
 - **回放库**：每局自动落盘 `ironzero.replay/1` JSON，可重放、删除；「录制视频」导出 `.webm`
 
 ![对局沙盘](docs/assets/platform_sandbox.png)

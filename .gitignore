@@ -60,3 +60,6 @@ config.local.*
 # Dashboard temp screenshots
 web/frontend/_*.png
 web/frontend/.gitkeep
+
+# Local game asset cache (copyrighted assets, never committed)
+.game_cache/

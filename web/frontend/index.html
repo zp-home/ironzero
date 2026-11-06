@@ -206,6 +206,22 @@
                 <button class="btn btn-sm btn-ghost" type="button" id="record-btn">● 录制视频</button>
               </div>
             </header>
+            <div class="map-toolbar">
+              <label class="mini-field" title="选择用于渲染观战的实机地图（来自游戏资源缓存）">
+                <span>地图</span>
+                <select id="map-select">
+                  <option value="">微操竞技场（抽象）</option>
+                </select>
+              </label>
+              <label class="mini-field" title="战场 1:1 聚焦交战区域；全场显示整张地图">
+                <span>视野</span>
+                <select id="view-select" disabled>
+                  <option value="battle" selected>战场 1:1</option>
+                  <option value="full">全场</option>
+                </select>
+              </label>
+              <span class="map-status" id="map-status">竞技场模式 · 抽象渲染</span>
+            </div>
             <div class="stage-wrap" id="stage-wrap">
               <canvas id="sandbox-canvas"></canvas>
               <div class="rec-badge" id="rec-badge" hidden><span class="rec-dot"></span>REC</div>

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.0" orientation="orthogonal" renderorder="right-down" width="6" height="6" tilewidth="20" tileheight="20">
+ <tileset firstgid="1" name="Tiny Terrain" tilewidth="20" tileheight="20" columns="2" tilecount="2">
+  <image source="terrain/bitmaps/tiny_terrain.png" width="40" height="20"/>
+ </tileset>
+ <tileset firstgid="2" source="terrain/Tiny Grass.tsx"/>
+ <tileset firstgid="3" name="Water" tilewidth="20" tileheight="20" columns="1" tilecount="1">
+  <image source="bitmaps/tiny_water.png" width="20" height="20"/>
+ </tileset>
+ <layer name="Ground" width="6" height="6">
+  <data encoding="base64" compression="gzip">H4sIAD5a7WoC/2NkYGBggmJmKM0IxQMhDgCbd6fkkAAAAA==</data>
+ </layer>
+ <layer name="Items" width="6" height="6">
+  <data encoding="base64" compression="gzip">H4sIAD5a7WoC/2NgwA0YGegPAHRjknGQAAAA</data>
+ </layer>
+ <objectgroup name="Triggers"/>
+</map>

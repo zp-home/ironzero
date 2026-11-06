@@ -17,3 +17,4 @@ node_modules
 *.log
 artifacts
 web/frontend/_*.png
+.game_cache
