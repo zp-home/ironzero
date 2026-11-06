@@ -20,6 +20,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any
@@ -40,6 +42,7 @@ CHECKPOINT_ROOTS = [
     if item.strip()
 ]
 FRONTEND_DIR = REPO_ROOT / "web" / "frontend"
+RWPP_SERVICE = os.environ.get("IRONZERO_RWPP_SERVICE", "http://host.docker.internal:8300")
 RUNS_ROOT.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="IronZero Platform", version=APP_VERSION)
@@ -75,6 +78,12 @@ class InferRequest(BaseModel):
     sim_mode: str = Field(default="arena", pattern="^(arena|terrain)$")
     fog: bool = Field(default=False)
     vision_radius: float = Field(default=260.0, gt=0.0, le=5000.0)
+
+
+class RwppRecordRequest(BaseModel):
+    ticks: int = Field(default=2400, ge=120, le=20000)
+    policy: str = Field(default="scripted", pattern="^(scripted|none)$")
+    map_name: str | None = Field(default=None, max_length=128)
 
 
 # ----------------------------------------------------------------------
@@ -635,6 +644,44 @@ def api_asset(asset_path: str) -> FileResponse:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return FileResponse(path)
 
+
+
+# ----------------------------------------------------------------------
+# Real game (RWPP) via the host-side service
+# ----------------------------------------------------------------------
+def _rwpp_call(path: str, payload: dict[str, Any] | None = None, timeout: float = 10.0) -> dict:
+    url = RWPP_SERVICE.rstrip("/") + path
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request = urllib.request.Request(
+        url, data=data, headers={"Content-Type": "application/json"}, method="POST" if data else "GET"
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")
+        raise HTTPException(status_code=502, detail=f"host rwpp service error: {detail}") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503,
+            detail=f"host rwpp service unavailable ({RWPP_SERVICE}): {exc}",
+        ) from exc
+
+
+@app.get("/api/rwpp/status")
+def rwpp_status() -> dict[str, Any]:
+    health = _rwpp_call("/health", timeout=5.0)
+    return {"service": RWPP_SERVICE, **health}
+
+
+@app.post("/api/rwpp/record")
+def rwpp_record(request: RwppRecordRequest) -> dict[str, Any]:
+    return _rwpp_call("/record", request.model_dump(), timeout=20.0)
+
+
+@app.get("/api/rwpp/jobs/{job_id}")
+def rwpp_job(job_id: str) -> dict[str, Any]:
+    return _rwpp_call(f"/jobs/{job_id}", timeout=10.0)
 
 
 # Static frontend assets

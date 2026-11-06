@@ -101,6 +101,9 @@ const Api = {
   maps: () => api('/api/maps'),
   mapDetail: (id) => api('/api/maps/' + encodeURIComponent(id)),
   assetUrl: (relative) => apiBase() + '/api/assets/' + String(relative || '').split('/').map(encodeURIComponent).join('/'),
+  rwppStatus: () => api('/api/rwpp/status', { timeout: 5000 }),
+  rwppRecord: (config) => api('/api/rwpp/record', { method: 'POST', body: config }),
+  rwppJob: (id) => api('/api/rwpp/jobs/' + encodeURIComponent(id), { timeout: 5000 }),
 };
 
 /* ============================================================
@@ -315,6 +318,7 @@ function normalizeReplay(raw) {
     simMode: pickVal(item, 'sim_mode') === 'terrain' ? 'terrain' : 'arena',
     mapId: pickVal(item, 'map_id') || ((item.map && item.map.id) || null),
     mapName: pickVal(item, 'map_name') || ((item.map && item.map.name) || null),
+    source: pickVal(item, 'source') || null,
   };
 }
 
@@ -365,6 +369,7 @@ function cacheEls() {
     'score-own', 'score-enemy', 'hp-own', 'hp-own-val', 'hp-enemy', 'hp-enemy-val',
     'sb-ckpt', 'sb-opponent', 'sb-episode', 'sb-frames', 'event-feed',
     'replay-count', 'replay-refresh', 'replay-body', 'toast-host',
+    'rwpp-status', 'rwpp-status-text', 'rwpp-record-btn',
   ];
   for (const id of ids) {
     const key = id.replace(/-([a-z])/g, (match, chr) => chr.toUpperCase());
@@ -450,6 +455,20 @@ const state = {
   sandbox: createSandboxState(),
   mainBusy: false,
   inferTimer: null,
+  rwpp: {
+    available: false,
+    checked: false,
+    checking: false,
+    statusAt: 0,
+    service: null,
+    serviceError: null,
+    jobId: null,
+    startedAt: 0,
+    timer: null,
+    polling: false,
+    running: false,
+    lastSeconds: 0,
+  },
 };
 
 /* ============================================================
@@ -1922,11 +1941,20 @@ function renderReplays() {
   for (const item of items) {
     const row = document.createElement('tr');
     row.className = 'data-row';
+    const realReplay = isRealReplay(item);
+    if (realReplay) row.classList.add('real-row');
     row.addEventListener('click', () => openReplay(item.id));
 
     const cellName = document.createElement('td');
     cellName.className = 'cell-name';
     cellName.textContent = item.name || basename(item.id);
+    if (realReplay) {
+      const realTag = document.createElement('span');
+      realTag.className = 'real-tag';
+      realTag.textContent = '真机';
+      realTag.title = '由宿主机真实 Rusted Warfare 1.15 无头对局录制';
+      cellName.appendChild(realTag);
+    }
     cellName.title = item.id || item.name || '';
 
     const cellCheckpoint = document.createElement('td');
@@ -2012,6 +2040,199 @@ async function loadReplays() {
     renderReplays();
   } catch (error) {
     // 保留上一次列表
+  }
+}
+
+
+/* ============================================================
+ * 真机 RWPP 录制（宿主机真实 1.15 无头对局）
+ * ============================================================ */
+
+const RWPP_TICKS = 2400;
+const RWPP_POLL_MS = 2000;
+const RWPP_MAX_SECONDS = 300;
+const RWPP_STATUS_TTL_MS = 30000;
+
+function isRealReplay(item) {
+  if (!item) return false;
+  return item.checkpoint === 'rwpp-live' || item.source === 'rwpp-bridge';
+}
+
+function renderRwppStatus() {
+  const rwpp = state.rwpp;
+  if (els.rwppStatus) {
+    els.rwppStatus.setAttribute('data-state', rwpp.checked ? (rwpp.available ? 'ok' : 'down') : 'unknown');
+    if (rwpp.service) els.rwppStatus.title = '宿主机真机服务：' + rwpp.service;
+  }
+  if (els.rwppStatusText) {
+    els.rwppStatusText.textContent = !rwpp.checked
+      ? '真机服务检测中…'
+      : (rwpp.available ? '真机服务就绪' : '真机服务未启动');
+  }
+  if (els.rwppRecordBtn) {
+    els.rwppRecordBtn.classList.toggle('unavailable', rwpp.checked && !rwpp.available);
+  }
+}
+
+async function refreshRwppStatus(force) {
+  const rwpp = state.rwpp;
+  if (rwpp.checking) return;
+  if (!force && rwpp.checked && Date.now() - rwpp.statusAt < RWPP_STATUS_TTL_MS) return;
+  if (state.mode === 'demo') {
+    rwpp.checked = true;
+    rwpp.available = false;
+    renderRwppStatus();
+    return;
+  }
+  rwpp.checking = true;
+  try {
+    const payload = await Api.rwppStatus();
+    rwpp.available = !!(payload && payload.ok);
+    rwpp.service = payload && payload.service ? String(payload.service) : null;
+    rwpp.serviceError = null;
+  } catch (error) {
+    rwpp.available = false;
+    rwpp.serviceError = error && error.message ? error.message : String(error);
+  } finally {
+    rwpp.checking = false;
+    rwpp.checked = true;
+    rwpp.statusAt = Date.now();
+    renderRwppStatus();
+  }
+}
+
+function setRwppRecording(running, seconds) {
+  const rwpp = state.rwpp;
+  rwpp.running = running;
+  rwpp.lastSeconds = running ? Math.max(0, Math.round(num(seconds, rwpp.lastSeconds))) : 0;
+  const button = els.rwppRecordBtn;
+  if (!button) return;
+  button.disabled = running;
+  button.classList.toggle('running', running);
+  if (running) {
+    button.innerHTML = '<span class="rwpp-rec-dot"></span>真机录制中… ' + rwpp.lastSeconds + 's';
+  } else {
+    button.innerHTML = '<span class="rwpp-rec-dot"></span>真机录制';
+  }
+}
+
+function handleRwppError(error) {
+  const status = error && error.status;
+  if (status === 503) {
+    toast('真机服务未启动：在宿主机运行 python scripts/rwpp_real_service.py', 'error');
+  } else if (status === 409) {
+    toast('已有真机录制任务正在进行，请等待完成', 'error');
+  } else {
+    toast('真机录制失败：' + (error && error.message ? error.message : error), 'error');
+  }
+}
+
+async function startRwppRecord() {
+  const rwpp = state.rwpp;
+  if (rwpp.running) return;
+  if (state.mode === 'demo') {
+    toast('演示模式下无法启动真机录制（后端未连接）', 'error');
+    return;
+  }
+  if (els.rwppRecordBtn) els.rwppRecordBtn.disabled = true;
+  try {
+    const payload = await Api.rwppRecord({ ticks: RWPP_TICKS, policy: 'scripted' });
+    const jobId = payload && (payload.job_id || payload.id);
+    if (!jobId) throw new Error('后端未返回真机录制任务 id');
+    rwpp.jobId = String(jobId);
+    rwpp.startedAt = Date.now();
+    rwpp.lastSeconds = 0;
+    rwpp.available = true;
+    rwpp.checked = true;
+    rwpp.statusAt = Date.now();
+    renderRwppStatus();
+    setRwppRecording(true, 0);
+    startRwppPolling();
+    toast('真机录制已开始（ticks=' + RWPP_TICKS + '，约 40–60s）', 'ok');
+  } catch (error) {
+    setRwppRecording(false);
+    handleRwppError(error);
+    await refreshRwppStatus(true);
+  }
+}
+
+function stopRwppPolling() {
+  const rwpp = state.rwpp;
+  if (rwpp.timer) {
+    clearInterval(rwpp.timer);
+    rwpp.timer = null;
+  }
+  rwpp.jobId = null;
+  rwpp.startedAt = 0;
+}
+
+function startRwppPolling() {
+  const rwpp = state.rwpp;
+  if (rwpp.timer) clearInterval(rwpp.timer);
+  rwpp.timer = setInterval(pollRwppJob, RWPP_POLL_MS);
+  pollRwppJob();
+}
+
+function pickLatestRealReplay(replayPath) {
+  const items = state.replays || [];
+  if (!items.length) return null;
+  if (replayPath) {
+    const normalized = String(replayPath).replace(/\\/g, '/');
+    const fileName = basename(normalized);
+    const hit = items.find((item) => item.name === fileName || item.id.endsWith(fileName));
+    if (hit) return hit;
+  }
+  return items.find(isRealReplay) || items[0];
+}
+
+async function pollRwppJob() {
+  const rwpp = state.rwpp;
+  if (!rwpp.jobId || rwpp.polling) return;
+  rwpp.polling = true;
+  try {
+    const job = await Api.rwppJob(rwpp.jobId);
+    if (!job) return;
+    const seconds = numOrNull(job.seconds) !== null ? num(job.seconds, 0) : (Date.now() - rwpp.startedAt) / 1000;
+    if (job.status === 'running') {
+      setRwppRecording(true, seconds);
+      if ((Date.now() - rwpp.startedAt) / 1000 > RWPP_MAX_SECONDS) {
+        stopRwppPolling();
+        setRwppRecording(false);
+        toast('真机录制超时（超过 300s），请检查宿主机服务日志', 'error');
+        await refreshRwppStatus(true);
+      }
+      return;
+    }
+    stopRwppPolling();
+    setRwppRecording(false);
+    if (job.status === 'done') {
+      toast('真机录制完成（' + Math.round(seconds) + 's）', 'ok');
+      await loadReplays();
+      const target = pickLatestRealReplay(job.replay_path);
+      if (target) {
+        await openReplay(target.id);
+        toast('已自动加载真机回放到沙盘', 'ok');
+      }
+      await refreshRwppStatus(true);
+    } else {
+      const detail = job.error || job.log || '未知错误';
+      toast('真机录制失败：' + String(detail).slice(0, 160), 'error');
+      await refreshRwppStatus(true);
+    }
+  } catch (error) {
+    const elapsed = (Date.now() - rwpp.startedAt) / 1000;
+    if (error && error.status === 503) {
+      stopRwppPolling();
+      setRwppRecording(false);
+      handleRwppError(error);
+      await refreshRwppStatus(true);
+    } else if (elapsed > RWPP_MAX_SECONDS) {
+      stopRwppPolling();
+      setRwppRecording(false);
+      toast('真机录制超时或连接中断', 'error');
+    }
+  } finally {
+    rwpp.polling = false;
   }
 }
 
@@ -4191,6 +4412,7 @@ function switchTab(name) {
     drawSandbox();
   } else if (name === 'replays') {
     loadReplays();
+    refreshRwppStatus();
   }
 }
 
@@ -4259,7 +4481,13 @@ function bindEvents() {
   if (els.startForm) els.startForm.addEventListener('submit', submitStartRun);
   if (els.stopBtn) els.stopBtn.addEventListener('click', stopCurrentRun);
   if (els.inferForm) els.inferForm.addEventListener('submit', submitInfer);
-  if (els.replayRefresh) els.replayRefresh.addEventListener('click', () => { loadReplays(); });
+  if (els.replayRefresh) {
+    els.replayRefresh.addEventListener('click', () => {
+      loadReplays();
+      refreshRwppStatus(true);
+    });
+  }
+  if (els.rwppRecordBtn) els.rwppRecordBtn.addEventListener('click', startRwppRecord);
   if (els.demoRetry) els.demoRetry.addEventListener('click', retryConnection);
   if (els.recordBtn) els.recordBtn.addEventListener('click', toggleRecording);
   if (els.mapSelect) {
@@ -4429,7 +4657,10 @@ async function tickMain() {
     if (state.mode === 'boot') state.mode = 'live';
     await refreshRuns();
     if (state.currentRunId) await refreshCurrentRun();
-    if (state.tab === 'replays') await loadReplays();
+    if (state.tab === 'replays') {
+      await loadReplays();
+      await refreshRwppStatus();
+    }
     if (!state.checkpoints.length) await loadCheckpoints();
     if (!state.maps.ready) await loadMaps();
     renderConn();
@@ -4456,6 +4687,7 @@ async function boot() {
     await loadCheckpoints();
     await loadMaps();
     await loadReplays();
+    await refreshRwppStatus(true);
   } else {
     enterDemo();
   }

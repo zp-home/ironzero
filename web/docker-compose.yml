@@ -22,6 +22,7 @@ services:
       IRONZERO_RUNS: /app/runs/platform
       IRONZERO_CHECKPOINT_ROOTS: /app/runs
       IRONZERO_GAME_ASSETS: /app/game_cache
+      IRONZERO_RWPP_SERVICE: http://host.docker.internal:8300
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../runs:/app/runs

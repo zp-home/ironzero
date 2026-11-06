@@ -345,7 +345,14 @@
             <h2>回放库 <span class="demo-chip" hidden>演示数据</span></h2>
             <div class="head-actions">
               <span class="chip" id="replay-count">0</span>
+              <span class="rwpp-status" id="rwpp-status" data-state="unknown" title="宿主机真机服务（python scripts/rwpp_real_service.py）">
+                <i class="rwpp-dot"></i><span id="rwpp-status-text">真机服务检测中…</span>
+              </span>
               <button class="btn btn-sm btn-ghost" type="button" id="replay-refresh">刷新</button>
+              <button class="btn btn-sm btn-rwpp" type="button" id="rwpp-record-btn"
+                      title="在宿主机启动真实 Rusted Warfare 1.15 无头对局并录制（约 40–60s，完成后自动进回放库）">
+                <span class="rwpp-rec-dot"></span>真机录制
+              </button>
             </div>
           </header>
           <div class="replay-table-wrap">

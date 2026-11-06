@@ -92,6 +92,22 @@ checkpoint.pt   模型权重
 - 点击载入沙盘重放；支持删除
 - 回放是纯 JSON（`ironzero.replay/1`），可以直接用别的工具消费
 
+### 真机一键录制（真实 Rusted Warfare 1.15）
+
+平台容器里没有 Java，真实游戏运行时在宿主机上，通过一个小 HTTP 服务桥接。启动一次（保持运行）：
+
+```powershell
+python scripts\rwpp_real_service.py --port 8300
+```
+
+然后在平台「回放库」点「● 真机录制」：宿主机拉起 `rwpp-server` + IronZero 扩展，脚本策略通过动作桥驱动真实单位，跑完把回放写进 `runs/platform/real-rwpp-*/replays/`，平台自动刷新并可在沙盘按真实 Lake 地图播放（回放行标注「真机」）。
+
+![真机录制（回放库）](../docs/assets/platform_rwpp_ui.png)
+
+![真机回放自动载入沙盘](../docs/assets/platform_rwpp_live.png)
+
+> 真机服务只监听本机/内网，不暴露公网。真实游戏画面录像需要带图形客户端 + 窗口捕获，这里提供的是真实状态级回放。
+
 ## 4. 准备游戏资源（实机地图渲染）
 
 沙盘的地形与坦克贴图来自本机 1.15 客户端资源，需要先复制一份到本地缓存（`.game_cache/`，已 gitignore，**不会提交、不会分发**）：
@@ -103,7 +119,6 @@ checkpoint.pt   模型权重
 脚本会复制 `assets/tilesets`（图集）、`assets/maps`（84 张 .tmx）与坦克贴图，约 5 MB。Docker 启动时以只读方式挂载 `.game_cache` 到 `/app/game_cache`；没有缓存时平台照常运行，沙盘自动回退抽象圆点渲染。
 
 ## 5. API 速查
-
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/health` | 健康检查 |
@@ -120,6 +135,9 @@ checkpoint.pt   模型权重
 | GET | `/api/maps` | 可用地图列表 + 单位贴图清单 |
 | GET | `/api/maps/{id}` | 地图详情（图层 gid、tileset 图集、战场窗口） |
 | GET | `/api/assets/{path}` | 游戏图集/贴图文件（只读，路径校验） |
+| GET | `/api/rwpp/status` | 宿主机真机服务健康状态 |
+| POST | `/api/rwpp/record` | 一键录制真实对局 `{ticks, policy}` |
+| GET | `/api/rwpp/jobs/{id}` | 真机录制任务状态 |
 
 ## 6. 目录
 

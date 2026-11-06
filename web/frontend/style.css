@@ -802,6 +802,72 @@ body::before {
 .cell-sim { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .cell-sim.terrain { color: #7de3b0; }
 
+/* ---------------- 真机 RWPP 录制入口 ---------------- */
+.rwpp-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  letter-spacing: 0.4px;
+  color: var(--muted-2);
+  white-space: nowrap;
+}
+.rwpp-status .rwpp-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #5a6b7d;
+  box-shadow: 0 0 6px rgba(90, 107, 125, 0.4);
+}
+.rwpp-status[data-state="ok"] { color: #7de3b0; }
+.rwpp-status[data-state="ok"] .rwpp-dot {
+  background: #39e08b;
+  box-shadow: 0 0 8px rgba(57, 224, 139, 0.85);
+}
+.rwpp-status[data-state="down"] { color: var(--muted-2); }
+.rwpp-status[data-state="down"] .rwpp-dot { background: #6b5a5a; }
+.rwpp-status[data-state="unknown"] .rwpp-dot { animation: rec-blink 1.4s steps(2, end) infinite; }
+
+.btn-rwpp {
+  border-color: rgba(255, 130, 90, 0.5);
+  color: #ffb59b;
+  background: rgba(255, 100, 70, 0.08);
+}
+.btn-rwpp:hover:not(:disabled) {
+  border-color: rgba(255, 140, 100, 0.85);
+  background: rgba(255, 100, 70, 0.18);
+  color: #ffd0bd;
+}
+.btn-rwpp:disabled { cursor: wait; opacity: 0.72; }
+.btn-rwpp.unavailable { opacity: 0.6; }
+.rwpp-rec-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: #ff5a5a;
+  box-shadow: 0 0 7px rgba(255, 90, 90, 0.85);
+  vertical-align: middle;
+}
+.btn-rwpp.running .rwpp-rec-dot { animation: rec-blink 1s steps(2, end) infinite; }
+
+.real-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid rgba(255, 150, 100, 0.45);
+  border-radius: 8px;
+  background: rgba(255, 120, 60, 0.13);
+  color: #ffcaa8;
+  font-size: 9.5px;
+  line-height: 15px;
+  letter-spacing: 0.5px;
+  vertical-align: middle;
+}
+.replay-table tr.real-row td.cell-name { color: #ffd9c2; }
+
+
 
 .stage-wrap {
   position: relative;
