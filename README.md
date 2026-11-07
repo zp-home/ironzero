@@ -125,7 +125,9 @@ python -m ironzero.training.train_rwpp --updates 6 --envs 2 --episode-ticks 900 
 - 每实例 = 一个独立无头游戏进程（端口 5140+），`--envs` 控制并行实例数；实例跨 update 复用，只有单局结束才重启 JVM
 - 观测 364 维、动作 5 头 `[kind5, group5, x8, y8, target9]`、策略网络 168k 参数；奖励 = HP 潜势差 + 交战接近量 + 终局 ±1
 - 实测 2 实例 / 900 tick 局：240 个真机决策 45.6 秒（≈5.3 决策/秒）；GPU 只在策略前向用（4070 可选），瓶颈是 CPU 游戏进程
-- 细节与场景选型见 `docs/平台搭建方案.md` 5.7 节
+- 细节与场景选型见 `docs/平台搭建方案.md` 5.7 节，平台侧在「实机训练」页切到「PPO 真机训练」即可看训练大屏：
+
+![PPO 真机训练大屏](docs/assets/platform_real_ppo.png)
 
 ## 开发入口
 

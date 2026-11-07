@@ -1576,3 +1576,85 @@ body::before {
 
 /* 沙盘画布加高，跟随相机按宽高比铺满 */
 .dash-main .sandbox-stage .stage-wrap { min-height: 520px; }
+
+
+/* ============================================================
+ * 实机训练 · PPO 模式
+ * ============================================================ */
+.dash-page [hidden] { display: none !important; }
+
+.mode-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(8, 16, 28, 0.9);
+}
+.mode-title { font-size: 10px; letter-spacing: 1.2px; color: var(--muted-2); }
+.mode-btn {
+  font: inherit;
+  font-size: 11px;
+  padding: 5px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--line-2);
+  background: rgba(10, 22, 36, 0.85);
+  color: var(--muted);
+  cursor: pointer;
+}
+.mode-btn:hover { color: #cfe8fb; border-color: rgba(56, 225, 255, 0.45); }
+.mode-btn.active {
+  color: #04121c;
+  background: linear-gradient(180deg, #57dcff, #2aa7e6);
+  border-color: transparent;
+  font-weight: 600;
+}
+.mode-note { margin-left: auto; font-size: 10px; color: var(--muted-2); }
+
+.ppo-kpis { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+.ppo-charts { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+.ppo-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 5px 16px;
+  padding: 10px 12px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.ppo-summary .kv {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 3px;
+  border-bottom: 1px dashed rgba(56, 225, 255, 0.08);
+}
+.ppo-summary .kv b { color: #cfe8fb; font-family: "Consolas", monospace; font-weight: 500; }
+.ppo-checkpoint {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 0 12px 11px;
+  font-size: 10px;
+  color: var(--muted-2);
+}
+.ppo-checkpoint code {
+  color: #7de3b0;
+  font-size: 10px;
+  line-height: 1.45;
+  word-break: break-all;
+}
+.ppo-log.has-error { color: #ff9aa4; }
+
+@media (max-width: 1466px) {
+  .ppo-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .ppo-charts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 860px) {
+  .ppo-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ppo-charts { grid-template-columns: minmax(0, 1fr); }
+}

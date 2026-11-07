@@ -254,7 +254,15 @@
       <!-- ================= Page 2 · 实机训练大屏 ================= -->
       <section class="tab-panel" id="panel-train" role="tabpanel">
         <div class="dash-page">
-          <section class="dash-kpis" id="fe-train-kpis">
+          <div class="mode-switch" role="tablist" aria-label="训练模式">
+            <span class="mode-title">模式</span>
+            <button class="mode-btn active" type="button" data-train-mode-btn="collect" aria-selected="true">数据采集</button>
+            <button class="mode-btn" type="button" data-train-mode-btn="ppo" aria-selected="false">PPO 真机训练</button>
+            <span class="mode-note" id="fe-train-mode-note">数据采集：多线程录制真机对局（默认）</span>
+          </div>
+
+          <!-- ============ 数据采集（原有） ============ -->
+          <section class="dash-kpis" id="fe-train-kpis" data-train-mode="collect">
             <div class="kpi-card accent-cyan">
               <div class="kpi-label">总进度</div>
               <div class="kpi-value"><b id="fe-train-kpi-progress">0</b><span class="kpi-unit" id="fe-train-kpi-progress-total">/ 0 局</span></div>
@@ -287,7 +295,7 @@
             </div>
           </section>
 
-          <section class="dash-charts">
+          <section class="dash-charts" data-train-mode="collect">
             <div class="chart-card">
               <header><span>每局耗时</span><span class="chart-legend" id="legend-train-duration">秒 / 局</span></header>
               <div class="chart-box"><canvas id="fe-train-chart-duration"></canvas></div>
@@ -302,7 +310,7 @@
             </div>
           </section>
 
-          <div class="dash-lower">
+          <div class="dash-lower" data-train-mode="collect">
             <div class="dash-main">
               <section class="card train-console">
                 <header class="card-head">
@@ -384,6 +392,145 @@
                   <button class="btn btn-primary field-wide" type="button" id="fe-train-start">开始实机训练</button>
                 </div>
                 <div class="hint-line" id="fe-train-hint">并行跑多个真实游戏进程，每线程独立采集一局；当前阶段为真机数据采集。</div>
+              </section>
+            </aside>
+          </div>
+
+          <!-- ============ PPO 真机训练 ============ -->
+          <section class="dash-kpis ppo-kpis" id="fe-train-ppo-kpis" data-train-mode="ppo" hidden>
+            <div class="kpi-card accent-cyan">
+              <div class="kpi-label">训练进度</div>
+              <div class="kpi-value"><b id="fe-ppo-kpi-progress">0</b><span class="kpi-unit" id="fe-ppo-kpi-progress-total">/ 0 轮</span></div>
+              <div class="kpi-foot">updates_done / total</div>
+            </div>
+            <div class="kpi-card">
+              <div class="kpi-label">已用秒数</div>
+              <div class="kpi-value"><b id="fe-ppo-kpi-seconds">0</b><span class="kpi-unit">s</span></div>
+              <div class="kpi-foot">job.elapsed</div>
+            </div>
+            <div class="kpi-card accent-amber">
+              <div class="kpi-label">每轮均秒</div>
+              <div class="kpi-value"><b id="fe-ppo-kpi-avg">0.0</b><span class="kpi-unit">s</span></div>
+              <div class="kpi-foot">elapsed / updates_done</div>
+            </div>
+            <div class="kpi-card accent-green">
+              <div class="kpi-label">每秒决策数</div>
+              <div class="kpi-value"><b id="fe-ppo-kpi-dps">0.0</b><span class="kpi-unit">决策/s</span></div>
+              <div class="kpi-foot">envs × rollout / 每轮秒</div>
+            </div>
+            <div class="kpi-card accent-blue">
+              <div class="kpi-label">最新 return</div>
+              <div class="kpi-value"><b id="fe-ppo-kpi-return">0.00</b></div>
+              <div class="kpi-foot">latest_update.mean_return</div>
+            </div>
+            <div class="kpi-card accent-green">
+              <div class="kpi-label">最新 win_rate</div>
+              <div class="kpi-value"><b id="fe-ppo-kpi-win">0.0</b><span class="kpi-unit">%</span></div>
+              <div class="kpi-foot">latest_update.win_rate</div>
+            </div>
+            <div class="kpi-card">
+              <div class="kpi-label">最新 entropy</div>
+              <div class="kpi-value"><b id="fe-ppo-kpi-entropy">0.000</b></div>
+              <div class="kpi-foot">策略熵（探索强度）</div>
+            </div>
+            <div class="kpi-card accent-amber">
+              <div class="kpi-label">设备</div>
+              <div class="kpi-value"><b id="fe-ppo-kpi-device">auto</b><span class="kpi-unit">设备</span></div>
+              <div class="kpi-foot">auto / cpu / cuda</div>
+            </div>
+          </section>
+
+          <section class="dash-charts ppo-charts" data-train-mode="ppo" hidden>
+            <div class="chart-card">
+              <header><span>Return</span><span class="chart-legend">mean_return / update</span></header>
+              <div class="chart-box"><canvas id="fe-ppo-chart-return"></canvas></div>
+            </div>
+            <div class="chart-card">
+              <header><span>Win Rate</span><span class="chart-legend">win_rate / update</span></header>
+              <div class="chart-box"><canvas id="fe-ppo-chart-win"></canvas></div>
+            </div>
+            <div class="chart-card">
+              <header><span>Entropy / Policy Loss</span><span class="chart-legend"><i class="dot own"></i>entropy <i class="dot enemy"></i>policy_loss</span></header>
+              <div class="chart-box"><canvas id="fe-ppo-chart-entropy"></canvas></div>
+            </div>
+            <div class="chart-card">
+              <header><span>每轮耗时</span><span class="chart-legend">秒 / update</span></header>
+              <div class="chart-box"><canvas id="fe-ppo-chart-duration"></canvas></div>
+            </div>
+          </section>
+
+          <div class="dash-lower" data-train-mode="ppo" hidden>
+            <div class="dash-main">
+              <section class="card train-console">
+                <header class="card-head">
+                  <h2>PPO 训练控制台</h2>
+                  <span class="status-pill idle" id="fe-ppo-status">空闲</span>
+                </header>
+                <div class="fe-progress">
+                  <div class="fe-progress-track"><i id="fe-ppo-progress"></i></div>
+                  <div class="fe-progress-meta">
+                    <span id="fe-ppo-progress-label">0 / 0 轮</span>
+                    <span id="fe-ppo-current">等待开始</span>
+                    <span id="fe-ppo-seconds">0s</span>
+                    <span class="dash-summary" id="fe-ppo-eval-hint">—</span>
+                  </div>
+                </div>
+              </section>
+
+              <section class="card ppo-summary-card" id="fe-ppo-summary-card" hidden>
+                <header class="card-head"><h2>训练汇总</h2><span class="chip" id="fe-ppo-summary-badge">final</span></header>
+                <div class="ppo-summary" id="fe-ppo-summary">—</div>
+                <div class="ppo-checkpoint" id="fe-ppo-checkpoint" hidden>
+                  <span class="ppo-checkpoint-label">CHECKPOINT</span>
+                  <code id="fe-ppo-checkpoint-path">—</code>
+                </div>
+              </section>
+
+              <section class="card">
+                <header class="card-head"><h2>事件 / 日志</h2><span class="hint" id="fe-ppo-log-status">—</span></header>
+                <pre class="dash-log ppo-log" id="fe-ppo-log">等待 PPO 训练任务…</pre>
+              </section>
+            </div>
+
+            <aside class="dash-side">
+              <section class="card fe-setup">
+                <header class="card-head"><h2>实机训练 · PPO</h2></header>
+                <div class="fe-badge-row">
+                  <span class="rwpp-status" id="rwpp-status-ppo" data-state="unknown"
+                        title="宿主机真机服务（python scripts/rwpp_real_service.py）">
+                    <i class="rwpp-dot"></i><span class="rwpp-status-text" id="rwpp-status-ppo-text">真机服务检测中…</span>
+                  </span>
+                </div>
+                <div class="form-grid">
+                  <label class="field">
+                    <span>更新轮数 updates</span>
+                    <input id="fe-ppo-updates" type="number" min="1" max="500" step="1" value="20" />
+                  </label>
+                  <label class="field">
+                    <span>并行实例 envs（1–6）</span>
+                    <input id="fe-ppo-envs" type="number" min="1" max="6" step="1" value="2" />
+                  </label>
+                  <label class="field">
+                    <span>每轮决策 rollout</span>
+                    <input id="fe-ppo-rollout" type="number" min="1" max="512" step="1" value="20" />
+                  </label>
+                  <label class="field">
+                    <span>每局 tick</span>
+                    <input id="fe-ppo-ticks" type="number" min="120" max="20000" step="60" value="900" />
+                  </label>
+                  <label class="field field-wide">
+                    <span>设备 device</span>
+                    <select id="fe-ppo-device">
+                      <option value="auto" selected>auto（自动选择）</option>
+                      <option value="cpu">cpu</option>
+                      <option value="cuda">cuda</option>
+                    </select>
+                  </label>
+                  <button class="btn btn-primary field-wide" type="button" id="fe-ppo-start">开始 PPO 真机训练</button>
+                  <button class="btn btn-danger field-wide" type="button" id="fe-ppo-stop" hidden>停止训练</button>
+                </div>
+                <div class="hint-line" id="fe-ppo-hint">固定场景：Artillery 挑战图 · 22 我方 vs 25 AI。每个 env 独立真机进程，与数据采集共用真机槽位。</div>
+                <div class="hint-line subtle">小任务验证：updates=4 / envs=1 / rollout_steps=6 / episode_ticks=300 / device=cpu。</div>
               </section>
             </aside>
           </div>

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import queue
 import subprocess
 import sys
@@ -204,6 +205,148 @@ def run_train(
         _update(job_id, status="failed", error=str(exc), seconds=round(time.time() - started, 1))
 
 
+# ----------------------------------------------------------------------
+# PPO jobs: strategy-in-the-loop training on real games
+# ----------------------------------------------------------------------
+PPO_PROCESSES: dict[str, subprocess.Popen] = {}
+PPO_STOP: set[str] = set()
+
+
+def _read_live_events(path: Path) -> list[dict]:
+    events: list[dict] = []
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    events.append(json.loads(line))
+                except ValueError:
+                    continue
+    except OSError:
+        return events
+    return events
+
+
+def run_ppo(
+    job_id: str,
+    updates: int,
+    envs: int,
+    rollout_steps: int,
+    episode_ticks: int,
+    device: str,
+    map_name: str,
+    map_path: str,
+    map_width: float,
+    map_height: float,
+) -> None:
+    job_dir = RUNS / f"rwpp-ppo-{job_id}"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    live_path = job_dir / "live.jsonl"
+    log_path = job_dir / "train.log"
+    summary_path = job_dir / "rwpp_summary.json"
+    command = [
+        sys.executable,
+        "-m",
+        "ironzero.training.train_rwpp",
+        "--updates",
+        str(updates),
+        "--envs",
+        str(envs),
+        "--rollout-steps",
+        str(rollout_steps),
+        "--episode-ticks",
+        str(episode_ticks),
+        "--device",
+        device,
+        "--map",
+        map_path,
+        "--map-name",
+        map_name,
+        "--map-width",
+        str(map_width),
+        "--map-height",
+        str(map_height),
+        "--out",
+        str(job_dir),
+        "--live",
+        str(live_path),
+        "--eval-every",
+        str(max(1, min(updates, 2))),
+        "--eval-episodes",
+        "1",
+    ]
+    started = time.time()
+    handle = log_path.open("w", encoding="utf-8", errors="replace")
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(REPO_ROOT / "src") + os.pathsep + environment.get("PYTHONPATH", "")
+    environment["PYTHONUNBUFFERED"] = "1"
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=str(REPO_ROOT),
+            env=environment,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+        )
+        PPO_PROCESSES[job_id] = process
+        _update(job_id, pid=process.pid, live_file=_relative(live_path), out_dir=_relative(job_dir))
+        while process.poll() is None:
+            time.sleep(2.0)
+            events = _read_live_events(live_path)
+            updates_done = sum(1 for event in events if event.get("kind") == "update")
+            evaluations = [event["payload"] for event in events if event.get("kind") == "eval"]
+            latest_update = next(
+                (event["payload"] for event in reversed(events) if event.get("kind") == "update"), None
+            )
+            _update(
+                job_id,
+                updates_done=updates_done,
+                latest_update=latest_update,
+                evaluations=evaluations[-10:],
+                elapsed=round(time.time() - started, 1),
+                events=len(events),
+            )
+        return_code = process.wait()
+        events = _read_live_events(live_path)
+        updates_done = sum(1 for event in events if event.get("kind") == "update")
+        summary = None
+        if summary_path.exists():
+            try:
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                summary = None
+        log_tail = ""
+        try:
+            log_tail = log_path.read_text(encoding="utf-8", errors="replace")[-1500:]
+        except OSError:
+            pass
+        stopped = job_id in PPO_STOP
+        status = "stopped" if stopped else ("done" if return_code == 0 else "failed")
+        _update(
+            job_id,
+            status=status,
+            finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+            seconds=round(time.time() - started, 1),
+            elapsed=round(time.time() - started, 1),
+            updates_done=updates_done,
+            latest_update=next(
+                (event["payload"] for event in reversed(events) if event.get("kind") == "update"), None
+            ),
+            evaluations=[event["payload"] for event in events if event.get("kind") == "eval"][-10:],
+            summary=summary,
+            last_log=log_tail,
+            error=None if (return_code == 0 or stopped) else f"trainer exited with code {return_code}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        _update(job_id, status="failed", error=str(exc), elapsed=round(time.time() - started, 1))
+    finally:
+        PPO_STOP.discard(job_id)
+        handle.close()
+        PPO_PROCESSES.pop(job_id, None)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "IronZeroRWPP/0.3"
 
@@ -222,14 +365,70 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/health"):
             with JOBS_LOCK:
                 running = sum(1 for job in JOBS.values() if job["status"] == "running")
+                ppo_running = sum(
+                    1
+                    for job in JOBS.values()
+                    if job.get("kind") == "ppo" and job.get("status") == "running"
+                )
             self._send(
                 {
                     "ok": True,
                     "source": "host-rwpp",
                     "jobs": len(JOBS),
                     "running": running,
+                    "ppo_running": ppo_running,
                     "max_parallel": MAX_PARALLEL,
                     "free_slots": PORT_SLOTS.qsize(),
+                }
+            )
+            return
+        if self.path.startswith("/ppo/") and "/events" in self.path:
+            job_id = self.path.split("?")[0].split("/ppo/")[1].split("/")[0]
+            query = self.path.split("?", 1)[1] if "?" in self.path else ""
+            after = 0
+            for part in query.split("&"):
+                if part.startswith("after="):
+                    try:
+                        after = int(part.split("=", 1)[1])
+                    except ValueError:
+                        after = 0
+            with JOBS_LOCK:
+                job = dict(JOBS.get(job_id)) if job_id in JOBS else None
+            if not job:
+                self._send({"error": "job not found"}, 404)
+                return
+            live_file = job.get("live_file")
+            events: list[dict] = []
+            if live_file:
+                path = (REPO_ROOT / live_file).resolve()
+                if REPO_ROOT.resolve() in path.parents:
+                    events = _read_live_events(path)
+            pending = [event for event in events if int(event.get("seq", 0)) > after]
+            self._send(
+                {
+                    "next": (int(pending[-1].get("seq", after)) if pending else after),
+                    "events": pending,
+                    "status": job.get("status"),
+                    "job": {
+                        key: job.get(key)
+                        for key in (
+                            "id",
+                            "kind",
+                            "status",
+                            "updates_total",
+                            "updates_done",
+                            "envs",
+                            "rollout_steps",
+                            "episode_ticks",
+                            "device",
+                            "map_name",
+                            "elapsed",
+                            "latest_update",
+                            "evaluations",
+                            "summary",
+                            "error",
+                        )
+                    },
                 }
             )
             return
@@ -272,7 +471,95 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/train"):
             self._start(kind="train", payload=payload)
             return
+        if self.path.startswith("/ppo"):
+            self._start_ppo(payload)
+            return
+        if self.path.startswith("/jobs/") and self.path.rstrip("/").endswith("/stop"):
+            job_id = self.path.split("?")[0].rstrip("/").rsplit("/", 2)[-2]
+            process = PPO_PROCESSES.get(job_id)
+            if process is None:
+                self._send({"error": "job is not a running ppo job"}, 404)
+                return
+            PPO_STOP.add(job_id)
+            process.terminate()
+            self._send({"ok": True, "job_id": job_id, "stopped": True})
+            return
         self._send({"error": "not found"}, 404)
+
+    def _start_ppo(self, payload: dict) -> None:
+        updates = int(payload.get("updates", 4))
+        envs = int(payload.get("envs", 2))
+        rollout_steps = int(payload.get("rollout_steps", 20))
+        episode_ticks = int(payload.get("episode_ticks", 900))
+        device = str(payload.get("device", "auto"))
+        map_name = str(payload.get("map_name") or "Artillery")
+        map_path = str(payload.get("map_path") or "maps/challenge/Artillery.tmx")
+        map_width = float(payload.get("map_width") or 2700.0)
+        map_height = float(payload.get("map_height") or 2500.0)
+        if not 1 <= updates <= 500:
+            self._send({"error": "updates must be 1..500"}, 400)
+            return
+        if not 1 <= envs <= 8:
+            self._send({"error": "envs must be 1..8"}, 400)
+            return
+        if not 1 <= rollout_steps <= 512:
+            self._send({"error": "rollout_steps must be 1..512"}, 400)
+            return
+        if not 120 <= episode_ticks <= 20000:
+            self._send({"error": "episode_ticks must be 120..20000"}, 400)
+            return
+        if device not in {"auto", "cpu", "cuda"}:
+            self._send({"error": "device must be auto/cpu/cuda"}, 400)
+            return
+        with JOBS_LOCK:
+            running_ppo = [
+                job for job in JOBS.values() if job.get("kind") == "ppo" and job.get("status") == "running"
+            ]
+        if running_ppo:
+            self._send({"error": "a ppo training job is already running"}, 409)
+            return
+        job_id = f"ppo-{uuid.uuid4().hex[:8]}"
+        with JOBS_LOCK:
+            JOBS[job_id] = {
+                "id": job_id,
+                "kind": "ppo",
+                "status": "running",
+                "updates_total": updates,
+                "updates_done": 0,
+                "envs": envs,
+                "rollout_steps": rollout_steps,
+                "episode_ticks": episode_ticks,
+                "device": device,
+                "map_name": map_name,
+                "map_path": map_path,
+                "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "started_ts": time.time(),
+                "elapsed": 0.0,
+                "latest_update": None,
+                "evaluations": [],
+                "summary": None,
+                "live_file": None,
+                "out_dir": None,
+                "error": None,
+                "last_log": "",
+            }
+
+        def runner() -> None:
+            run_ppo(
+                job_id,
+                updates=updates,
+                envs=envs,
+                rollout_steps=rollout_steps,
+                episode_ticks=episode_ticks,
+                device=device,
+                map_name=map_name,
+                map_path=map_path,
+                map_width=map_width,
+                map_height=map_height,
+            )
+
+        threading.Thread(target=runner, daemon=True).start()
+        self._send({"job_id": job_id, "status": "running", "kind": "ppo"})
 
     def _start(self, kind: str, payload: dict) -> None:
         ticks = int(payload.get("ticks", 2400))

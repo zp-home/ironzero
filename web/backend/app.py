@@ -88,6 +88,20 @@ class RwppRecordRequest(BaseModel):
     concurrency: int = Field(default=1, ge=1, le=4)
 
 
+class RwppPpoRequest(BaseModel):
+    """Strategy-in-the-loop PPO training on real games."""
+
+    updates: int = Field(default=4, ge=1, le=500)
+    envs: int = Field(default=2, ge=1, le=8)
+    rollout_steps: int = Field(default=20, ge=1, le=512)
+    episode_ticks: int = Field(default=900, ge=120, le=20000)
+    device: str = Field(default="auto", pattern="^(auto|cpu|cuda)$")
+    map_name: str = Field(default="Artillery", max_length=128)
+    map_path: str = Field(default="maps/challenge/Artillery.tmx", max_length=256)
+    map_width: float = Field(default=2700.0, gt=0.0, le=20000.0)
+    map_height: float = Field(default=2500.0, gt=0.0, le=20000.0)
+
+
 # ----------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------
@@ -732,6 +746,23 @@ def rwpp_jobs() -> dict[str, Any]:
 @app.get("/api/rwpp/jobs/{job_id}")
 def rwpp_job(job_id: str) -> dict[str, Any]:
     return _rwpp_call(f"/jobs/{job_id}", timeout=10.0)
+
+
+@app.post("/api/rwpp/ppo")
+def rwpp_ppo(request: RwppPpoRequest) -> dict[str, Any]:
+    """Start a real-game PPO training job on the host (one at a time)."""
+
+    return _rwpp_call("/ppo", request.model_dump(), timeout=20.0)
+
+
+@app.get("/api/rwpp/ppo/{job_id}/events")
+def rwpp_ppo_events(job_id: str, after: int = Query(default=0, ge=0)) -> dict[str, Any]:
+    return _rwpp_call(f"/ppo/{job_id}/events?after={after}", timeout=10.0)
+
+
+@app.post("/api/rwpp/ppo/{job_id}/stop")
+def rwpp_ppo_stop(job_id: str) -> dict[str, Any]:
+    return _rwpp_call(f"/jobs/{job_id}/stop", {}, timeout=10.0)
 
 
 # Static frontend assets
