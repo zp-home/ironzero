@@ -74,6 +74,15 @@ class RwppGameConfig:
     # Dense shaping: reward closing the distance to the enemy army (the skirmish
     # AI often starts far away, so pure hp-diff reward has no gradient early on).
     engagement_coef: float = 2.0
+    # Reward terms (docs 7.2/7.4): kills/own losses plus small penalties for
+    # rejected orders and for idle decisions while enemies are in sight.
+    # LLM/rule strategic layer (optional): the directive nudges reward shaping only,
+    # it never emits low-level actions (doc 12.4 / stage 5).
+    strategy_coef: float = 0.5
+    kill_bonus: float = 0.25
+    loss_penalty: float = 0.25
+    invalid_penalty: float = 0.05
+    idle_penalty: float = 0.02
     log_dir: Path = REPO_ROOT / "runs" / "_rwpp_ppo"
     env_overrides: dict[str, str] = field(default_factory=dict)
 
@@ -213,15 +222,16 @@ def decode_action(
 ) -> list[dict[str, Any]]:
     """Decode one policy action into ``ironzero/1`` step actions.
 
-    The real-game bridge always orders every living friendly unit, so the group
-    head selects a target group only in mock engines; here it is accepted and
-    ignored (broadcast semantics), matching the scripted controller behaviour.
+    The bridge understands the same group head as the mock engine: 0..G-1 order
+    the units whose id maps to that group, and the last slot (G) broadcasts to
+    every living friendly unit.
     """
 
     vector = np.asarray(action, dtype=np.int64).reshape(-1)
     if vector.shape[0] != 5:
         raise ValueError(f"action must have 5 heads, got {vector.shape[0]}")
     kind = ACTION_KINDS[int(vector[0]) % len(ACTION_KINDS)]
+    group = int(vector[1])
     gx = int(np.clip(vector[2], 0, config.position_grid - 1))
     gy = int(np.clip(vector[3], 0, config.position_grid - 1))
     target_index = int(vector[4])
@@ -229,31 +239,26 @@ def decode_action(
 
     if kind in {"move_group", "attack_move"}:
         x, y = config.grid_to_world(gx, gy)
-        return [{"kind": kind, "unit_group": 0, "x": round(float(x), 2), "y": round(float(y), 2)}]
+        return [{"kind": kind, "unit_group": group, "x": round(float(x), 2), "y": round(float(y), 2)}]
     if kind == "attack_target":
         if 0 <= target_index < len(enemies):
             return [
                 {
                     "kind": kind,
-                    "unit_group": 0,
+                    "unit_group": group,
                     "target_entity_id": int(enemies[target_index].get("entity_id", -1)),
                 }
             ]
-        return _hold_action(state)
+        return _hold_action(state, group)
     if kind in {"stop", "hold"}:
-        return _hold_action(state)
-    return [{"kind": kind, "unit_group": 0}]
+        return _hold_action(state, group)
+    return [{"kind": kind, "unit_group": group}]
 
 
-def _hold_action(state: dict[str, Any]) -> list[dict[str, Any]]:
-    """The bridge has no native "stop": move onto the current army centroid."""
+def _hold_action(state: dict[str, Any], group: int = 4) -> list[dict[str, Any]]:
+    """Stop/hold order; the bridge keeps each unit at its current position."""
 
-    own = state.get("own_entities", [])
-    if not own:
-        return []
-    cx = sum(float(unit.get("x") or 0.0) for unit in own) / len(own)
-    cy = sum(float(unit.get("y") or 0.0) for unit in own) / len(own)
-    return [{"kind": "move_group", "unit_group": 0, "x": round(cx, 2), "y": round(cy, 2)}]
+    return [{"kind": "hold", "unit_group": int(group)}]
 
 
 def apply_vision(state: dict[str, Any], radius: float) -> dict[str, Any]:
@@ -352,6 +357,7 @@ class RwppDuelEnv:
         micro_config: MicroDuelConfig | None = None,
         launcher: Callable[[RwppGameConfig, int], _ProcLike] | None = None,
         episode_prefix: str = "rwpp",
+        strategy: Any | None = None,
     ) -> None:
         self.game = game or RwppGameConfig()
         self.port = int(port)
@@ -359,6 +365,9 @@ class RwppDuelEnv:
         self.micro = micro_config or self.game.micro_config()
         self._launcher = launcher or launch_rwpp_process
         self.episode_prefix = episode_prefix
+        self.strategy = strategy
+        self.directive: Any | None = None
+        self.last_strategy_potential: float | None = None
 
         self._process: _ProcLike | None = None
         self._socket: socket.socket | None = None
@@ -370,6 +379,10 @@ class RwppDuelEnv:
         self.masks: dict[str, np.ndarray] = {}
         self.last_tick = 0
         self.last_potential = 0.0
+        self.last_distance = 0.0
+        self.previous_own_alive = 0
+        self.previous_enemy_alive = 0
+        self.episode_components: dict[str, float] = {}
         self.receipts: list[dict[str, Any]] = []
         self.done = False
         self.last_result: str | None = None
@@ -408,10 +421,21 @@ class RwppDuelEnv:
         self.last_distance = army_distance_norm(
             self.state, float(np.hypot(self.micro.map_width, self.micro.map_height))
         )
+        self.previous_own_alive = sum(
+            1 for unit in self.state.get("own_entities", []) if float(unit.get("hp") or 0.0) > 0.0
+        )
+        self.previous_enemy_alive = sum(
+            1
+            for unit in self.state.get("visible_enemy_entities", [])
+            if float(unit.get("hp") or 0.0) > 0.0
+        )
+        self.episode_components: dict[str, float] = {}
         self.receipts = []
         self.done = False
         self.last_result = None
         self.episode_steps = 0
+        self._refresh_strategy()
+        self.last_strategy_potential = self._strategy_potential()
         obs = encode_observation(self.obs_state, self.micro)
         info = {
             "episode_id": self.episode_id,
@@ -428,6 +452,11 @@ class RwppDuelEnv:
         if self._socket is None or self._reader is None:
             raise RwppEnvError("reset() must be called before step()")
         self.episode_steps += 1
+        previous_potential = float(self.last_potential)
+        previous_distance = float(self.last_distance)
+        previous_own_alive = int(self.previous_own_alive)
+        previous_enemy_alive = int(self.previous_enemy_alive)
+        receipts_before = len(self.receipts)
         actions = decode_action(action, self.state, self.micro)
         decision_id = f"d-{self.episode_id}-{self.episode_steps}"
         payload = {
@@ -445,6 +474,7 @@ class RwppDuelEnv:
             raise RwppEnvError(f"bridge send failed: {exc}") from exc
 
         message = self._await_observation(self.game.obs_timeout)
+        receipts_this_step = self.receipts[receipts_before:]
         truncated_by_timeout = False
         if message is None:
             # The bridge is gone or the game died mid-episode.
@@ -462,29 +492,57 @@ class RwppDuelEnv:
             self.last_tick = int(state["tick"])
         self.masks = build_masks(self.obs_state, self.micro)
 
-        potential = hp_potential(self.state, self.own_max_ref, self.enemy_max_ref)
-        reward = float(self.micro.potential_coef) * (potential - self.last_potential)
-        self.last_potential = potential
-
         distance = army_distance_norm(
             self.state, float(np.hypot(self.micro.map_width, self.micro.map_height))
         )
-        reward += float(self.game.engagement_coef) * (self.last_distance - distance)
-        self.last_distance = distance
-
+        potential = hp_potential(self.state, self.own_max_ref, self.enemy_max_ref)
         own_alive = sum(1 for unit in self.state.get("own_entities", []) if float(unit.get("hp") or 0.0) > 0.0)
         enemy_alive = sum(
             1 for unit in self.state.get("visible_enemy_entities", []) if float(unit.get("hp") or 0.0) > 0.0
         )
+        rejected_orders = sum(1 for receipt in receipts_this_step if not receipt.get("accepted", True))
+        previous_strategy = self.last_strategy_potential
+        self._refresh_strategy()
+        strategy_now = self._strategy_potential()
+        strategy_component = (
+            float(self.game.strategy_coef) * (strategy_now - previous_strategy)
+            if strategy_now is not None and previous_strategy is not None
+            else 0.0
+        )
+        self.last_strategy_potential = strategy_now
+        # ---- reward decomposition (docs 7.2/7.4) --------------------------
+        components: dict[str, float] = {
+            "potential": float(self.micro.potential_coef) * (potential - previous_potential),
+            "engagement": float(self.game.engagement_coef) * (previous_distance - distance),
+            "strategy": strategy_component,
+            "kills": float(self.game.kill_bonus) * max(0, previous_enemy_alive - enemy_alive),
+            "losses": -float(self.game.loss_penalty) * max(0, previous_own_alive - own_alive),
+            "invalid": -float(self.game.invalid_penalty) * rejected_orders,
+            "idle": (
+                -float(self.game.idle_penalty)
+                if (actions and actions[0].get("kind") in {"stop", "hold"} and enemy_alive > 0)
+                else 0.0
+            ),
+            "terminal": 0.0,
+            "timeout": 0.0,
+        }
+        self.last_potential = potential
+        self.last_distance = distance
+        self.previous_own_alive = own_alive
+        self.previous_enemy_alive = enemy_alive
+
         terminated = False
         if enemy_alive == 0 and own_alive > 0:
             terminated = True
             self.last_result = "victory"
-            reward += float(self.micro.win_reward)
+            components["terminal"] = float(self.micro.win_reward)
         elif own_alive == 0:
             terminated = True
             self.last_result = "defeat"
-            reward += float(self.micro.loss_reward)
+            components["terminal"] = float(self.micro.loss_reward)
+        reward = float(sum(components.values()))
+        for key, value in components.items():
+            self.episode_components[key] = self.episode_components.get(key, 0.0) + float(value)
         truncated = self.done or truncated_by_timeout or (
             int(self.state.get("tick", 0)) >= int(self.game.episode_ticks)
         )
@@ -495,6 +553,14 @@ class RwppDuelEnv:
 
         obs = encode_observation(self.obs_state, self.micro)
         own_frac, enemy_frac = hp_fractions(self.state, self.own_max_ref, self.enemy_max_ref)
+        strategy_payload = None
+        if self.directive is not None:
+            to_payload = getattr(self.directive, "to_payload", None)
+            if callable(to_payload):
+                try:
+                    strategy_payload = to_payload()
+                except Exception:  # noqa: BLE001 - never break the env on logging
+                    strategy_payload = None
         info = {
             "episode_id": self.episode_id,
             "tick": int(self.state.get("tick", 0)),
@@ -507,6 +573,9 @@ class RwppDuelEnv:
             "own_alive": own_alive,
             "enemy_alive": enemy_alive,
             "distance": distance,
+            "reward_breakdown": dict(components),
+            "reward_components": dict(self.episode_components),
+            "strategy": strategy_payload,
             "eval": {"own_hp_frac": own_frac, "enemy_hp_frac": enemy_frac},
             "port": self.port,
         }
@@ -519,6 +588,70 @@ class RwppDuelEnv:
         if radius <= 0.0:
             return state
         return apply_vision(dict(state), radius)
+
+    # ------------------------------------------------------------------
+    # Strategic layer (LLM or rule based; reward shaping only)
+    # ------------------------------------------------------------------
+    def _strategy_summary(self) -> dict[str, Any]:
+        own = self.state.get("own_entities", [])
+        enemies = self.state.get("visible_enemy_entities", [])
+        return {
+            "tick": int(self.state.get("tick", 0)),
+            "own_units": [
+                {
+                    "x": float(unit.get("x") or 0.0),
+                    "y": float(unit.get("y") or 0.0),
+                    "hp": float(unit.get("hp") or 0.0),
+                    "max_hp": float(unit.get("max_hp") or 0.0),
+                }
+                for unit in own
+            ],
+            "enemy_units": [
+                {
+                    "x": float(unit.get("x") or 0.0),
+                    "y": float(unit.get("y") or 0.0),
+                    "hp": float(unit.get("hp") or 0.0),
+                    "max_hp": float(unit.get("max_hp") or 0.0),
+                }
+                for unit in enemies
+            ],
+            "map": {"width": float(self.micro.map_width), "height": float(self.micro.map_height)},
+        }
+
+    def _refresh_strategy(self) -> None:
+        if self.strategy is None:
+            return
+        propose = getattr(self.strategy, "propose", None)
+        if propose is None:
+            return
+        try:
+            self.directive = propose(self._strategy_summary())
+        except Exception:  # noqa: BLE001 - strategy must never break training
+            self.directive = None
+
+    def _strategy_potential(self) -> float | None:
+        """Progress towards the directive's target point, normalised to map size."""
+
+        directive = self.directive
+        if directive is None:
+            return None
+        target = None
+        region = getattr(directive, "attack_region", None)
+        rally = getattr(directive, "rally_point", None)
+        intent = str(getattr(directive, "intent", ""))
+        if intent in {"push", "harass"} and region:
+            target = (float(region[0]), float(region[1]))
+        elif rally:
+            target = (float(rally[0]), float(rally[1]))
+        elif region:
+            target = (float(region[0]), float(region[1]))
+        own = self.state.get("own_entities", [])
+        if target is None or not own:
+            return None
+        cx = sum(float(unit.get("x") or 0.0) for unit in own) / len(own)
+        cy = sum(float(unit.get("y") or 0.0) for unit in own) / len(own)
+        diagonal = float(np.hypot(self.micro.map_width, self.micro.map_height)) or 1.0
+        return -float(np.hypot(target[0] - cx, target[1] - cy)) / diagonal
 
     def action_masks(self) -> dict[str, np.ndarray]:
         return self.masks

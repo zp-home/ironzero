@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+﻿# SPDX-License-Identifier: Apache-2.0
 """Action smoke test for the real RWPP bridge (stage 2).
 
 Starts the real 1.15 headless game with the IronZero bridge, sends move /
@@ -107,14 +107,14 @@ def main(argv: list[str] | None = None) -> int:
                     if observations in (2, 6, 10) and steps_sent < 3:
                         steps_sent += 1
                         if steps_sent == 1:
-                            actions = [{"kind": "move_group", "unit_group": 0, "x": 1500.0, "y": 1200.0}]
+                            actions = [{"kind": "move_group", "unit_group": 4, "x": 1500.0, "y": 1200.0}]
                         elif steps_sent == 2:
-                            actions = [{"kind": "attack_move", "unit_group": 0, "x": 1900.0, "y": 900.0}]
+                            actions = [{"kind": "attack_move", "unit_group": 4, "x": 1900.0, "y": 900.0}]
                         else:
                             target = enemy_ids[0] if enemy_ids else None
                             if target is None:
                                 continue
-                            actions = [{"kind": "attack_target", "unit_group": 0, "target_entity_id": target}]
+                            actions = [{"kind": "attack_target", "unit_group": 4, "target_entity_id": target}]
                         step = {
                             "protocol": "ironzero/1",
                             "type": "step",
@@ -168,3 +168,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

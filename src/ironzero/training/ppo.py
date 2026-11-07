@@ -80,6 +80,8 @@ class PPOTrainer:
         self._live_seq = 0
         self._baseline_fn = baseline_fn
         self._eval_fn = eval_fn
+        self._collected_strategy: dict[str, Any] | None = None
+        self._last_strategy_payload: dict[str, Any] | None = None
         if self.live_path is not None:
             self.live_path.parent.mkdir(parents=True, exist_ok=True)
             self._live_handle = self.live_path.open("a", encoding="utf-8")
@@ -158,6 +160,9 @@ class PPOTrainer:
             obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
             action, logprob, value = self.policy.act(obs_tensor, mask_tensors)
             batch = self.vec.step(action.cpu().numpy())
+            for info in batch.infos:
+                if isinstance(info, dict) and info.get("strategy"):
+                    self._collected_strategy = info["strategy"]
             observations.append(obs_tensor.cpu())
             actions.append(action.cpu())
             logprobs.append(logprob.cpu())
@@ -281,9 +286,16 @@ class PPOTrainer:
         for update in range(1, cfg.total_updates + 1):
             rollout = self.collect()
             update_stats = self.update(rollout)
+            if self._collected_strategy and self._collected_strategy != self._last_strategy_payload:
+                self._last_strategy_payload = self._collected_strategy
+                self._emit("strategy", dict(self._collected_strategy))
             completed = self.vec.drain_completed()
             returns = [episode["return"] for episode in completed]
             results = [episode.get("result") for episode in completed]
+            components: dict[str, list[float]] = {}
+            for episode in completed:
+                for key, value in (episode.get("components") or {}).items():
+                    components.setdefault(key, []).append(float(value))
             record = {
                 "update": update,
                 **update_stats,
@@ -292,6 +304,9 @@ class PPOTrainer:
                 "win_rate": (
                     sum(1 for r in results if r == "victory") / len(results) if results else 0.0
                 ),
+                "reward_components": {
+                    key: float(np.mean(values)) for key, values in components.items()
+                },
                 "elapsed_s": round(time.time() - self.start_time, 2),
             }
             metrics["updates"].append(record)

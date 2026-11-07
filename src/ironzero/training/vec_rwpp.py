@@ -34,6 +34,7 @@ class VecRwppEnv:
         launcher: Callable[[RwppGameConfig, int], _ProcLike] | None = None,
         max_workers: int | None = None,
         persistent: bool = True,
+        strategy: Any | None = None,
     ) -> None:
         if num_envs < 1:
             raise ValueError("num_envs must be >= 1")
@@ -53,6 +54,7 @@ class VecRwppEnv:
                 micro_config=self.config,
                 launcher=launcher,
                 episode_prefix=episode_prefix,
+                strategy=strategy,
             )
             for index in range(self.num_envs)
         ]
@@ -118,6 +120,7 @@ class VecRwppEnv:
                     "result": infos[index].get("result"),
                     "tick": int(infos[index].get("tick", 0)),
                     "port": int(infos[index].get("port", 0)),
+                    "components": dict(infos[index].get("reward_components") or {}),
                     "eval": None,
                 }
                 self.completed_episodes.append(episode)

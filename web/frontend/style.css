@@ -1658,3 +1658,105 @@ body::before {
   .ppo-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ppo-charts { grid-template-columns: minmax(0, 1fr); }
 }
+
+
+/* ============================================================
+ * task-11：模型推理 checkpoint / PPO 评估与 LLM / 奖励分解 / 战略指挥
+ * ============================================================ */
+#fe-checkpoint-field[hidden] { display: none !important; }
+#fe-model-note[hidden],
+#fe-ppo-llm-note[hidden] { display: none !important; }
+
+.checkbox-field {
+  display: flex !important;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.checkbox-field input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--cyan);
+  flex: 0 0 auto;
+}
+.checkbox-field span { line-height: 1.4; }
+
+#fe-map-count { margin-top: -2px; }
+
+.reward-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 12px 12px;
+}
+.reward-panel .empty,
+.strategy-panel .empty { color: var(--muted-2); font-size: 11px; padding: 2px 0; }
+
+.reward-row {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr) 66px;
+  gap: 8px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--muted);
+}
+.reward-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.reward-bar {
+  position: relative;
+  height: 9px;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  background: rgba(5, 12, 22, 0.8);
+  overflow: hidden;
+}
+.reward-bar i { display: block; height: 100%; border-radius: 3px; }
+.reward-bar i.pos { background: linear-gradient(90deg, #39e08b, #1f9e63); }
+.reward-bar i.neg { background: linear-gradient(90deg, #ff5a5a, #a52d2d); }
+.reward-value {
+  text-align: right;
+  font-family: "Consolas", monospace;
+  font-variant-numeric: tabular-nums;
+  color: #cfe8fb;
+}
+.reward-value.pos { color: #7de3b0; }
+.reward-value.neg { color: #ff9aa4; }
+
+.strategy-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 12px 11px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.strategy-kv {
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr);
+  gap: 8px;
+  padding-bottom: 3px;
+  border-bottom: 1px dashed rgba(56, 225, 255, 0.08);
+}
+.strategy-kv b {
+  color: #cfe8fb;
+  font-weight: 500;
+  font-family: "Consolas", monospace;
+  word-break: break-word;
+}
+.strategy-kv span { word-break: break-word; }
+.strategy-log {
+  margin-top: 5px;
+  font-family: "Consolas", monospace;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--muted-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.strategy-warn { color: #ffc35c; font-size: 10.5px; }
+
+@media (max-width: 860px) {
+  .reward-row { grid-template-columns: 90px minmax(0, 1fr) 60px; }
+  .strategy-kv { grid-template-columns: 96px minmax(0, 1fr); }
+}

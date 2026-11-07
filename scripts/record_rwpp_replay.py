@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+﻿# SPDX-License-Identifier: Apache-2.0
 """Record a real Rusted Warfare 1.15 game (headless + RWPP bridge) as an IronZero replay.
 
 This is the "real game" capture path:
@@ -186,10 +186,10 @@ def main(argv: list[str] | None = None) -> int:
                                     if distance < best_distance:
                                         best_distance = distance
                                         best = enemy
-                            actions = [{"kind": "attack_target", "unit_group": 0,
+                            actions = [{"kind": "attack_target", "unit_group": 4,
                                         "target_entity_id": best["entity_id"]}]
                         elif own:
-                            actions = [{"kind": "attack_move", "unit_group": 0,
+                            actions = [{"kind": "attack_move", "unit_group": 4,
                                         "x": 1500.0, "y": 1500.0}]
                         if actions:
                             step = {
@@ -244,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         (job_dir / "meta.json").write_text(
             json.dumps(
-                {"id": job_dir.name, "name": "真机 RWPP 录制", "kind": "infer", "status": "succeeded",
+                {"id": job_dir.name, "name": "鐪熸満 RWPP 褰曞埗", "kind": "infer", "status": "succeeded",
                  "created_at": meta["created_at"], "config": {"sim_mode": "rwpp", "map": args.map_name}},
                 ensure_ascii=False,
                 indent=2,
@@ -277,3 +277,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

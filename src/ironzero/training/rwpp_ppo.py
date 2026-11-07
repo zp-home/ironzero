@@ -30,6 +30,7 @@ class RwppPPOTrainer(PPOTrainer):
         live_path: str | None = None,
         port_base: int = 5140,
         eval_port_base: int = 5200,
+        strategy: Any | None = None,
     ) -> None:
         self.game = game or RwppGameConfig()
         micro = micro_config or self.game.micro_config()
@@ -44,6 +45,7 @@ class RwppPPOTrainer(PPOTrainer):
             micro_config=micro,
             episode_prefix="rwpp-train",
             persistent=True,
+            strategy=strategy,
         )
         super().__init__(
             cfg,

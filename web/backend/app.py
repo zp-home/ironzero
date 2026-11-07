@@ -82,13 +82,16 @@ class InferRequest(BaseModel):
 
 class RwppRecordRequest(BaseModel):
     ticks: int = Field(default=2400, ge=120, le=20000)
-    policy: str = Field(default="scripted", pattern="^(scripted|none)$")
+    policy: str = Field(default="scripted", pattern="^(scripted|none|model|ppo)$")
+    checkpoint: str | None = Field(default=None, max_length=512)
+    frame_ms: int = Field(default=16, ge=0, le=16)
     map_name: str | None = Field(default=None, max_length=128)
     map_path: str | None = Field(default=None, max_length=256)
     map_width: float = Field(default=2600.0, gt=0.0, le=20000.0)
     map_height: float = Field(default=2600.0, gt=0.0, le=20000.0)
     episodes: int = Field(default=1, ge=1, le=50)
     concurrency: int = Field(default=1, ge=1, le=4)
+    vision_radius: float = Field(default=0.0, ge=0.0, le=2000.0)
 
 
 class RwppPpoRequest(BaseModel):
@@ -105,6 +108,9 @@ class RwppPpoRequest(BaseModel):
     map_height: float = Field(default=2500.0, gt=0.0, le=20000.0)
     frame_ms: int = Field(default=2, ge=0, le=16, description="wall-clock ms per simulated frame; 2 is ~8x faster than real time")
     vision_radius: float = Field(default=260.0, ge=0.0, le=2000.0, description="observation fog radius; <=0 disables fog")
+    eval_every: int = Field(default=0, ge=0, le=500, description="0 = evaluate only on the final update")
+    eval_episodes: int = Field(default=1, ge=0, le=16)
+    use_llm: bool = Field(default=False, description="enable the LLM strategic layer (rule fallback if unconfigured)")
 
 
 # ----------------------------------------------------------------------
@@ -712,6 +718,11 @@ def rwpp_infer(request: RwppRecordRequest) -> dict[str, Any]:
     payload = request.model_dump()
     payload.pop("episodes", None)
     payload.pop("concurrency", None)
+    # Checkpoints are listed with container paths (/app/runs/...); the host-side
+    # real-game service needs a path relative to the repository root.
+    checkpoint = payload.get("checkpoint")
+    if checkpoint and checkpoint.startswith("/app/"):
+        payload["checkpoint"] = checkpoint[len("/app/"):]
     return _rwpp_call("/infer", payload, timeout=20.0)
 
 

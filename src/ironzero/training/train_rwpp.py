@@ -59,6 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--java-home", default=str(DEFAULT_JAVA_HOME))
     parser.add_argument("--out", default="runs/rwpp_ppo")
     parser.add_argument("--live", default="", help="JSONL live event stream (dashboard)")
+    parser.add_argument("--use-llm", action="store_true",
+                        help="enable the LLM strategic layer (falls back to the rule strategy)")
     return parser
 
 
@@ -105,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
         live_path=str(live),
         port_base=args.port_base,
         eval_port_base=args.eval_port_base,
+        strategy=_build_strategy(args.use_llm),
     )
     print(
         json.dumps(
@@ -116,6 +119,9 @@ def main(argv: list[str] | None = None) -> int:
                 "episode_ticks": args.episode_ticks,
                 "obs_dim": micro.flat_obs_dim,
                 "action_heads": list(micro.action_nvec),
+                "strategy": getattr(trainer.vec.envs[0], "strategy", None).__class__.__name__
+                if getattr(trainer.vec.envs[0], "strategy", None) is not None
+                else "none",
                 "out": str(out_dir),
                 "live": str(live),
             },
@@ -166,6 +172,22 @@ def _gpu_name() -> str:
     except Exception:  # noqa: BLE001 - diagnostics only
         pass
     return "cpu-only"
+
+
+def _build_strategy(use_llm: bool):
+    """Build the strategic layer; rule strategy when the LLM is unavailable."""
+
+    try:
+        from ..strategy.llm_strategy import build_strategy
+    except Exception:  # noqa: BLE001 - strategy package is optional
+        return None
+    try:
+        strategy = build_strategy(use_llm)
+        print(f"[strategy] using {strategy.__class__.__name__} (llm={use_llm})")
+        return strategy
+    except Exception as exc:  # noqa: BLE001
+        print(f"[strategy] build failed ({exc}); continuing without a strategy layer")
+        return None
 
 
 if __name__ == "__main__":  # pragma: no cover

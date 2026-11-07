@@ -31,6 +31,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RECORDER = REPO_ROOT / "scripts" / "record_rwpp_replay.py"
+PLAYER = REPO_ROOT / "scripts" / "play_rwpp_policy.py"
 RUNS = REPO_ROOT / "runs" / "platform"
 RUNS.mkdir(parents=True, exist_ok=True)
 
@@ -115,6 +116,61 @@ def _run_recorder(
     return replay_path, frame_count, seconds
 
 
+def _run_player(
+    job_id: str,
+    *,
+    ticks: int,
+    checkpoint: str,
+    map_name: str | None,
+    map_path: str | None,
+    map_width: float,
+    map_height: float,
+    stream_path: Path,
+    port: int,
+    frame_ms: int,
+) -> tuple[str | None, int, float]:
+    command = [
+        sys.executable,
+        str(PLAYER),
+        "--checkpoint",
+        checkpoint,
+        "--ticks",
+        str(ticks),
+        "--port",
+        str(port),
+        "--timeout",
+        "300",
+        "--stream",
+        str(stream_path),
+        "--frame-ms",
+        str(max(0, int(frame_ms))),
+        "--map-width",
+        str(float(map_width)),
+        "--map-height",
+        str(float(map_height)),
+    ]
+    if map_path:
+        command.extend(["--map", map_path])
+    if map_name:
+        command.extend(["--map-name", map_name])
+    started = time.time()
+    result = subprocess.run(command, cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=360)
+    seconds = time.time() - started
+    payload: dict = {}
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                payload = json.loads(line)  # last JSON line wins (the summary)
+            except ValueError:
+                continue
+    log_tail = ((result.stdout or "") + (result.stderr or ""))[-1500:]
+    _update(job_id, last_log=log_tail)
+    if not payload.get("replay"):
+        return None, 0, seconds
+    return str(payload["replay"]), int(payload.get("frames", 0)), seconds
+
+
 def run_infer(
     job_id: str,
     ticks: int,
@@ -123,6 +179,8 @@ def run_infer(
     map_path: str | None = None,
     map_width: float = 2600.0,
     map_height: float = 2600.0,
+    checkpoint: str | None = None,
+    frame_ms: int = 16,
 ) -> None:
     port = PORT_SLOTS.get()
     # Publish the bridge port immediately so the dashboard can show it while the
@@ -133,17 +191,31 @@ def run_infer(
     frames_path = job_dir / "frames.jsonl"
     started = time.time()
     try:
-        replay, frame_count, seconds = _run_recorder(
-            job_id,
-            ticks=ticks,
-            policy=policy,
-            map_name=map_name,
-            stream_path=frames_path,
-            port=port,
-            map_path=map_path,
-            map_width=map_width,
-            map_height=map_height,
-        )
+        if policy in ("model", "ppo") and checkpoint:
+            replay, frame_count, seconds = _run_player(
+                job_id,
+                ticks=ticks,
+                checkpoint=checkpoint,
+                map_name=map_name,
+                map_path=map_path,
+                map_width=map_width,
+                map_height=map_height,
+                stream_path=frames_path,
+                port=port,
+                frame_ms=frame_ms,
+            )
+        else:
+            replay, frame_count, seconds = _run_recorder(
+                job_id,
+                ticks=ticks,
+                policy="none" if policy == "model" else policy,
+                map_name=map_name,
+                stream_path=frames_path,
+                port=port,
+                map_path=map_path,
+                map_width=map_width,
+                map_height=map_height,
+            )
         _update(
             job_id,
             status="done" if replay else "failed",
@@ -271,6 +343,9 @@ def run_ppo(
     map_height: float,
     frame_ms: int = 2,
     vision_radius: float = 260.0,
+    eval_every: int = 0,
+    eval_episodes: int = 1,
+    use_llm: bool = False,
 ) -> None:
     job_dir = RUNS / f"rwpp-ppo-{job_id}"
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -308,10 +383,12 @@ def run_ppo(
         "--live",
         str(live_path),
         "--eval-every",
-        str(max(1, min(updates, 2))),
+        str(int(eval_every) if int(eval_every) > 0 else int(updates)),
         "--eval-episodes",
-        "1",
+        str(max(1, int(eval_episodes))),
     ]
+    if use_llm:
+        command.append("--use-llm")
     started = time.time()
     handle = log_path.open("w", encoding="utf-8", errors="replace")
     environment = dict(os.environ)
@@ -535,6 +612,9 @@ class Handler(BaseHTTPRequestHandler):
         map_height = float(payload.get("map_height") or 2500.0)
         frame_ms = int(payload.get("frame_ms", 2))
         vision_radius = float(payload.get("vision_radius", 260.0))
+        eval_every = int(payload.get("eval_every", 0))
+        eval_episodes = int(payload.get("eval_episodes", 1))
+        use_llm = bool(payload.get("use_llm", False))
         if not 0 <= frame_ms <= 16:
             self._send({"error": "frame_ms must be 0..16"}, 400)
             return
@@ -560,8 +640,16 @@ class Handler(BaseHTTPRequestHandler):
             running_ppo = [
                 job for job in JOBS.values() if job.get("kind") == "ppo" and job.get("status") == "running"
             ]
+            running_real = [
+                job
+                for job in JOBS.values()
+                if job.get("kind") in ("infer", "train") and job.get("status") == "running"
+            ]
         if running_ppo:
             self._send({"error": "a ppo training job is already running"}, 409)
+            return
+        if running_real:
+            self._send({"error": "real-game jobs are running; wait for them to finish"}, 409)
             return
         job_id = f"ppo-{uuid.uuid4().hex[:8]}"
         with JOBS_LOCK:
@@ -579,6 +667,9 @@ class Handler(BaseHTTPRequestHandler):
                 "map_path": map_path,
                 "frame_ms": frame_ms,
                 "vision_radius": vision_radius,
+                "eval_every": eval_every,
+                "eval_episodes": eval_episodes,
+                "use_llm": use_llm,
                 "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "started_ts": time.time(),
                 "elapsed": 0.0,
@@ -605,6 +696,9 @@ class Handler(BaseHTTPRequestHandler):
                 map_height=map_height,
                 frame_ms=frame_ms,
                 vision_radius=vision_radius,
+                eval_every=eval_every,
+                eval_episodes=eval_episodes,
+                use_llm=use_llm,
             )
 
         threading.Thread(target=runner, daemon=True).start()
@@ -613,10 +707,15 @@ class Handler(BaseHTTPRequestHandler):
     def _start(self, kind: str, payload: dict) -> None:
         ticks = int(payload.get("ticks", 2400))
         policy = str(payload.get("policy", "scripted"))
+        if policy not in ("scripted", "none", "model", "ppo"):
+            self._send({"error": "policy must be scripted|none|model"}, 400)
+            return
+        checkpoint = payload.get("checkpoint")
         map_name = payload.get("map_name")
         map_path = payload.get("map_path")
         map_width = float(payload.get("map_width") or 2600.0)
         map_height = float(payload.get("map_height") or 2600.0)
+        frame_ms = int(payload.get("frame_ms", 16))
         episodes = int(payload.get("episodes", 1))
         concurrency = int(payload.get("concurrency", 1))
         if kind == "train" and not 1 <= episodes <= 50:
@@ -627,6 +726,20 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not 120 <= ticks <= 20000:
             self._send({"error": "ticks out of range"}, 400)
+            return
+        if policy in ("model", "ppo") and not checkpoint:
+            self._send({"error": "policy=model requires checkpoint"}, 400)
+            return
+        if policy in ("model", "ppo") and checkpoint:
+            candidate = Path(str(checkpoint))
+            if not candidate.is_absolute():
+                candidate = REPO_ROOT / candidate
+            if not candidate.exists():
+                self._send({"error": f"checkpoint not found: {checkpoint}"}, 400)
+                return
+            checkpoint = str(candidate)
+        if self._ppo_running():
+            self._send({"error": "a ppo training job is running; stop it before starting real-game jobs"}, 409)
             return
         if PORT_SLOTS.qsize() <= 0:
             self._send({"error": "all parallel slots are busy"}, 409)
@@ -639,6 +752,8 @@ class Handler(BaseHTTPRequestHandler):
                 "status": "running",
                 "ticks": ticks,
                 "policy": policy,
+                "checkpoint": checkpoint,
+                "frame_ms": frame_ms,
                 "concurrency": concurrency if kind == "train" else 1,
                 "episodes_total": episodes if kind == "train" else 1,
                 "episodes_done": 0,
@@ -680,10 +795,19 @@ class Handler(BaseHTTPRequestHandler):
                     map_path=map_path,
                     map_width=map_width,
                     map_height=map_height,
+                    checkpoint=checkpoint,
+                    frame_ms=frame_ms,
                 )
 
         threading.Thread(target=runner, daemon=True).start()
         self._send({"job_id": job_id, "status": "running", "kind": kind})
+
+    def _ppo_running(self) -> bool:
+        with JOBS_LOCK:
+            return any(
+                job.get("kind") == "ppo" and job.get("status") == "running"
+                for job in JOBS.values()
+            )
 
 
 def main(argv: list[str] | None = None) -> int:

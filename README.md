@@ -123,11 +123,18 @@ python -m ironzero.training.train_rwpp --updates 6 --envs 2 --episode-ticks 900 
 ```
 
 - 每实例 = 一个独立无头游戏进程（端口 5140+），`--envs` 控制并行实例数；实例跨 update 复用，只有单局结束才重启 JVM
-- 观测 364 维、动作 5 头 `[kind5, group5, x8, y8, target9]`、策略网络 168k 参数；奖励 = HP 潜势差 + 交战接近量 + 终局 ±1
-- 实测 2 实例 / 900 tick 局：240 个真机决策 45.6 秒（≈5.3 决策/秒）；GPU 只在策略前向用（4070 可选），瓶颈是 CPU 游戏进程
+- 观测 364 维、动作 5 头 `[kind5, group5, x8, y8, target9]`、策略网络 168k 参数；奖励 = HP 潜势差 + 交战接近 + 与战略目标接近 + 击杀/损失/无效动作/空闲分项 + 终局 ±1（每项都进 `reward_breakdown` 与 PPO live 事件）
+- 加速：`--frame-ms`（16=真实时间，2≈8×，1≈16×）；实测 1800 tick 局 0.9s，2 实例 240 决策 15.6s；多实例吞吐约 24 决策/秒
+- 观测迷雾：默认 `--vision-radius 260`（策略只看我方 260px 内敌人，胜负仍按全量状态）
 - 细节与场景选型见 `docs/平台搭建方案.md` 5.7 节，平台侧在「实机训练」页切到「PPO 真机训练」即可看训练大屏：
 
 ![PPO 真机训练大屏](docs/assets/platform_real_ppo.png)
+
+## 模型推理与 LLM + RL 混合（骨架）
+
+- **模型推理**：`python scripts/play_rwpp_policy.py --checkpoint runs/rwpp_ppo/checkpoint.pt --ticks 1800` 让 PPO 策略在真机里打一局并生成回放；平台「实机推理」页策略下拉选「PPO 模型」即可
+- **LLM 战略层**：`--use-llm` 开启后每 3 秒调用一次 OpenAI 兼容 LLM（环境变量 `IRONZERO_LLM_BASE_URL / IRONZERO_LLM_API_KEY / IRONZERO_LLM_MODEL`），LLM 只输出 `StrategicDirective`（intent / attack_region / rally_point），**不控制单位级动作**；无 key 或调用失败自动退回规则策略，关闭后 RL 独立运行
+- 动作空间：`move_group / attack_move / attack_target / stop / hold` 五类；单位组头真实生效（4 组 + 广播），对齐设计文档 4.2
 
 ## 开发入口
 
@@ -213,13 +220,13 @@ python -m ironzero.mock_server --port 5123
 
 ## 计划路线
 
-- [ ] 只读探针：读取 tick、单位、资源、建筑和迷雾（离线参考环境已实现；真机待接）
-- [ ] 动作桥：移动、攻击、停止、建造、生产（前三类动作已在协议与参考环境跑通）
-- [ ] Micro 场景：固定地图、小规模单位对战（离线参考环境已完成 8v8 训练与评估）
+- [x] 只读探针：读取 tick、单位、资源、建筑和迷雾（真机 bridge 已接）
+- [x] 动作桥：移动、攻击、停止/守区 + 单位组（建造/生产待接）
+- [x] Micro 场景：固定地图、小规模单位对战（离线 8v8 + 真机 22v25 均已训练/评估）
 - [ ] 经济场景：采矿、建造、生产和资源点
-- [ ] 完整 1v1：多地图、战争迷雾和内置 AI 基线
-- [ ] 自博弈与模型评估
-- [ ] LLM + RL 混合指挥
+- [x] 完整 1v1 部分：多地图 + 战争迷雾 + 内置 AI 基线（自博弈待做）
+- [ ] 自博弈与模型晋级
+- [x] LLM + RL 混合指挥（战略层骨架 + 规则降级，PPO 战术层已打通）
 
 ## 使用边界
 

@@ -206,13 +206,19 @@
                     <span>地图</span>
                     <select id="map-select"><option value="">加载中…</option></select>
                   </label>
+                  <div class="hint-line subtle field-wide" id="fe-map-count">可用地图 — 张（已过滤战役/菜单图）</div>
                   <label class="field field-wide">
                     <span>策略</span>
                     <select id="fe-policy">
                       <option value="scripted">脚本策略（非模型）· 规则驱动</option>
-                      <option value="model" disabled>模型策略（PPO 训练后接入）</option>
+                      <option value="model">PPO 模型（checkpoint 真机推理）</option>
                     </select>
                   </label>
+                  <label class="field field-wide" id="fe-checkpoint-field" hidden>
+                    <span>Checkpoint（模型推理）</span>
+                    <select id="fe-checkpoint-select"><option value="">加载中…</option></select>
+                  </label>
+                  <div class="hint-line subtle field-wide" id="fe-model-note" hidden>模型推理会加载所选 PPO checkpoint 在真机里对战；没有 checkpoint 时先到「实机训练」页跑一次 PPO。</div>
                   <label class="field">
                     <span>时长 ticks</span>
                     <input id="fe-ticks" type="number" min="120" max="20000" step="60" value="2400" />
@@ -231,6 +237,7 @@
                 <div class="hint-line" id="fe-infer-status">空闲：选择地图、时长与并发后开始</div>
                 <div class="hint-line subtle">每个并发实例是一个独立无头游戏进程，各自串行推进 tick；并发 = 多开进程。服务端槽位见 KPI 卡。</div>
                 <div class="hint-line subtle">当前推理 = 脚本 AI 规则（非模型）；模型推理在「实机训练」页 PPO 训练后接入。</div>
+                <div class="hint-line subtle">选择「PPO 模型」时会加载 checkpoint 在真机推理；模型推理建议使用真实速度（16ms）。</div>
                 <div class="hint-line subtle">视觉迷雾仅影响观看渲染；训练侧「观测迷雾 260px」可在实机训练页 PPO 表单里调整。</div>
               </section>
 
@@ -490,6 +497,22 @@
               </section>
 
               <section class="card">
+                <header class="card-head">
+                  <h2>奖励分解 <span class="chip" id="fe-ppo-reward-chip">—</span></h2>
+                  <span class="hint" id="fe-ppo-reward-note">最新 update · episode 均值</span>
+                </header>
+                <div class="reward-panel" id="fe-ppo-reward"><div class="empty">完成一局后出现</div></div>
+              </section>
+
+              <section class="card">
+                <header class="card-head">
+                  <h2>战略指挥 <span class="chip" id="fe-ppo-strategy-chip">未启用</span></h2>
+                  <span class="hint" id="fe-ppo-strategy-source">—</span>
+                </header>
+                <div class="strategy-panel" id="fe-ppo-strategy"><div class="empty">未启用战略层</div></div>
+              </section>
+
+              <section class="card">
                 <header class="card-head"><h2>事件 / 日志</h2><span class="hint" id="fe-ppo-log-status">—</span></header>
                 <pre class="dash-log ppo-log" id="fe-ppo-log">等待 PPO 训练任务…</pre>
               </section>
@@ -541,11 +564,34 @@
                       <option value="cuda">cuda</option>
                     </select>
                   </label>
+                  <label class="field">
+                    <span>评估间隔 eval_every</span>
+                    <select id="fe-ppo-eval-every">
+                      <option value="0" selected>仅最后评估</option>
+                      <option value="2">每 2 轮</option>
+                      <option value="5">每 5 轮</option>
+                      <option value="10">每 10 轮</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>评估局数 eval_episodes</span>
+                    <select id="fe-ppo-eval-episodes">
+                      <option value="1" selected>1 局</option>
+                      <option value="2">2 局</option>
+                      <option value="3">3 局</option>
+                    </select>
+                  </label>
+                  <label class="field field-wide checkbox-field">
+                    <input id="fe-ppo-use-llm" type="checkbox" />
+                    <span>启用 LLM 战略层（无 API key 时自动退回规则策略）</span>
+                  </label>
+                  <div class="hint-line subtle field-wide" id="fe-ppo-llm-note" hidden>LLM 未配置（缺 IRONZERO_LLM_API_KEY）或调用失败时会自动退回规则策略，训练不会中断。</div>
                   <button class="btn btn-primary field-wide" type="button" id="fe-ppo-start">开始 PPO 真机训练</button>
                   <button class="btn btn-danger field-wide" type="button" id="fe-ppo-stop" hidden>停止训练</button>
                 </div>
                 <div class="hint-line" id="fe-ppo-hint">固定场景：Artillery 挑战图 · 22 我方 vs 25 AI。仿真速度：16ms=真实时间，2ms≈8×（默认），1ms≈极速；观测迷雾：训练时策略只看到我方单位半径内敌人（0=关闭，默认 260px）。</div>
                 <div class="hint-line subtle">默认 episode_ticks=1800 是约 30 秒真实对局，加速后几秒即可跑完；小任务验证：updates=3 / envs=1 / rollout_steps=6 / episode_ticks=600 / 极速(1ms) + 260px 雾。</div>
+                <div class="hint-line subtle">评估：eval_every=0 仅最后评估；启用 LLM 战略层需要 IRONZERO_LLM_API_KEY，缺失时自动退回规则策略。</div>
               </section>
             </aside>
           </div>

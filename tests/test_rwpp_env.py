@@ -113,23 +113,25 @@ class RwppConversionTests(unittest.TestCase):
     def test_decode_action_heads(self) -> None:
         micro = make_micro()
         state = observation_to_state(obs_message(0, [210.0], [210.0, 210.0]))
-        move = decode_action(np.array([0, 0, 7, 7, 0]), state, micro)
+        move = decode_action(np.array([0, 2, 7, 7, 0]), state, micro)
         self.assertEqual(move[0]["kind"], "move_group")
+        self.assertEqual(move[0]["unit_group"], 2)
         self.assertGreaterEqual(move[0]["x"], 0.0)
         self.assertLessEqual(move[0]["x"], MAP_PX)
         self.assertGreaterEqual(move[0]["y"], 0.0)
         self.assertLessEqual(move[0]["y"], MAP_PX)
-        attack_move = decode_action(np.array([1, 0, 0, 0, 0]), state, micro)
+        attack_move = decode_action(np.array([1, 4, 0, 0, 0]), state, micro)
         self.assertEqual(attack_move[0]["kind"], "attack_move")
-        target = decode_action(np.array([2, 0, 0, 0, 1]), state, micro)
+        self.assertEqual(attack_move[0]["unit_group"], 4)  # broadcast slot
+        target = decode_action(np.array([2, 1, 0, 0, 1]), state, micro)
         self.assertEqual(target[0]["kind"], "attack_target")
+        self.assertEqual(target[0]["unit_group"], 1)
         self.assertEqual(target[0]["target_entity_id"], 201)
-        # stale target slot and explicit stop/hold fall back to "hold ground"
-        for head in (np.array([2, 0, 0, 0, 8]), np.array([3, 0, 0, 0, 0]), np.array([4, 0, 0, 0, 0])):
+        # stale target slot and explicit stop/hold become a group hold order
+        for head in (np.array([2, 0, 0, 0, 8]), np.array([3, 3, 0, 0, 0]), np.array([4, 4, 0, 0, 0])):
             hold = decode_action(head, state, micro)
-            self.assertEqual(hold[0]["kind"], "move_group")
-            self.assertAlmostEqual(hold[0]["x"], 640.0)
-            self.assertAlmostEqual(hold[0]["y"], 2000.0)
+            self.assertEqual(hold[0]["kind"], "hold")
+            self.assertIn(hold[0]["unit_group"], (0, 3, 4))
 
     def test_hp_potential_tracks_damage(self) -> None:
         full = observation_to_state(obs_message(0, [210.0, 210.0], [210.0, 210.0, 210.0]))

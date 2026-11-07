@@ -3,6 +3,7 @@ package ironzero;
 
 import com.corrodinggames.rts.game.RWGameEngine;
 import com.corrodinggames.rts.game.Team;
+import com.corrodinggames.rts.game.units.AttackMode;
 import com.corrodinggames.rts.game.units.OrderableUnit;
 import com.corrodinggames.rts.game.units.Unit;
 import com.corrodinggames.rts.gameFramework.CommandControllerCommand;
@@ -39,6 +40,10 @@ import java.util.Locale;
 public final class IronZeroBridge implements ServerExtension {
     private static final int DECISION_INTERVAL = 10;
     private static final int FRAME_PERIOD_MILLIS = 16;
+    // Action-space contract shared with MicroDuelConfig: 0..3 are unit groups,
+    // 4 (== GROUP_BROADCAST) orders every living friendly unit.
+    private static final int GROUP_COUNT = 4;
+    private static final int GROUP_BROADCAST = GROUP_COUNT;
 
     private volatile boolean stop = false;
     private ServerSocket serverSocket;
@@ -283,12 +288,13 @@ public final class IronZeroBridge implements ServerExtension {
             }
             JsonObject action = item.asObject();
             String kind = action.getString("kind", "");
+            int unitGroup = action.getInt("unit_group", GROUP_BROADCAST);
             CommandControllerCommand command = null;
             if ("move_group".equals(kind) || "attack_move".equals(kind)) {
                 float x = (float) action.getDouble("x", 0.0);
                 float y = (float) action.getDouble("y", 0.0);
                 command = engine.commandController.createCommandForTeam(engine.playerTeam);
-                addOwnOrderableUnits(command);
+                addOwnOrderableUnits(command, unitGroup);
                 if ("move_group".equals(kind)) {
                     command.setMoveWaypoint(x, y);
                 } else {
@@ -299,9 +305,14 @@ public final class IronZeroBridge implements ServerExtension {
                 Unit target = findUnitById(targetId);
                 if (target != null) {
                     command = engine.commandController.createCommandForTeam(engine.playerTeam);
-                    addOwnOrderableUnits(command);
+                    addOwnOrderableUnits(command, unitGroup);
                     command.setAttackUnitWaypoint(target);
                 }
+            } else if ("stop".equals(kind) || "hold".equals(kind)) {
+                // Hold ground: one command per unit so each keeps its own position.
+                // "hold" additionally switches the unit into guard-area fire mode.
+                accepted += holdGround(unitGroup, "hold".equals(kind));
+                continue;
             }
             if (command != null && command.getUnitCount() > 0) {
                 accepted++;
@@ -319,7 +330,7 @@ public final class IronZeroBridge implements ServerExtension {
                 + (accepted > 0 ? "" : ",\"rejected_reason\":\"ACTION_MASKED\"") + "}");
     }
 
-    private void addOwnOrderableUnits(CommandControllerCommand command) {
+    private void addOwnOrderableUnits(CommandControllerCommand command, int unitGroup) {
         for (Object item : Unit.unitList) {
             if (!(item instanceof OrderableUnit)) {
                 continue;
@@ -328,10 +339,45 @@ public final class IronZeroBridge implements ServerExtension {
             if (unit.removed || unit.hp <= 0.0f) {
                 continue;
             }
-            if (unit.team != null && unit.team.teamId == engine.playerTeam.teamId) {
-                command.addUnit(unit);
+            if (unit.team == null || unit.team.teamId != engine.playerTeam.teamId) {
+                continue;
             }
+            if (unitGroup >= 0 && unitGroup < GROUP_COUNT && (unit.id % GROUP_COUNT) != unitGroup) {
+                continue;
+            }
+            command.addUnit(unit);
         }
+    }
+
+    /**
+     * Stop/hold: one command per selected unit so each keeps its current position.
+     * Returns the number of units that accepted the order.
+     */
+    private int holdGround(int unitGroup, boolean guardArea) {
+        int ordered = 0;
+        for (Object item : Unit.unitList) {
+            if (!(item instanceof OrderableUnit)) {
+                continue;
+            }
+            OrderableUnit unit = (OrderableUnit) item;
+            if (unit.removed || unit.hp <= 0.0f) {
+                continue;
+            }
+            if (unit.team == null || unit.team.teamId != engine.playerTeam.teamId) {
+                continue;
+            }
+            if (unitGroup >= 0 && unitGroup < GROUP_COUNT && (unit.id % GROUP_COUNT) != unitGroup) {
+                continue;
+            }
+            CommandControllerCommand command = engine.commandController.createCommandForTeam(engine.playerTeam);
+            command.addUnit(unit);
+            command.setMoveWaypoint(unit.x, unit.y);
+            if (guardArea) {
+                command.setAttackMode(AttackMode.guardArea);
+            }
+            ordered++;
+        }
+        return ordered;
     }
 
     private Unit findUnitById(long entityId) {
