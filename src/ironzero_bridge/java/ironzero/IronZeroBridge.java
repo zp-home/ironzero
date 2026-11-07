@@ -48,6 +48,7 @@ public final class IronZeroBridge implements ServerExtension {
     private RWGameEngine engine;
     private int port = 5130;
     private int maxFrames = 900;
+    private int frameMs = 16;
     private String mapPath = "maps/skirmish/[p2]Lake (2p).tmx";
 
     @Override
@@ -88,7 +89,7 @@ public final class IronZeroBridge implements ServerExtension {
         while (!stop && context.isRunning() && frames < maxFrames) {
             context.pump();
             try {
-                engine.updateFrameInternal(1.0f, FRAME_PERIOD_MILLIS);
+                engine.updateFrameInternal(1.0f, frameMs);
             } catch (Throwable failure) {
                 System.out.println("[ironzero] frame error: " + failure);
                 break;
@@ -102,11 +103,13 @@ public final class IronZeroBridge implements ServerExtension {
             if (frames % 30 == 0 && writer == null) {
                 break;
             }
-            try {
-                Thread.sleep(FRAME_PERIOD_MILLIS);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                break;
+            if (frameMs > 0) {
+                try {
+                    Thread.sleep(frameMs);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
             }
         }
         sendDone(engine);
@@ -130,6 +133,10 @@ public final class IronZeroBridge implements ServerExtension {
                 maxFrames = Integer.parseInt(args.get(i + 1));
             } else if ("--map".equals(argument) && i + 1 < args.size()) {
                 mapPath = args.get(i + 1);
+            } else if ("--frame-ms".equals(argument) && i + 1 < args.size()) {
+                // Wall-clock budget per simulated frame: 16 ms = real time (60 fps),
+                // 0-4 ms lets the headless engine run several times faster for RL.
+                frameMs = Math.max(0, Integer.parseInt(args.get(i + 1)));
             }
         }
     }

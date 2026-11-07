@@ -84,6 +84,9 @@ class RwppRecordRequest(BaseModel):
     ticks: int = Field(default=2400, ge=120, le=20000)
     policy: str = Field(default="scripted", pattern="^(scripted|none)$")
     map_name: str | None = Field(default=None, max_length=128)
+    map_path: str | None = Field(default=None, max_length=256)
+    map_width: float = Field(default=2600.0, gt=0.0, le=20000.0)
+    map_height: float = Field(default=2600.0, gt=0.0, le=20000.0)
     episodes: int = Field(default=1, ge=1, le=50)
     concurrency: int = Field(default=1, ge=1, le=4)
 
@@ -100,6 +103,8 @@ class RwppPpoRequest(BaseModel):
     map_path: str = Field(default="maps/challenge/Artillery.tmx", max_length=256)
     map_width: float = Field(default=2700.0, gt=0.0, le=20000.0)
     map_height: float = Field(default=2500.0, gt=0.0, le=20000.0)
+    frame_ms: int = Field(default=2, ge=0, le=16, description="wall-clock ms per simulated frame; 2 is ~8x faster than real time")
+    vision_radius: float = Field(default=260.0, ge=0.0, le=2000.0, description="observation fog radius; <=0 disables fog")
 
 
 # ----------------------------------------------------------------------

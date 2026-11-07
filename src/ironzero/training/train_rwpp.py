@@ -51,6 +51,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--map-width", type=float, default=2700.0)
     parser.add_argument("--map-height", type=float, default=2500.0)
     parser.add_argument("--engagement", type=float, default=2.0, help="dense reward for closing distance to the enemy army")
+    parser.add_argument("--frame-ms", type=int, default=2,
+                        help="wall-clock ms per simulated frame: 16=real time, 2=~8x faster, 0=unpaced (too fast for the client)")
+    parser.add_argument("--vision-radius", type=float, default=260.0,
+                        help="observation fog radius in map pixels (<=0 disables fog)")
     parser.add_argument("--runtime", default=str(DEFAULT_RUNTIME))
     parser.add_argument("--java-home", default=str(DEFAULT_JAVA_HOME))
     parser.add_argument("--out", default="runs/rwpp_ppo")
@@ -69,6 +73,8 @@ def main(argv: list[str] | None = None) -> int:
         map_width_px=float(args.map_width),
         map_height_px=float(args.map_height),
         engagement_coef=float(args.engagement),
+        frame_ms=max(0, int(args.frame_ms)),
+        vision_radius=float(args.vision_radius),
     )
     micro = game.micro_config()
     config = PPOConfig(
@@ -138,6 +144,8 @@ def main(argv: list[str] | None = None) -> int:
             "map_path": game.map_relative,
             "map_size_px": [game.map_width_px, game.map_height_px],
             "episode_ticks": game.episode_ticks,
+            "frame_ms": game.frame_ms,
+            "vision_radius": game.vision_radius,
             "runtime": str(game.runtime),
         },
         "micro": asdict(micro),

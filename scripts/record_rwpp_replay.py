@@ -49,6 +49,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="scripted = drive the player units with simple orders")
     parser.add_argument("--order-every", type=int, default=4, help="send an order every N observations")
     parser.add_argument("--stream", default="", help="optional JSONL path for live dashboard frames")
+    parser.add_argument("--frame-ms", type=int, default=16,
+                        help="wall-clock ms per simulated frame: 16 = real time, 0 = as fast as possible")
+    parser.add_argument("--map-width", type=float, default=2600.0)
+    parser.add_argument("--map-height", type=float, default=2600.0)
     return parser
 
 
@@ -117,6 +121,8 @@ def main(argv: list[str] | None = None) -> int:
             str(args.ticks),
             "--map",
             args.map,
+            "--frame-ms",
+            str(args.frame_ms),
         ],
         cwd=str(RUNTIME),
         env=env,
@@ -216,8 +222,8 @@ def main(argv: list[str] | None = None) -> int:
             "map": {
                 "id": map_id_for(args.map),
                 "name": args.map_name,
-                "width_px": 2600,
-                "height_px": 2600,
+                "width_px": args.map_width,
+                "height_px": args.map_height,
                 "tile_width": 20,
                 "tile_height": 20,
             },

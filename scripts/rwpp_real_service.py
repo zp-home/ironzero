@@ -65,6 +65,10 @@ def _run_recorder(
     map_name: str | None,
     stream_path: Path | None,
     port: int,
+    map_path: str | None = None,
+    map_width: float = 2600.0,
+    map_height: float = 2600.0,
+    frame_ms: int = 16,
 ) -> tuple[str | None, int, float]:
     command = [
         sys.executable,
@@ -77,7 +81,15 @@ def _run_recorder(
         str(port),
         "--timeout",
         "300",
+        "--frame-ms",
+        str(max(0, int(frame_ms))),
+        "--map-width",
+        str(float(map_width)),
+        "--map-height",
+        str(float(map_height)),
     ]
+    if map_path:
+        command.extend(["--map", map_path])
     if map_name:
         command.extend(["--map-name", map_name])
     if stream_path is not None:
@@ -103,7 +115,15 @@ def _run_recorder(
     return replay_path, frame_count, seconds
 
 
-def run_infer(job_id: str, ticks: int, policy: str, map_name: str | None) -> None:
+def run_infer(
+    job_id: str,
+    ticks: int,
+    policy: str,
+    map_name: str | None,
+    map_path: str | None = None,
+    map_width: float = 2600.0,
+    map_height: float = 2600.0,
+) -> None:
     port = PORT_SLOTS.get()
     # Publish the bridge port immediately so the dashboard can show it while the
     # episode is still running (not only after it completes).
@@ -120,6 +140,9 @@ def run_infer(job_id: str, ticks: int, policy: str, map_name: str | None) -> Non
             map_name=map_name,
             stream_path=frames_path,
             port=port,
+            map_path=map_path,
+            map_width=map_width,
+            map_height=map_height,
         )
         _update(
             job_id,
@@ -144,6 +167,9 @@ def run_train(
     policy: str,
     map_name: str | None,
     concurrency: int,
+    map_path: str | None = None,
+    map_width: float = 2600.0,
+    map_height: float = 2600.0,
 ) -> None:
     started = time.time()
     workers = max(1, min(concurrency, episodes, MAX_PARALLEL))
@@ -166,6 +192,9 @@ def run_train(
                     map_name=map_name,
                     stream_path=None,
                     port=port,
+                    map_path=map_path,
+                    map_width=map_width,
+                    map_height=map_height,
                 )
                 if replay:
                     _append_replay(job_id, _relative(Path(replay)))
@@ -240,6 +269,8 @@ def run_ppo(
     map_path: str,
     map_width: float,
     map_height: float,
+    frame_ms: int = 2,
+    vision_radius: float = 260.0,
 ) -> None:
     job_dir = RUNS / f"rwpp-ppo-{job_id}"
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -268,6 +299,10 @@ def run_ppo(
         str(map_width),
         "--map-height",
         str(map_height),
+        "--frame-ms",
+        str(max(0, int(frame_ms))),
+        "--vision-radius",
+        str(float(vision_radius)),
         "--out",
         str(job_dir),
         "--live",
@@ -421,6 +456,8 @@ class Handler(BaseHTTPRequestHandler):
                             "rollout_steps",
                             "episode_ticks",
                             "device",
+                            "frame_ms",
+                            "vision_radius",
                             "map_name",
                             "elapsed",
                             "latest_update",
@@ -496,6 +533,14 @@ class Handler(BaseHTTPRequestHandler):
         map_path = str(payload.get("map_path") or "maps/challenge/Artillery.tmx")
         map_width = float(payload.get("map_width") or 2700.0)
         map_height = float(payload.get("map_height") or 2500.0)
+        frame_ms = int(payload.get("frame_ms", 2))
+        vision_radius = float(payload.get("vision_radius", 260.0))
+        if not 0 <= frame_ms <= 16:
+            self._send({"error": "frame_ms must be 0..16"}, 400)
+            return
+        if not 0.0 <= vision_radius <= 2000.0:
+            self._send({"error": "vision_radius must be 0..2000"}, 400)
+            return
         if not 1 <= updates <= 500:
             self._send({"error": "updates must be 1..500"}, 400)
             return
@@ -532,6 +577,8 @@ class Handler(BaseHTTPRequestHandler):
                 "device": device,
                 "map_name": map_name,
                 "map_path": map_path,
+                "frame_ms": frame_ms,
+                "vision_radius": vision_radius,
                 "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "started_ts": time.time(),
                 "elapsed": 0.0,
@@ -556,6 +603,8 @@ class Handler(BaseHTTPRequestHandler):
                 map_path=map_path,
                 map_width=map_width,
                 map_height=map_height,
+                frame_ms=frame_ms,
+                vision_radius=vision_radius,
             )
 
         threading.Thread(target=runner, daemon=True).start()
@@ -565,6 +614,9 @@ class Handler(BaseHTTPRequestHandler):
         ticks = int(payload.get("ticks", 2400))
         policy = str(payload.get("policy", "scripted"))
         map_name = payload.get("map_name")
+        map_path = payload.get("map_path")
+        map_width = float(payload.get("map_width") or 2600.0)
+        map_height = float(payload.get("map_height") or 2600.0)
         episodes = int(payload.get("episodes", 1))
         concurrency = int(payload.get("concurrency", 1))
         if kind == "train" and not 1 <= episodes <= 50:
@@ -600,13 +652,35 @@ class Handler(BaseHTTPRequestHandler):
                 "frames_file": f"runs/platform/rwpp-live-{job_id}/frames.jsonl" if kind == "infer" else None,
                 "frames": 0,
                 "port": None,
+                "map_name": map_name,
+                "map_path": map_path,
+                "map_width": map_width,
+                "map_height": map_height,
             }
 
         def runner() -> None:
             if kind == "train":
-                run_train(job_id, episodes, ticks, policy, map_name, concurrency)
+                run_train(
+                    job_id,
+                    episodes,
+                    ticks,
+                    policy,
+                    map_name,
+                    concurrency,
+                    map_path=map_path,
+                    map_width=map_width,
+                    map_height=map_height,
+                )
             else:
-                run_infer(job_id, ticks, policy, map_name)
+                run_infer(
+                    job_id,
+                    ticks,
+                    policy,
+                    map_name,
+                    map_path=map_path,
+                    map_width=map_width,
+                    map_height=map_height,
+                )
 
         threading.Thread(target=runner, daemon=True).start()
         self._send({"job_id": job_id, "status": "running", "kind": kind})

@@ -339,7 +339,12 @@ def resolve_asset(relative: str) -> Path:
 
 
 def blocked_mask(payload: dict[str, Any]) -> list[int]:
-    """1 = blocked (water) tile for the terrain simulation, row-major."""
+    """1 = impassable tile for the terrain simulation, row-major.
+
+    Rusted Warfare tanks can wade through *shallow* water, so only ``water`` and
+    ``deep water`` tiles are treated as blocked; this matches what the real
+    engine does (observed on the Artillery challenge map).
+    """
 
     width = int(payload.get("width", 0))
     height = int(payload.get("height", 0))
@@ -361,8 +366,12 @@ def blocked_mask(payload: dict[str, Any]) -> list[int]:
                 tileset = candidate
             else:
                 break
-        if tileset is not None and tileset.get("water"):
-            blocked[index] = 1
+        if tileset is None or not tileset.get("water"):
+            continue
+        name = str(tileset.get("name", "")).lower()
+        if "shallow" in name:
+            continue  # passable in the real game
+        blocked[index] = 1
     return blocked
 
 

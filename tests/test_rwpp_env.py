@@ -21,6 +21,7 @@ from ironzero.rwpp_env import (
     RwppDuelEnv,
     RwppEnvError,
     RwppGameConfig,
+    apply_vision,
     decode_action,
     hp_potential,
     observation_to_state,
@@ -146,6 +147,18 @@ class RwppConversionTests(unittest.TestCase):
         self.assertGreaterEqual(potential, -1.0)
         self.assertLessEqual(potential, 1.0)
         self.assertAlmostEqual(potential, 0.0)  # both sides clamped at 100%
+
+    def test_vision_filter_hides_distant_enemies(self) -> None:
+        state = observation_to_state(obs_message(0, [210.0, 210.0], [210.0, 210.0]))
+        # own at y=2000, enemies at y=200 -> ~1800 px away, outside a 260 px fog
+        filtered = apply_vision(dict(state), 260.0)
+        self.assertEqual(filtered["visible_enemy_entities"], [])
+        self.assertEqual(filtered["target_ids"], [])
+        # the ground truth state is untouched
+        self.assertEqual(len(state["visible_enemy_entities"]), 2)
+        # without fog nothing is hidden
+        visible = apply_vision(dict(state), 0.0)
+        self.assertEqual(len(visible["visible_enemy_entities"]), 2)
 
 
 # ----------------------------------------------------------------------
@@ -298,6 +311,29 @@ class RwppBridgeLoopTests(unittest.TestCase):
             env.step(np.array([2, 0, 0, 0, 0]))
             _obs, _reward, terminated, _truncated, info = env.step(np.array([2, 0, 0, 0, 0]))
             self.assertEqual(info["enemy_alive"], 0)
+            self.assertTrue(terminated)
+            self.assertEqual(info["result"], "victory")
+        finally:
+            env.close()
+
+    def test_fog_does_not_end_episode_with_hidden_enemies(self) -> None:
+        port = find_free_port()
+        bridge = FakeBridge(port, steps=2, eliminate_on_last=True)
+        game = RwppGameConfig(episode_ticks=30, vision_radius=260.0)
+        env = RwppDuelEnv(
+            game,
+            port=port,
+            micro_config=make_micro(),
+            launcher=bridge.launcher,
+            episode_prefix="fog",
+        )
+        try:
+            env.reset()
+            _obs, _reward, terminated, _truncated, info = env.step(np.array([2, 0, 0, 0, 0]))
+            self.assertFalse(terminated, "hidden enemies must not count as eliminated")
+            self.assertEqual(info["enemy_alive"], 3)
+            self.assertEqual(info["visible_enemies"], 0)
+            _obs, _reward, terminated, _truncated, info = env.step(np.array([2, 0, 0, 0, 0]))
             self.assertTrue(terminated)
             self.assertEqual(info["result"], "victory")
         finally:

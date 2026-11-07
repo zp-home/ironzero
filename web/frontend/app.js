@@ -399,6 +399,7 @@ function cacheEls() {
     'fe-ppo-checkpoint', 'fe-ppo-checkpoint-path', 'fe-ppo-log', 'fe-ppo-log-status',
     'fe-ppo-updates', 'fe-ppo-envs', 'fe-ppo-rollout', 'fe-ppo-ticks', 'fe-ppo-device',
     'fe-ppo-start', 'fe-ppo-stop', 'fe-ppo-hint', 'rwpp-status-ppo', 'rwpp-status-ppo-text',
+    'fe-ppo-frame-ms', 'fe-ppo-vision', 'fe-ppo-kpi-device-foot',
   ];
   for (const id of ids) {
     const key = id.replace(/-([a-z])/g, (match, chr) => chr.toUpperCase());
@@ -417,6 +418,7 @@ function createSandboxState() {
     follow: false,
     streaming: false,
     speed: 1,
+    frameStep: 0,
     fetchCursor: 0,
     status: 'idle',
     inferDone: false,
@@ -2804,8 +2806,9 @@ function updatePlayerUi(force) {
       els.frameSub.textContent = sandbox.status === 'running' || sandbox.streaming ? '等待首帧…' : '—';
     } else {
       const result = frame.result ? resultMeta(frame.result) : null;
-      els.frameSub.textContent = 't=' + fmtNum(frame.time, 1) + 's · 第 ' + (frame.episode + 1)
-        + '/' + Math.max(1, sandbox.episodes || 1) + ' 局' + (result ? ' · ' + result.label : '');
+      els.frameSub.textContent = 't=' + fmtNum(frame.time, 1) + 's · ' + sandboxSpeedLabel(sandbox)
+        + ' · 第 ' + (frame.episode + 1) + '/' + Math.max(1, sandbox.episodes || 1) + ' 局'
+        + (result ? ' · ' + result.label : '');
     }
   }
   if (els.playBtn) {
@@ -4095,7 +4098,7 @@ function drawSandboxHud(ctx, sandbox, frame, width, height) {
   ctx.textAlign = 'left';
   ctx.fillStyle = 'rgba(200, 228, 250, 0.85)';
   const info = frame
-    ? '#' + (frame.episode + 1) + ' · tick ' + frame.tick + ' · t=' + fmtNum(frame.time, 1) + 's'
+    ? '#' + (frame.episode + 1) + ' · tick ' + frame.tick + ' · t=' + fmtNum(frame.time, 1) + 's' + ' · ' + sandboxSpeedLabel(sandbox)
     : '等待推理数据';
   ctx.fillText(info, 14, 12);
 
@@ -4113,7 +4116,8 @@ function drawSandboxHud(ctx, sandbox, frame, width, height) {
   ctx.save();
   ctx.font = '10px "Microsoft YaHei", "Segoe UI", sans-serif';
   ctx.fillStyle = sandbox.simMode === 'terrain' ? 'rgba(125, 227, 176, 0.95)' : 'rgba(124, 160, 190, 0.9)';
-  let metaLine = modeLabel + ' · ' + mapLabel + ' · ' + viewLabel + ' · ' + (sandbox.frames ? sandbox.frames.length : 0) + ' 帧';
+  const strategyLabel = (sandbox.source === 'infer' || realReplay) ? '脚本策略 · ' : '';
+  let metaLine = modeLabel + ' · ' + strategyLabel + mapLabel + ' · ' + viewLabel + ' · ' + (sandbox.frames ? sandbox.frames.length : 0) + ' 帧';
   if (sandbox.fogEnabled) metaLine += ' · 迷雾';
   ctx.fillText(metaLine, 14, 27);
   ctx.restore();
@@ -4375,6 +4379,46 @@ function spawnFrameEffects(frame) {
   if (sandbox.effects.length > 160) sandbox.effects.splice(0, sandbox.effects.length - 160);
 }
 
+function sandboxFrameStepSeconds(sandbox) {
+  if (!sandbox) return 1 / BASE_FPS;
+  const frames = sandbox.frames || [];
+  const realGame = sandbox.source === 'infer' || sandbox.checkpoint === 'rwpp-live' || sandbox.simMode === 'terrain';
+  if (!realGame) return 1 / BASE_FPS;
+  if (frames.length >= 2) {
+    const firstIndex = Math.max(0, frames.length - 12);
+    const first = frames[firstIndex];
+    const last = frames[frames.length - 1];
+    const count = Math.max(1, frames.length - 1 - firstIndex);
+    const tickDelta = num(last.tick, 0) - num(first.tick, 0);
+    if (tickDelta > 0) {
+      const step = (tickDelta / count) / 60;
+      if (step > 0.001) {
+        sandbox.frameStep = step;
+        return step;
+      }
+    }
+    const timeDelta = num(last.time, 0) - num(first.time, 0);
+    if (timeDelta > 0) {
+      const step = timeDelta / count;
+      if (step > 0.001) {
+        sandbox.frameStep = step;
+        return step;
+      }
+    }
+  }
+  if (sandbox.source === 'infer' || sandbox.checkpoint === 'rwpp-live') {
+    sandbox.frameStep = sandbox.frameStep || (1 / 6);
+    return sandbox.frameStep;
+  }
+  return sandbox.frameStep || (1 / BASE_FPS);
+}
+
+function sandboxSpeedLabel(sandbox) {
+  const speed = num(sandbox && sandbox.speed, 1);
+  if (speed >= 30) return '最快';
+  return (Math.round(speed * 10) / 10) + 'x';
+}
+
 function advanceSandbox(dt) {
   const sandbox = state.sandbox;
   const frames = sandbox.frames;
@@ -4386,7 +4430,10 @@ function advanceSandbox(dt) {
   }
   sandbox.wasPlaying = true;
   const previous = sandbox.playback;
-  const next = Math.min(previous + dt * BASE_FPS * sandbox.speed, maxIndex);
+  const stepSeconds = sandboxFrameStepSeconds(sandbox);
+  const speedFactor = sandbox.speed >= 30 ? 30 : sandbox.speed;
+  const framesPerSecond = speedFactor / stepSeconds;
+  const next = Math.min(previous + dt * framesPerSecond, maxIndex);
   if (next > previous) {
     const previousIndex = Math.floor(previous);
     const nextIndex = Math.floor(next);
@@ -4710,7 +4757,9 @@ function bindEvents() {
 
   if (els.speedSelect) {
     els.speedSelect.addEventListener('change', () => {
-      state.sandbox.speed = clamp(num(els.speedSelect.value, 1), 0.5, 4);
+      const raw = els.speedSelect.value;
+      state.sandbox.speed = raw === 'max' ? 30 : clamp(num(raw, 1), 0.5, 4);
+      updatePlayerUi(true);
     });
   }
 
@@ -5608,10 +5657,17 @@ async function feStartInferInner() {
   if (els.mapSelect) els.mapSelect.value = mapItem.id;
   await selectMap(mapItem.id, { silent: true });
   feSetInferRunning(true);
-  feSetInferStatus('启动 ' + launchCount + ' 路并发实例…');
+  feSetInferStatus('启动 ' + launchCount + ' 路并发实例（脚本策略）…');
   feRenderInferDashboard();
   const results = await Promise.allSettled(
-    Array.from({ length: launchCount }, () => Api.rwppInfer({ ticks: ticks, policy: policy, map_name: mapItem.name }))
+    Array.from({ length: launchCount }, () => Api.rwppInfer({
+      ticks: ticks,
+      policy: policy,
+      map_name: mapItem.name,
+      map_path: mapItem.relative || '',
+      map_width: num(mapItem.width_px, 0),
+      map_height: num(mapItem.height_px, 0),
+    }))
   );
   const jobIds = [];
   const failures = [];
@@ -5695,6 +5751,17 @@ async function feInferTick() {
     }
     feUpdateFps();
     feRenderInferDashboard();
+    const watchTask = feWatchTaskObject();
+    if (watchTask) {
+      const watchRunning = watchTask.status === 'running';
+      const watchSeconds = Math.round(watchTask.seconds || 0);
+      feSetInferStatus(
+        (watchRunning ? '运行中' : (watchTask.status === 'done' ? '已完成' : '失败'))
+          + ' · 脚本策略 · 已收 ' + watchTask.frames.length + ' 帧 · tick=' + Math.round(watchTask.latestTick)
+          + (watchRunning && watchSeconds ? ' · ' + watchSeconds + 's' : ''),
+        watchRunning ? '' : (watchTask.status === 'done' ? 'ok' : 'bad')
+      );
+    }
     await feFinishInferIfDone();
   } finally {
     fe.inferPolling = false;
@@ -6156,6 +6223,8 @@ Object.assign(state.fe, {
     startedAt: 0,
     stopRequested: false,
     restoreTried: false,
+    frameMs: 2,
+    visionRadius: 260,
   },
 });
 
@@ -6239,13 +6308,21 @@ function feSetPpoRunning(running) {
     els.fePpoStop.hidden = !running;
     els.fePpoStop.disabled = !running || !!ppo.stopRequested;
   }
-  for (const key of ['fePpoUpdates', 'fePpoEnvs', 'fePpoRollout', 'fePpoTicks', 'fePpoDevice']) {
+  for (const key of ['fePpoUpdates', 'fePpoEnvs', 'fePpoRollout', 'fePpoTicks', 'fePpoDevice', 'fePpoFrameMs', 'fePpoVision']) {
     if (els[key]) els[key].disabled = running;
   }
 }
 
 function feSetPpoStatus(label, tone) {
   feSetStatusPill(els.fePpoStatus, label, tone);
+}
+
+function fePpoFrameMsLabel(frameMs) {
+  const value = num(frameMs, 2);
+  if (value === 16) return '真实时间 16ms（1×）';
+  if (value === 2) return '快速 2ms（约 8×）';
+  if (value === 1) return '极速 1ms（约 16×）';
+  return value + 'ms';
 }
 
 function feRenderPpoLog() {
@@ -6268,7 +6345,9 @@ function feRenderPpoLog() {
   log.textContent = lines.length ? lines.join('\n') : '等待 PPO 训练任务…';
   log.classList.toggle('has-error', !!(ppo.job && ppo.job.error));
   if (els.fePpoLogStatus) {
-    els.fePpoLogStatus.textContent = 'status=' + (ppo.status || 'idle') + ' · events ' + (ppo.events || []).length;
+    els.fePpoLogStatus.textContent = 'status=' + (ppo.status || 'idle')
+      + ' · frame_ms=' + ppo.frameMs + ' · fog=' + (ppo.visionRadius > 0 ? ppo.visionRadius + 'px' : 'off')
+      + ' · events ' + (ppo.events || []).length;
   }
 }
 
@@ -6299,6 +6378,8 @@ function feRenderPpoSummary() {
     ['吞吐', envs >= 2
       ? envs + ' 实例并行 · ' + (totalSeconds > 0 ? (updates / totalSeconds).toFixed(2) : '0.00') + ' 轮/s'
       : '单实例'],
+    ['仿真速度', fePpoFrameMsLabel(ppo.frameMs)],
+    ['观测迷雾', ppo.visionRadius > 0 ? ppo.visionRadius + ' px' : '关闭'],
   ];
   if (els.fePpoSummary) {
     els.fePpoSummary.innerHTML = '';
@@ -6415,7 +6496,11 @@ function feRenderPpoKpis() {
   feSetText(els.fePpoKpiReturn, num(latest.mean_return, 0).toFixed(2));
   feSetText(els.fePpoKpiWin, (num(latest.win_rate, 0) * 100).toFixed(1));
   feSetText(els.fePpoKpiEntropy, num(latest.entropy, 0).toFixed(3));
-  feSetText(els.fePpoKpiDevice, String(job.device || (els.fePpoDevice && els.fePpoDevice.value) || 'auto').toUpperCase());
+  const deviceLabel = String(job.device || (els.fePpoDevice && els.fePpoDevice.value) || 'auto').toLowerCase();
+  feSetText(els.fePpoKpiDevice, deviceLabel.toUpperCase());
+  if (els.fePpoKpiDeviceFoot) {
+    els.fePpoKpiDeviceFoot.textContent = 'frame_ms=' + ppo.frameMs + ' · 观测迷雾=' + (ppo.visionRadius > 0 ? ppo.visionRadius + 'px' : '关闭');
+  }
   const percent = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
   if (els.fePpoProgress) els.fePpoProgress.style.width = percent + '%';
   feSetText(els.fePpoProgressLabel, done + ' / ' + total + ' 轮');
@@ -6500,6 +6585,8 @@ async function fePollPpo() {
       if (numOrNull(job.updates_done) !== null) ppo.updatesDone = num(job.updates_done, ppo.updatesDone);
       if (job.latest_update) ppo.latest = job.latest_update;
       if (Array.isArray(job.evaluations)) ppo.evaluations = job.evaluations;
+      if (numOrNull(job.frame_ms) !== null) ppo.frameMs = num(job.frame_ms, ppo.frameMs);
+      if (numOrNull(job.vision_radius) !== null) ppo.visionRadius = num(job.vision_radius, ppo.visionRadius);
     }
     const doneEvent = ppo.events.filter((item) => item.kind === 'done').pop();
     if (doneEvent) ppo.donePayload = doneEvent.payload || {};
@@ -6554,6 +6641,8 @@ async function feStartPpo() {
   const rollout = clampInt(els.fePpoRollout && els.fePpoRollout.value, 1, 512, 20);
   const episodeTicks = clampInt(els.fePpoTicks && els.fePpoTicks.value, 120, 20000, 900);
   const device = (els.fePpoDevice && els.fePpoDevice.value) || 'auto';
+  const frameMs = clampInt(els.fePpoFrameMs && els.fePpoFrameMs.value, 0, 16, 2);
+  const visionRadius = clampInt(els.fePpoVision && els.fePpoVision.value, 0, 2000, 260);
   ppo.jobId = null;
   ppo.job = null;
   ppo.events = [];
@@ -6567,6 +6656,8 @@ async function feStartPpo() {
   ppo.startedAt = Date.now();
   ppo.updatesTotal = updates;
   ppo.updatesDone = 0;
+  ppo.frameMs = frameMs;
+  ppo.visionRadius = visionRadius;
   feSetPpoRunning(true);
   feSetPpoStatus('启动中', 'running');
   feRenderPpoDashboard();
@@ -6581,13 +6672,15 @@ async function feStartPpo() {
       map_path: PPO_MAP.path,
       map_width: PPO_MAP.width,
       map_height: PPO_MAP.height,
+      frame_ms: frameMs,
+      vision_radius: visionRadius,
     });
     const jobId = response && (response.job_id || response.id);
     if (!jobId) throw new Error('后端未返回 PPO 任务 id');
     ppo.jobId = String(jobId);
     ppo.status = 'running';
     startFePpoPolling();
-    toast('PPO 真机训练已开始 · ' + updates + ' 轮 × ' + envs + ' 实例', 'ok');
+    toast('PPO 真机训练已开始 · ' + updates + ' 轮 × ' + envs + ' 实例 · frame_ms=' + frameMs + ' · fog=' + (visionRadius || 'off'), 'ok');
   } catch (error) {
     ppo.status = 'failed';
     feSetPpoRunning(false);
@@ -6641,6 +6734,14 @@ async function feRestorePpoJob(force) {
     if (els.fePpoRollout && running.rollout_steps) els.fePpoRollout.value = String(running.rollout_steps);
     if (els.fePpoTicks && running.episode_ticks) els.fePpoTicks.value = String(running.episode_ticks);
     if (els.fePpoDevice && running.device) els.fePpoDevice.value = String(running.device);
+    if (numOrNull(running.frame_ms) !== null) {
+      ppo.frameMs = num(running.frame_ms, 2);
+      if (els.fePpoFrameMs) els.fePpoFrameMs.value = String(ppo.frameMs);
+    }
+    if (numOrNull(running.vision_radius) !== null) {
+      ppo.visionRadius = num(running.vision_radius, 260);
+      if (els.fePpoVision) els.fePpoVision.value = String(ppo.visionRadius);
+    }
     feSetPpoRunning(true);
     startFePpoPolling();
     if (state.tab === 'train') {

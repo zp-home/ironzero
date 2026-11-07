@@ -66,6 +66,11 @@ class RwppGameConfig:
     map_height_px: float = DEFAULT_MAP_PX_H
     start_timeout: float = 90.0
     obs_timeout: float = 60.0
+    # Wall-clock budget per simulated frame. 16 ms = real time (60 fps). Training
+    # uses 2 ms (~8x faster than real time) which is the fastest rate the RL loop
+    # can keep up with; 0 makes the engine finish entire episodes between decisions.
+    frame_ms: int = 2
+    vision_radius: float = 0.0  # >0 enables observation-level fog of war (enemy filtering)
     # Dense shaping: reward closing the distance to the enemy army (the skirmish
     # AI often starts far away, so pure hp-diff reward has no gradient early on).
     engagement_coef: float = 2.0
@@ -80,7 +85,7 @@ class RwppGameConfig:
             map_width=float(self.map_width_px),
             map_height=float(self.map_height_px),
             episode_ticks=int(self.episode_ticks),
-            vision_radius=0.0,
+            vision_radius=float(self.vision_radius or 0.0),
         )
 
 
@@ -127,6 +132,8 @@ def launch_rwpp_process(game: RwppGameConfig, port: int) -> _ProcLike:
                 str(int(game.episode_ticks)),
                 "--map",
                 game.map_relative,
+                "--frame-ms",
+                str(max(0, int(game.frame_ms))),
             ],
             cwd=str(runtime),
             env=env,
@@ -249,6 +256,35 @@ def _hold_action(state: dict[str, Any]) -> list[dict[str, Any]]:
     return [{"kind": "move_group", "unit_group": 0, "x": round(cx, 2), "y": round(cy, 2)}]
 
 
+def apply_vision(state: dict[str, Any], radius: float) -> dict[str, Any]:
+    """Observation-level fog of war: keep only enemies in sight of our units.
+
+    The native bridge streams every unit; this filter makes the policy's view
+    match what a human player would see, which is what ``vision_radius`` in the
+    micro config describes. ``radius <= 0`` disables fog (full information).
+    """
+
+    if radius <= 0.0:
+        return state
+    own = state.get("own_entities", [])
+    if not own:
+        return state
+    limit = float(radius) ** 2
+    visible: list[dict[str, Any]] = []
+    for enemy in state.get("visible_enemy_entities", []):
+        ex = float(enemy.get("x") or 0.0)
+        ey = float(enemy.get("y") or 0.0)
+        for unit in own:
+            dx = ex - float(unit.get("x") or 0.0)
+            dy = ey - float(unit.get("y") or 0.0)
+            if dx * dx + dy * dy <= limit:
+                visible.append(enemy)
+                break
+    state["visible_enemy_entities"] = visible
+    state["target_ids"] = [int(enemy.get("entity_id", -1)) for enemy in visible]
+    return state
+
+
 def hp_potential(
     state: dict[str, Any],
     own_max_ref: float | None = None,
@@ -355,8 +391,11 @@ class RwppDuelEnv:
         if message is None:
             raise RwppEnvError(f"no observation from real game on port {self.port}")
         self.state = observation_to_state(message)
+        # ``state`` stays the ground truth (used for termination / hp / reward);
+        # ``obs_state`` is what the policy is allowed to see when fog is enabled.
+        self.obs_state = self._observed(self.state)
         self.last_tick = int(self.state["tick"])
-        self.masks = build_masks(self.state, self.micro)
+        self.masks = build_masks(self.obs_state, self.micro)
         # Reference totals: dead units vanish from the bridge stream, so reward and
         # evaluation fractions are measured against the episode-start army value.
         self.own_max_ref = sum(
@@ -373,12 +412,13 @@ class RwppDuelEnv:
         self.done = False
         self.last_result = None
         self.episode_steps = 0
-        obs = encode_observation(self.state, self.micro)
+        obs = encode_observation(self.obs_state, self.micro)
         info = {
             "episode_id": self.episode_id,
             "seed": self.seed,
             "masks": self.masks,
             "raw_state": self.state,
+            "visible_enemies": len(self.obs_state.get("visible_enemy_entities", [])),
             "tick": self.state["tick"],
             "port": self.port,
         }
@@ -418,8 +458,9 @@ class RwppDuelEnv:
         else:
             state = observation_to_state(message) if message else dict(self.state)
             self.state = state
+            self.obs_state = self._observed(state)
             self.last_tick = int(state["tick"])
-        self.masks = build_masks(self.state, self.micro)
+        self.masks = build_masks(self.obs_state, self.micro)
 
         potential = hp_potential(self.state, self.own_max_ref, self.enemy_max_ref)
         reward = float(self.micro.potential_coef) * (potential - self.last_potential)
@@ -452,7 +493,7 @@ class RwppDuelEnv:
         if terminated or truncated:
             self._shutdown_game()
 
-        obs = encode_observation(self.state, self.micro)
+        obs = encode_observation(self.obs_state, self.micro)
         own_frac, enemy_frac = hp_fractions(self.state, self.own_max_ref, self.enemy_max_ref)
         info = {
             "episode_id": self.episode_id,
@@ -461,6 +502,7 @@ class RwppDuelEnv:
             "receipts": self.receipts,
             "masks": self.masks,
             "raw_state": self.state,
+            "visible_enemies": len(self.obs_state.get("visible_enemy_entities", [])),
             "actions": actions,
             "own_alive": own_alive,
             "enemy_alive": enemy_alive,
@@ -469,6 +511,14 @@ class RwppDuelEnv:
             "port": self.port,
         }
         return obs, reward, terminated, truncated, info
+
+    def _observed(self, state: dict[str, Any]) -> dict[str, Any]:
+        """State as the policy sees it (fog of war applied when configured)."""
+
+        radius = float(self.game.vision_radius or 0.0)
+        if radius <= 0.0:
+            return state
+        return apply_vision(dict(state), radius)
 
     def action_masks(self) -> dict[str, np.ndarray]:
         return self.masks
@@ -593,6 +643,7 @@ __all__ = [
     "RwppDuelEnv",
     "RwppEnvError",
     "RwppGameConfig",
+    "apply_vision",
     "decode_action",
     "hp_potential",
     "launch_rwpp_process",
