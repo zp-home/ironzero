@@ -112,6 +112,21 @@ start http://127.0.0.1:8000
 
 Dockerfile / compose / API / 目录说明见 [web/README.md](./web/README.md)。
 
+## 真机 PPO 训练（策略在环）
+
+策略网络直接在真实 1.15 无头对局里决策（观测走 bridge `obs` 流，动作注入原生 `CommandController`），默认场景是 `Artillery` 挑战图：引擎预置 **22 我方单位 vs 25 AI 单位**，开局即真实交战。
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m ironzero.training.train_rwpp --updates 6 --envs 2 --episode-ticks 900 --device auto
+# 产物：runs/rwpp_ppo/checkpoint.pt、live.jsonl（可直接接大屏）、rwpp_summary.json
+```
+
+- 每实例 = 一个独立无头游戏进程（端口 5140+），`--envs` 控制并行实例数；实例跨 update 复用，只有单局结束才重启 JVM
+- 观测 364 维、动作 5 头 `[kind5, group5, x8, y8, target9]`、策略网络 168k 参数；奖励 = HP 潜势差 + 交战接近量 + 终局 ±1
+- 实测 2 实例 / 900 tick 局：240 个真机决策 45.6 秒（≈5.3 决策/秒）；GPU 只在策略前向用（4070 可选），瓶颈是 CPU 游戏进程
+- 细节与场景选型见 `docs/平台搭建方案.md` 5.7 节
+
 ## 开发入口
 
 运行协议测试：

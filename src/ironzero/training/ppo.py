@@ -7,7 +7,7 @@ import json
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -66,6 +66,9 @@ class PPOTrainer:
         *,
         micro_config: MicroDuelConfig | None = None,
         live_path: str | Path | None = None,
+        vec: Any | None = None,
+        baseline_fn: Callable[[], dict[str, Any]] | None = None,
+        eval_fn: Callable[["PPOTrainer"], dict[str, Any]] | None = None,
     ) -> None:
         self.config = config or PPOConfig()
         self.micro = micro_config or DEFAULT_CONFIG
@@ -75,10 +78,14 @@ class PPOTrainer:
         self.live_path = Path(live_path) if live_path else None
         self._live_handle = None
         self._live_seq = 0
+        self._baseline_fn = baseline_fn
+        self._eval_fn = eval_fn
         if self.live_path is not None:
             self.live_path.parent.mkdir(parents=True, exist_ok=True)
             self._live_handle = self.live_path.open("a", encoding="utf-8")
-        self.vec = VecMicroEnv(
+        # ``vec`` lets callers plug a different environment family (real game)
+        # while reusing the whole PPO/GAE/checkpoint pipeline.
+        self.vec = vec if vec is not None else VecMicroEnv(
             self.config.num_envs,
             config=self.micro,
             opponent=self.config.opponent,
@@ -108,6 +115,30 @@ class PPOTrainer:
         if self._live_handle is not None:
             self._live_handle.close()
             self._live_handle = None
+
+    # ------------------------------------------------------------------
+    # Baseline / evaluation hooks (offline defaults, real game overrides)
+    # ------------------------------------------------------------------
+    def baseline(self) -> dict[str, Any]:
+        if self._baseline_fn is not None:
+            return self._baseline_fn()
+        return evaluate_random(
+            episodes=self.config.eval_episodes,
+            config=self.micro,
+            opponent=self.config.opponent,
+        )
+
+    def evaluate(self, update: int) -> dict[str, Any]:
+        if self._eval_fn is not None:
+            return self._eval_fn(self)
+        return evaluate_policy(
+            self.policy,
+            episodes=self.config.eval_episodes,
+            config=self.micro,
+            opponent=self.config.opponent,
+            seed=50_000 + update,
+            device=self.device,
+        )
 
     # ------------------------------------------------------------------
     # Rollout collection
@@ -228,10 +259,9 @@ class PPOTrainer:
         cfg = self.config
         out_dir = Path(cfg.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
-        random_baseline = evaluate_random(
-            episodes=cfg.eval_episodes, config=self.micro, opponent=cfg.opponent
-        )
-        print(f"[baseline] random: {json.dumps(random_baseline, ensure_ascii=False)}")
+        random_baseline = self.baseline()
+        if random_baseline:
+            print(f"[baseline] random: {json.dumps(random_baseline, ensure_ascii=False)}")
         self._emit(
             "start",
             {
@@ -280,23 +310,17 @@ class PPOTrainer:
                     )
                 )
             if update % cfg.eval_every == 0 or update == cfg.total_updates:
-                evaluation = evaluate_policy(
-                    self.policy,
-                    episodes=cfg.eval_episodes,
-                    config=self.micro,
-                    opponent=cfg.opponent,
-                    seed=50_000 + update,
-                    device=self.device,
-                )
+                evaluation = self.evaluate(update)
                 evaluations = {"update": update, **evaluation}
                 metrics["evaluations"].append(evaluations)
                 self._emit("eval", evaluations)
-                print(
-                    "[eval ] update {update:03d} win={win_rate:.2f} loss={loss_rate:.2f} "
-                    "timeout={timeout_rate:.2f} return={mean_return:+.3f} own_hp={mean_own_hp_frac:.2f}".format(
-                        update=update, **evaluation
+                if evaluation:
+                    print(
+                        "[eval ] update {update:03d} win={win_rate:.2f} loss={loss_rate:.2f} "
+                        "timeout={timeout_rate:.2f} return={mean_return:+.3f} own_hp={mean_own_hp_frac:.2f}".format(
+                            update=update, **evaluation
+                        )
                     )
-                )
                 self.save(out_dir, update, metrics)
         final_eval = metrics["evaluations"][-1] if metrics["evaluations"] else None
         metrics["final_eval"] = final_eval
