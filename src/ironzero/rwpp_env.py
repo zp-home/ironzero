@@ -61,14 +61,17 @@ class RwppGameConfig:
     java_home: Path = DEFAULT_JAVA_HOME
     map_relative: str = DEFAULT_MAP
     map_name: str = DEFAULT_MAP_NAME
-    episode_ticks: int = 1200
+    # Simulated-tick cap per episode. 3600 ticks = 60 s of game time: enough for a
+    # 22-vs-25 battle to resolve, while the native game-over signal ends decided
+    # battles early (a defeat typically arrives well before the cap).
+    episode_ticks: int = 3600
     map_width_px: float = DEFAULT_MAP_PX_W
     map_height_px: float = DEFAULT_MAP_PX_H
     start_timeout: float = 90.0
     obs_timeout: float = 60.0
-    # Wall-clock budget per simulated frame. 16 ms = real time (60 fps). Training
-    # uses 2 ms (~8x faster than real time) which is the fastest rate the RL loop
-    # can keep up with; 0 makes the engine finish entire episodes between decisions.
+    # Wall-clock budget per simulated frame. 16 ms = real time (60 fps); 2 ms runs
+    # faster on the wall clock. This never changes how many ticks an episode
+    # simulates: that is ``episode_ticks`` below (60 ticks = 1 s of game time).
     frame_ms: int = 2
     vision_radius: float = 0.0  # >0 enables observation-level fog of war (enemy filtering)
     # Dense shaping: reward closing the distance to the enemy army (the skirmish
@@ -159,11 +162,18 @@ def launch_rwpp_process(game: RwppGameConfig, port: int) -> _ProcLike:
 
 
 class _LineReader:
-    """Newline-delimited JSON reader with an internal buffer."""
+    """Newline-delimited JSON reader with an internal buffer.
+
+    ``closed`` distinguishes "no data for now" (a normal timeout, retry) from
+    "the peer closed the socket" (fatal for this episode): without it a dead
+    bridge makes the caller spin until its own timeout, which used to leave a
+    60 s gap and race the environment reset.
+    """
 
     def __init__(self, sock: socket.socket) -> None:
         self.sock = sock
         self.buffer = b""
+        self.closed = False
 
     def read(self, timeout: float) -> dict[str, Any] | None:
         deadline = time.time() + timeout
@@ -177,8 +187,10 @@ class _LineReader:
             except socket.timeout:
                 continue
             except OSError:
+                self.closed = True
                 return None
             if not chunk:
+                self.closed = True
                 return None
             self.buffer += chunk
         line, self.buffer = self.buffer.split(b"\n", 1)
@@ -208,7 +220,7 @@ def observation_to_state(message: dict[str, Any]) -> dict[str, Any]:
         "visible_enemy_entities": enemies,
         "target_ids": [int(entity.get("entity_id", -1)) for entity in enemies],
         "receipts": [],
-        "result": None,
+        "result": message.get("result"),
         "terminated": bool(message.get("terminated", False)),
         "truncated": bool(message.get("truncated", False)),
     }
@@ -470,26 +482,32 @@ class RwppDuelEnv:
         }
         try:
             self._socket.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-        except OSError as exc:
-            raise RwppEnvError(f"bridge send failed: {exc}") from exc
+        except OSError:
+            # The game died / the bridge was closed under us. Do not raise: let the
+            # episode end and let the vector env restart this slot.
+            disconnected = True
+        else:
+            disconnected = False
 
-        message = self._await_observation(self.game.obs_timeout)
+        message = None if disconnected else self._await_observation(self.game.obs_timeout)
         receipts_this_step = self.receipts[receipts_before:]
-        truncated_by_timeout = False
         if message is None:
-            # The bridge is gone or the game died mid-episode.
-            truncated_by_timeout = True
+            disconnected = True
             message = {}
         kind = message.get("type")
+        # The bridge reports the native game result on the final observation and
+        # on the ``done`` message; it is authoritative when present.
+        bridge_result = message.get("result")
         if kind == "done":
             self.done = True
-            self.last_result = "timeout"
             state = dict(self.state)
         else:
             state = observation_to_state(message) if message else dict(self.state)
             self.state = state
             self.obs_state = self._observed(state)
             self.last_tick = int(state["tick"])
+        if bridge_result is None:
+            bridge_result = state.get("result")
         self.masks = build_masks(self.obs_state, self.micro)
 
         distance = army_distance_norm(
@@ -532,21 +550,36 @@ class RwppDuelEnv:
         self.previous_enemy_alive = enemy_alive
 
         terminated = False
-        if enemy_alive == 0 and own_alive > 0:
+        if bridge_result in {"victory", "defeat"}:
+            # Native game-over signal (main buildings destroyed / team defeated):
+            # trust the engine instead of waiting for total annihilation.
             terminated = True
-            self.last_result = "victory"
-            components["terminal"] = float(self.micro.win_reward)
-        elif own_alive == 0:
-            terminated = True
-            self.last_result = "defeat"
-            components["terminal"] = float(self.micro.loss_reward)
+            self.last_result = str(bridge_result)
+            components["terminal"] = float(
+                self.micro.win_reward if bridge_result == "victory" else self.micro.loss_reward
+            )
+        elif bridge_result is None:
+            # Legacy/offline bridge without a result field: fall back to the
+            # annihilation heuristic.
+            if enemy_alive == 0 and own_alive > 0:
+                terminated = True
+                self.last_result = "victory"
+                components["terminal"] = float(self.micro.win_reward)
+            elif own_alive == 0:
+                terminated = True
+                self.last_result = "defeat"
+                components["terminal"] = float(self.micro.loss_reward)
         reward = float(sum(components.values()))
         for key, value in components.items():
             self.episode_components[key] = self.episode_components.get(key, 0.0) + float(value)
-        truncated = self.done or truncated_by_timeout or (
-            int(self.state.get("tick", 0)) >= int(self.game.episode_ticks)
+        # A bridge-declared timeout (tick cap) or a dead connection truncates the
+        # episode; a decided battle terminates it.
+        truncated = (not terminated) and (
+            self.done
+            or disconnected
+            or int(self.state.get("tick", 0)) >= int(self.game.episode_ticks)
         )
-        if truncated and self.last_result is None:
+        if truncated:
             self.last_result = "timeout"
         if terminated or truncated:
             self._shutdown_game()
@@ -565,6 +598,8 @@ class RwppDuelEnv:
             "episode_id": self.episode_id,
             "tick": int(self.state.get("tick", 0)),
             "result": self.last_result,
+            "bridge_result": bridge_result,
+            "disconnected": bool(disconnected),
             "receipts": self.receipts,
             "masks": self.masks,
             "raw_state": self.state,
@@ -699,6 +734,9 @@ class RwppDuelEnv:
                 break
             message = self._reader.read(max(0.5, min(remaining, 10.0)))
             if message is None:
+                if self._reader.closed:
+                    # Peer closed: fail fast instead of burning the whole timeout.
+                    return None
                 continue
             kind = message.get("type")
             if kind == "obs":

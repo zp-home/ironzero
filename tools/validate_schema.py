@@ -76,6 +76,28 @@ SAMPLES = [
     },
     {
         "protocol": "ironzero/1",
+        "type": "obs",
+        "message_id": "m-7",
+        "episode_id": "e-1",
+        "tick": 1800,
+        "decision_id": "d-180",
+        "game_time": 30.0,
+        "controlled_team": 0,
+        "visibility_revision": 1800,
+        "observation_schema_version": "1.0.0",
+        "global_state": {"unit_count": 3},
+        "masks": {
+            "action_mask": [True],
+            "unit_group_mask": [True],
+            "target_mask": [False],
+            "position_mask": [[True]],
+        },
+        # Native game-over signal carried by the terminal observation.
+        "result": "defeat",
+        "terminated": True,
+    },
+    {
+        "protocol": "ironzero/1",
         "type": "done",
         "message_id": "m-6",
         "episode_id": "e-1",

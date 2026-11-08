@@ -1000,6 +1000,18 @@
           "title": "Reward",
           "type": "number"
         },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DoneResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result"
+        },
         "terminated": {
           "default": false,
           "title": "Terminated",

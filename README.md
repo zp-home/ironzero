@@ -124,7 +124,8 @@ python -m ironzero.training.train_rwpp --updates 6 --envs 2 --episode-ticks 900 
 
 - 每实例 = 一个独立无头游戏进程（端口 5140+），`--envs` 控制并行实例数；实例跨 update 复用，只有单局结束才重启 JVM
 - 观测 364 维、动作 5 头 `[kind5, group5, x8, y8, target9]`、策略网络 168k 参数；奖励 = HP 潜势差 + 交战接近 + 与战略目标接近 + 击杀/损失/无效动作/空闲分项 + 终局 ±1（每项都进 `reward_breakdown` 与 PPO live 事件）
-- 加速：`--frame-ms`（16=真实时间，2≈8×，1≈16×）；实测 1800 tick 局 0.9s，2 实例 240 决策 15.6s；多实例吞吐约 24 决策/秒
+- 加速：`--frame-ms` **只控制每帧墙钟预算**（16=真实时间，2≈快，1≈更快），不改变仿真时长；每局仿真时长 = `--episode-ticks`（60 tick ≈ 1 秒，默认 3600 ≈ 60 秒）。引擎判出胜负会提前结束该局
+- 胜负上报：桥接每帧轮询原生结算（`TriggerEngine` 的 mainBuilings 目标 + `Team.defeated`），终局 `obs` 带 `result`/`terminated`，`done.result` 为 `victory`/`defeat`/`timeout`；训练评估、推理回放和平台界面都显示真实胜负，不再把失败/胜利记成超时
 - 观测迷雾：默认 `--vision-radius 260`（策略只看我方 260px 内敌人，胜负仍按全量状态）
 - 细节与场景选型见 `docs/平台搭建方案.md` 5.7 节，平台侧在「实机训练」页切到「PPO 真机训练」即可看训练大屏：
 
@@ -132,7 +133,7 @@ python -m ironzero.training.train_rwpp --updates 6 --envs 2 --episode-ticks 900 
 
 ## 模型推理与 LLM + RL 混合（骨架）
 
-- **模型推理**：`python scripts/play_rwpp_policy.py --checkpoint runs/rwpp_ppo/checkpoint.pt --ticks 1800` 让 PPO 策略在真机里打一局并生成回放；平台「实机推理」页策略下拉选「PPO 模型」即可
+- **模型推理**：`python scripts/play_rwpp_policy.py --checkpoint runs/rwpp_ppo/checkpoint.pt --ticks 3600` 让 PPO 策略在真机里打一局并生成回放（`meta.result` 为真实胜负）；平台「实机推理」页策略下拉选「PPO 模型」即可
 - **LLM 战略层**：`--use-llm` 开启后每 3 秒调用一次 OpenAI 兼容 LLM（环境变量 `IRONZERO_LLM_BASE_URL / IRONZERO_LLM_API_KEY / IRONZERO_LLM_MODEL`），LLM 只输出 `StrategicDirective`（intent / attack_region / rally_point），**不控制单位级动作**；无 key 或调用失败自动退回规则策略，关闭后 RL 独立运行
 - 动作空间：`move_group / attack_move / attack_target / stop / hold` 五类；单位组头真实生效（4 组 + 广播），对齐设计文档 4.2
 

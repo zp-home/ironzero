@@ -304,6 +304,12 @@ class PPOTrainer:
                 "win_rate": (
                     sum(1 for r in results if r == "victory") / len(results) if results else 0.0
                 ),
+                "loss_rate": (
+                    sum(1 for r in results if r == "defeat") / len(results) if results else 0.0
+                ),
+                "timeout_rate": (
+                    sum(1 for r in results if r == "timeout") / len(results) if results else 0.0
+                ),
                 "reward_components": {
                     key: float(np.mean(values)) for key, values in components.items()
                 },
@@ -313,11 +319,15 @@ class PPOTrainer:
             self._emit("update", record)
             if update % cfg.log_every == 0 or update == 1:
                 print(
-                    "[train] update {update:03d} return={mean_return:+.3f} win={win_rate:.2f} "
+                    "[train] update {update:03d} eps={episodes} win={win_rate:.2f} loss={loss_rate:.2f} "
+                    "timeout={timeout_rate:.2f} return={mean_return:+.3f} "
                     "pi={policy_loss:.3f} v={value_loss:.3f} H={entropy:.3f} t={elapsed_s}s".format(
                         update=update,
+                        episodes=record["episodes"],
                         mean_return=record["mean_return"],
                         win_rate=record["win_rate"],
+                        loss_rate=record["loss_rate"],
+                        timeout_rate=record["timeout_rate"],
                         policy_loss=record["policy_loss"],
                         value_loss=record["value_loss"],
                         entropy=record["entropy"],

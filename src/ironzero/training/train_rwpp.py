@@ -32,7 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--updates", type=int, default=4, help="PPO updates")
     parser.add_argument("--envs", type=int, default=2, help="parallel real game instances")
     parser.add_argument("--rollout-steps", type=int, default=8, help="decisions per env per update")
-    parser.add_argument("--episode-ticks", type=int, default=1200, help="simulated ticks per real-game episode")
+    parser.add_argument("--episode-ticks", type=int, default=3600,
+                        help="simulated ticks per real-game episode (3600 = 60 s; a decided battle ends earlier)")
     parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--minibatch", type=int, default=64)
     parser.add_argument("--lr", type=float, default=3e-4)

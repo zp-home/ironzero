@@ -351,7 +351,9 @@ function resultMeta(result) {
   const text = String(result || '').toLowerCase();
   if (text === 'victory' || text === 'win' || text === 'won' || text === 'success') return { label: '胜利', cls: 'win' };
   if (text === 'defeat' || text === 'loss' || text === 'lost' || text === 'failure') return { label: '失败', cls: 'loss' };
-  if (text === 'timeout' || text === 'draw' || text === 'tie') return { label: '平局', cls: 'draw' };
+  // "timeout" = the episode hit the tick cap without a decided battle (not a draw).
+  if (text === 'timeout') return { label: '超时', cls: 'draw' };
+  if (text === 'draw' || text === 'tie') return { label: '平局', cls: 'draw' };
   return { label: result ? String(result) : '—', cls: 'unknown' };
 }
 
@@ -2101,7 +2103,7 @@ async function loadReplays() {
  * 真机 RWPP 录制（宿主机真实 1.15 无头对局）
  * ============================================================ */
 
-const RWPP_TICKS = 2400;
+const RWPP_TICKS = 3600;
 const RWPP_POLL_MS = 2000;
 const RWPP_MAX_SECONDS = 300;
 const RWPP_STATUS_TTL_MS = 30000;
@@ -2212,7 +2214,7 @@ async function startRwppRecord() {
     renderRwppStatus();
     setRwppRecording(true, 0);
     startRwppPolling();
-    toast('真机录制已开始（ticks=' + RWPP_TICKS + '，约 40–60s）', 'ok');
+    toast('真机录制已开始（ticks=' + RWPP_TICKS + ' ≈ ' + Math.round(RWPP_TICKS / 60) + 's 仿真时长；引擎分出胜负会提前结束）', 'ok');
   } catch (error) {
     setRwppRecording(false);
     handleRwppError(error);
@@ -2678,9 +2680,17 @@ async function handleInferFinished() {
   } else {
     sandbox.status = 'done';
     const results = sandbox.results || [];
-    const wins = results.filter((item) => resultMeta(item.result).cls === 'win').length;
-    toast('推理完成 · ' + results.length + ' 局 · 胜利 ' + wins + ' 局，回放已入库', 'ok');
-    if (els.inferHint) els.inferHint.textContent = '推理完成：' + results.length + ' 局，回放已写入回放库。';
+    const counts = {};
+    for (const item of results) {
+      if (!item || !item.result) continue;
+      const label = resultMeta(item.result).label;
+      counts[label] = (counts[label] || 0) + 1;
+    }
+    const resultText = Object.keys(counts).length
+      ? ' · ' + Object.keys(counts).map((label) => label + ' ' + counts[label]).join(' / ')
+      : '';
+    toast('推理完成 · ' + results.length + ' 局' + resultText + '，回放已入库', 'ok');
+    if (els.inferHint) els.inferHint.textContent = '推理完成：' + results.length + ' 局' + resultText + '，回放已写入回放库。';
     loadReplays();
   }
   updatePlayerUi(true);
@@ -5135,6 +5145,7 @@ function feNewInferTask(jobId, index, extra) {
       seconds: 0,
       port: null,
       error: null,
+      result: null,
       inferDone: false,
       pendingDone: false,
       startedAt: Date.now(),
@@ -5156,6 +5167,7 @@ function feIngestTaskFrames(task, items) {
     if (item.type === 'done') {
       task.inferDone = true;
       task.pendingDone = true;
+      if (item.result) task.result = String(item.result);
       continue;
     }
     if (item.type === 'episode_end') continue;
@@ -5165,6 +5177,8 @@ function feIngestTaskFrames(task, items) {
     task.frames.push(frame);
     added += 1;
     task.latestTick = frame.tick;
+    // The recorder marks the terminal frame with the real bridge result.
+    if (frame.result) task.result = String(frame.result);
     task.frameTimes.push(Date.now());
     if (frame.stats) {
       task.statSamples.push({
@@ -5198,6 +5212,11 @@ function feMarkTaskDone(task) {
   void feFetchTaskFinal(task);
   task.pendingDone = false;
   if (task.seconds <= 0) task.seconds = Math.max(0, (Date.now() - task.startedAt) / 1000);
+  if (task.result && !task.toastShown) {
+    task.toastShown = true;
+    toast('实例 #' + task.index + ' 对局结果：' + resultMeta(task.result).label
+      + (task.result === 'timeout' ? '（到达每局 tick 上限）' : ''), 'ok');
+  }
   if (state.fe.watchJobId === task.jobId) {
     const sandbox = state.sandbox;
     sandbox.status = 'done';
@@ -5261,6 +5280,7 @@ async function feFetchTaskFinal(task, attempt) {
     if (job) {
       if (job.port !== undefined && job.port !== null) task.port = job.port;
       if (job.replay_path) task.replayPath = job.replay_path;
+      if (job.result) task.result = String(job.result);
       if (numOrNull(job.seconds) !== null) task.seconds = num(job.seconds, task.seconds);
     }
   } catch (error) {
@@ -5277,6 +5297,7 @@ async function feFetchTaskJob(task) {
   const job = await Api.rwppJob(task.jobId);
   if (!job) return;
   if (job.port !== undefined && job.port !== null) task.port = job.port;
+  if (job.result) task.result = String(job.result);
   if (numOrNull(job.elapsed) !== null) task.seconds = num(job.elapsed, task.seconds);
   else if (numOrNull(job.seconds) !== null) task.seconds = num(job.seconds, task.seconds);
   if (job.status === 'done') {
@@ -5319,7 +5340,9 @@ function feApplyWatchTask(jobId, options) {
   sandbox.episodes = 1;
   sandbox.eventLog = (task.eventLog || []).slice(-300);
   sandbox.inferDone = task.status === 'done';
-  sandbox.results = [];
+  sandbox.results = task.result
+    ? [{ episode: 0, result: task.result, ret: null }]
+    : [];
   sandbox.fetchCursor = task.fetchCursor;
   updatePlayerUi(true);
   drawSandbox();
@@ -5512,6 +5535,7 @@ function feRenderTaskCards() {
       'tick ' + Math.round(task.latestTick),
       Math.round(task.seconds) + 's',
     ];
+    if (task.result) items.push('结果 ' + resultMeta(task.result).label);
     if (task.error) items.push('错误');
     for (const item of items) {
       const span = document.createElement('span');
@@ -5642,7 +5666,7 @@ async function feStartInferInner() {
     toast('请选择地图（需要游戏资源缓存）', 'error');
     return;
   }
-  const ticks = clampInt(els.feTicks && els.feTicks.value, 120, 20000, 2400);
+  const ticks = clampInt(els.feTicks && els.feTicks.value, 120, 20000, 3600);
   const policy = (els.fePolicy && els.fePolicy.value) || 'scripted';
   let checkpointPath = '';
   let checkpointName = '';
@@ -5800,7 +5824,8 @@ async function feInferTick() {
             ? '模型策略 · ' + (watchTask.checkpointName || '')
             : '脚本策略')
           + ' · 已收 ' + watchTask.frames.length + ' 帧 · tick=' + Math.round(watchTask.latestTick)
-          + (watchRunning && watchSeconds ? ' · ' + watchSeconds + 's' : ''),
+          + (watchRunning && watchSeconds ? ' · ' + watchSeconds + 's' : '')
+          + (!watchRunning && watchTask.result ? ' · 结果 ' + resultMeta(watchTask.result).label : ''),
         watchRunning ? '' : (watchTask.status === 'done' ? 'ok' : 'bad')
       );
     }
@@ -5821,11 +5846,20 @@ async function feFinishInferIfDone() {
   const done = tasks.filter((task) => task.status === 'done').length;
   const failed = tasks.length - done;
   const frames = tasks.reduce((sum, task) => sum + task.frames.length, 0);
-  feSetInferStatus('完成 · ' + done + ' 成功' + (failed ? ' / ' + failed + ' 失败' : '') + ' · 共 ' + frames + ' 帧', failed ? 'warn' : 'ok');
+  const counts = {};
+  for (const task of tasks) {
+    if (!task.result) continue;
+    const label = resultMeta(task.result).label;
+    counts[label] = (counts[label] || 0) + 1;
+  }
+  const resultText = Object.keys(counts).length
+    ? ' · ' + Object.keys(counts).map((label) => label + ' ' + counts[label]).join(' / ')
+    : '';
+  feSetInferStatus('完成 · ' + done + ' 成功' + (failed ? ' / ' + failed + ' 失败' : '') + ' · 共 ' + frames + ' 帧' + resultText, failed ? 'warn' : 'ok');
   feRenderInferDashboard();
   await loadReplays();
   await refreshRwppStatus(true);
-  toast('实机推理完成：' + done + '/' + tasks.length + ' 实例成功，共 ' + frames + ' 帧', failed ? 'error' : 'ok');
+  toast('实机推理完成：' + done + '/' + tasks.length + ' 实例成功，共 ' + frames + ' 帧' + resultText, failed ? 'error' : 'ok');
 }
 
 async function feRestoreInferJobs() {
@@ -5911,8 +5945,17 @@ function feRenderTrainKpis(job) {
     feSetStatusPill(els.feTrainStatus, '空闲', 'idle');
   }
   if (els.feTrainSummary) {
+    const resultCounts = {};
+    for (const metric of metrics) {
+      if (!metric || !metric.result) continue;
+      const label = resultMeta(metric.result).label;
+      resultCounts[label] = (resultCounts[label] || 0) + 1;
+    }
+    const resultText = Object.keys(resultCounts).length
+      ? ' · ' + Object.keys(resultCounts).map((label) => label + ' ' + resultCounts[label]).join(' / ')
+      : '';
     if (job && job.status === 'done') {
-      els.feTrainSummary.textContent = '汇总：' + done + ' 局 · ' + framesTotal + ' 帧 · ' + ticksTotal + ' tick · ' + Math.round(elapsed) + 's · 平均 ' + avg.toFixed(1) + 's/局';
+      els.feTrainSummary.textContent = '汇总：' + done + ' 局 · ' + framesTotal + ' 帧 · ' + ticksTotal + ' tick · ' + Math.round(elapsed) + 's · 平均 ' + avg.toFixed(1) + 's/局' + resultText;
     } else if (job && job.status === 'failed') {
       els.feTrainSummary.textContent = '失败：' + String(job.error || '未知错误').slice(0, 80);
     } else {
@@ -5931,6 +5974,17 @@ function feRenderTrainLog(job) {
   const lines = [];
   lines.push('status: ' + job.status);
   lines.push('episodes: ' + num(job.episodes_done, 0) + '/' + num(job.episodes_total, state.fe.trainEpisodes) + ' · concurrency: ' + (job.concurrency || '—'));
+  const episodeResults = (Array.isArray(job.episodes_metrics) ? job.episodes_metrics : [])
+    .map((metric) => metric && metric.result)
+    .filter(Boolean);
+  if (episodeResults.length) {
+    const counts = {};
+    for (const result of episodeResults) {
+      const label = resultMeta(result).label;
+      counts[label] = (counts[label] || 0) + 1;
+    }
+    lines.push('results: ' + Object.keys(counts).map((label) => label + ' ' + counts[label]).join(' · '));
+  }
   lines.push('ticks: ' + num(job.ticks, 0) + ' · instances: ' + (job.instances || job.workers || '—'));
   lines.push('frames: ' + num(job.frames, 0) + ' · ticks_total: ' + num(job.ticks_total, 0));
   if (job.error) lines.push('');
@@ -6701,7 +6755,7 @@ async function feStartPpo() {
   const updates = clampInt(els.fePpoUpdates && els.fePpoUpdates.value, 1, 500, 20);
   const envs = clampInt(els.fePpoEnvs && els.fePpoEnvs.value, 1, 6, 2);
   const rollout = clampInt(els.fePpoRollout && els.fePpoRollout.value, 1, 512, 20);
-  const episodeTicks = clampInt(els.fePpoTicks && els.fePpoTicks.value, 120, 20000, 900);
+  const episodeTicks = clampInt(els.fePpoTicks && els.fePpoTicks.value, 120, 20000, 3600);
   const device = (els.fePpoDevice && els.fePpoDevice.value) || 'auto';
   const frameMs = clampInt(els.fePpoFrameMs && els.fePpoFrameMs.value, 0, 16, 2);
   const visionRadius = clampInt(els.fePpoVision && els.fePpoVision.value, 0, 2000, 260);

@@ -30,12 +30,13 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * IronZero RWPP bridge (stage 1): runs a real headless Rusted Warfare 1.15
- * game and streams ironzero/1-style observations over loopback NDJSON.
- *
- * Actions are not injected yet; the platform uses this for real-game state
- * capture and replay recording. Extension args (after --):
- *   --bridge-port 5130  --ticks 600  --map maps/skirmish/[p2]Lake (2p).tmx
+ * IronZero RWPP bridge: runs a real headless Rusted Warfare 1.15 game, streams
+ * ironzero/1-style observations over loopback NDJSON, injects policy actions and
+ * reports the native game result (victory/defeat) when the battle is decided.
+ * Extension args (after --):
+ *   --bridge-port 5130  --ticks 3600  --map maps/challenge/Artillery.tmx  --frame-ms 2
+ *   --ticks bounds simulated frames (1 frame = 1 tick; 60 ticks = 1 s).
+ *   --frame-ms is a wall-clock pacing budget only; it does not change the horizon.
  */
 public final class IronZeroBridge implements ServerExtension {
     private static final int DECISION_INTERVAL = 10;
@@ -55,6 +56,12 @@ public final class IronZeroBridge implements ServerExtension {
     private int maxFrames = 900;
     private int frameMs = 16;
     private String mapPath = "maps/skirmish/[p2]Lake (2p).tmx";
+    // Game-over plumbing: the native engine knows when the battle is decided
+    // (TriggerEngine win/lose objectives and Team defeat checks). The bridge
+    // polls that state every frame and reports it to the RL environment; it is
+    // null while the battle is still running.
+    private volatile String gameResult = null;
+    private boolean enemySeen = false;
 
     @Override
     public void onLoad(ExtensionContext context) {
@@ -100,12 +107,19 @@ public final class IronZeroBridge implements ServerExtension {
                 break;
             }
             frames++;
-            if (engine.simulationTick - lastSentTick >= DECISION_INTERVAL || frames == 1) {
+            // Poll the native game-over state after every simulated frame so a
+            // decided battle ends the episode instead of being truncated at the
+            // tick cap and reported as a timeout.
+            detectGameResult(engine);
+            if (engine.simulationTick - lastSentTick >= DECISION_INTERVAL || frames == 1 || gameResult != null) {
                 lastSentTick = engine.simulationTick;
                 sendObservation(engine, frames);
             }
             readClientCommands();
             if (frames % 30 == 0 && writer == null) {
+                break;
+            }
+            if (gameResult != null) {
                 break;
             }
             if (frameMs > 0) {
@@ -119,7 +133,8 @@ public final class IronZeroBridge implements ServerExtension {
         }
         sendDone(engine);
         closeBridge();
-        System.out.println("[ironzero] bridge finished frames=" + frames + " tick=" + engine.simulationTick);
+        System.out.println("[ironzero] bridge finished frames=" + frames + " tick=" + engine.simulationTick
+                + " result=" + (gameResult != null ? gameResult : "timeout"));
     }
 
     @Override
@@ -176,7 +191,7 @@ public final class IronZeroBridge implements ServerExtension {
     private void sendHello() {
         writeLine("{\"protocol\":\"ironzero/1\",\"type\":\"hello\",\"message_id\":\"bridge-hello\","
                 + "\"adapter_version\":\"0.1.0-rwpp\",\"game_version\":\"1.15\","
-                + "\"capabilities\":[\"obs\",\"tick\",\"real-game\"]}");
+                + "\"capabilities\":[\"obs\",\"tick\",\"real-game\",\"result\",\"building-flags\"]}");
     }
 
     private void sendObservation(RWGameEngine engine, int frame) {
@@ -186,6 +201,7 @@ public final class IronZeroBridge implements ServerExtension {
         List<String> own = new ArrayList<>();
         List<String> enemies = new ArrayList<>();
         int alive = 0;
+        int buildings = 0;
         for (Object item : Unit.unitList) {
             if (!(item instanceof Unit)) {
                 continue;
@@ -195,6 +211,9 @@ public final class IronZeroBridge implements ServerExtension {
                 continue;
             }
             alive++;
+            if (unit.isBuilding()) {
+                buildings++;
+            }
             String payload = entityJson(unit);
             if (unit.team != null && unit.team.teamId == 0) {
                 own.add(payload);
@@ -202,37 +221,105 @@ public final class IronZeroBridge implements ServerExtension {
                 enemies.add(payload);
             }
         }
+        boolean terminated = gameResult != null;
+        String resultJson = terminated ? "\"" + gameResult + "\"" : "null";
         String line = "{\"protocol\":\"ironzero/1\",\"type\":\"obs\",\"message_id\":\"obs-"
                 + engine.simulationTick + "\",\"episode_id\":\"rwpp-bridge\",\"tick\":"
                 + engine.simulationTick + ",\"decision_id\":\"d-" + engine.simulationTick
                 + "\",\"game_time\":" + fmt(engine.simulationTick / 60.0)
                 + ",\"controlled_team\":0,\"visibility_revision\":" + engine.simulationTick
                 + ",\"observation_schema_version\":\"1\","
-                + "\"global_state\":{\"unit_count\":" + alive + ",\"building_count\":0,"
+                + "\"global_state\":{\"unit_count\":" + alive + ",\"building_count\":" + buildings + ","
                 + "\"army_value\":0.0,\"visible_enemy_value\":0.0,\"kills\":0,\"losses\":0},"
                 + "\"own_entities\":[" + String.join(",", own) + "],"
                 + "\"visible_enemy_entities\":[" + String.join(",", enemies) + "],"
                 + "\"remembered_enemies\":[],\"local_maps\":{},"
                 + "\"masks\":{\"action_mask\":[],\"unit_group_mask\":[],\"target_mask\":[],\"position_mask\":[]},"
-                + "\"reward\":0.0,\"terminated\":false,\"truncated\":false,"
+                + "\"reward\":0.0,\"result\":" + resultJson + ",\"terminated\":" + terminated
+                + ",\"truncated\":false,"
                 + "\"info\":{\"source\":\"rwpp\",\"frame\":" + frame + ",\"units_alive\":" + alive + "}}";
         writeLine(line);
     }
 
     private String entityJson(Unit unit) {
         int teamId = unit.team != null ? unit.team.teamId : -1;
+        boolean building = unit.isBuilding();
         return "{\"entity_id\":" + unit.id
-                + ",\"entity_type_id\":1,\"team_id\":" + teamId
+                + ",\"entity_type_id\":" + (building ? 2 : 1) + ",\"team_id\":" + teamId
                 + ",\"x\":" + fmt(unit.x) + ",\"y\":" + fmt(unit.y)
                 + ",\"hp\":" + fmt(unit.hp) + ",\"max_hp\":" + fmt(unit.maxHp)
-                + ",\"is_building\":false,\"is_visible\":true,\"is_alive\":true}";
+                + ",\"is_building\":" + building
+                + ",\"is_factory\":" + unit.isFactoryBuilding()
+                + ",\"is_builder\":" + unit.isBuilder()
+                + ",\"is_operational\":" + !unit.isNonOperational()
+                + ",\"is_visible\":true,\"is_alive\":true}";
     }
 
     private void sendDone(RWGameEngine engine) {
+        String result = gameResult != null ? gameResult : "timeout";
+        boolean terminated = !"timeout".equals(result);
         writeLine("{\"protocol\":\"ironzero/1\",\"type\":\"done\",\"message_id\":\"done-"
                 + engine.simulationTick + "\",\"episode_id\":\"rwpp-bridge\",\"tick\":"
-                + engine.simulationTick + ",\"result\":\"timeout\",\"reward\":0.0,"
-                + "\"terminated\":false,\"truncated\":true}");
+                + engine.simulationTick + ",\"result\":\"" + result + "\",\"reward\":0.0,"
+                + "\"terminated\":" + terminated + ",\"truncated\":" + (!terminated) + "}");
+    }
+
+    /**
+     * Map the native game state onto ``victory`` / ``defeat``.
+     *
+     * The engine exposes two independent end signals: the map objective check
+     * in ``TriggerEngine`` (``victoryScreenShown`` / ``defeatScreenShown``) and
+     * the per-team defeat bookkeeping (``Team.defeated`` / ``wipedOut``). The
+     * challenge map used for training declares ``winCondition=mainBuilings``
+     * and the AI team is eliminated when its main buildings are destroyed, so
+     * either signal is authoritative. Returns null while the battle is live.
+     */
+    private String detectGameResult(RWGameEngine engine) {
+        if (gameResult != null) {
+            return gameResult;
+        }
+        if (engine == null || engine.playerTeam == null) {
+            return null;
+        }
+        Team player = engine.playerTeam;
+        if (engine.defeatScreenShown || player.defeated || player.wipedOut) {
+            gameResult = "defeat";
+            System.out.println("[ironzero] game over: defeat tick=" + engine.simulationTick
+                    + " defeated=" + player.defeated + " wipedOut=" + player.wipedOut
+                    + " screen=" + engine.defeatScreenShown);
+            return gameResult;
+        }
+        if (engine.victoryScreenShown) {
+            gameResult = "victory";
+            System.out.println("[ironzero] game over: victory tick=" + engine.simulationTick);
+            return gameResult;
+        }
+        boolean anyEnemy = false;
+        boolean enemyAlive = false;
+        for (Object item : Team.getTeams()) {
+            if (!(item instanceof Team)) {
+                continue;
+            }
+            Team team = (Team) item;
+            if (team == null || team == player || player.isSameTeam(team)) {
+                continue;
+            }
+            anyEnemy = true;
+            if (!team.defeated && !team.wipedOut) {
+                enemyAlive = true;
+                break;
+            }
+        }
+        if (anyEnemy) {
+            enemySeen = true;
+        }
+        if (enemySeen && !enemyAlive) {
+            gameResult = "victory";
+            System.out.println("[ironzero] game over: victory (all enemy teams defeated) tick="
+                    + engine.simulationTick);
+            return gameResult;
+        }
+        return null;
     }
 
     private void readClientCommands() {

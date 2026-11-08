@@ -6,7 +6,7 @@ in a real headless game, frames are streamed as JSONL for the dashboard sandbox,
 and the episode is written as an ``ironzero.replay/1`` file.
 
     python scripts/play_rwpp_policy.py --checkpoint runs/rwpp_ppo/checkpoint.pt \
-        --ticks 1800 --stream runs/platform/rwpp-live-x/frames.jsonl
+        --ticks 3600 --stream runs/platform/rwpp-live-x/frames.jsonl
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Play a PPO checkpoint in a real RWPP game")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--port", type=int, default=5130)
-    parser.add_argument("--ticks", type=int, default=1800)
+    parser.add_argument("--ticks", type=int, default=3600)
     parser.add_argument("--map", default="maps/challenge/Artillery.tmx")
     parser.add_argument("--map-name", default="Artillery")
     parser.add_argument("--map-width", type=float, default=2700.0)
@@ -150,7 +150,27 @@ def main(argv: list[str] | None = None) -> int:
             if terminated or truncated:
                 break
         result = str(info.get("result") or "timeout")
-        frames.append(state_to_frame(env.state, int(env.last_tick)))
+        # The env returns the real bridge result in info["result"]; write it on the
+        # terminal frame so the replay/stream shows the actual outcome.
+        final_frame = state_to_frame(env.state, int(env.last_tick))
+        final_frame["result"] = result
+        frames.append(final_frame)
+        if stream is not None:
+            stream.write(json.dumps({"type": "frame", **final_frame}, ensure_ascii=False) + "\n")
+            stream.write(
+                json.dumps(
+                    {
+                        "type": "done",
+                        "result": result,
+                        "frames": len(frames),
+                        "terminated": result in ("victory", "defeat"),
+                        "truncated": result == "timeout",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            stream.flush()
     finally:
         env.close()
         if stream is not None:
@@ -177,6 +197,8 @@ def main(argv: list[str] | None = None) -> int:
         "vision_radius": 0,
         "fog": False,
         "result": result,
+        "terminated": result in ("victory", "defeat"),
+        "truncated": result == "timeout",
         "return": round(total_reward, 4),
         "source": "rwpp-policy",
     }

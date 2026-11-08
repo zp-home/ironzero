@@ -3,7 +3,7 @@
 
 This is the "real game" capture path:
 
-    python scripts/record_rwpp_replay.py --ticks 1800
+    python scripts/record_rwpp_replay.py --ticks 3600
 
 It starts the pinned RWPP headless runtime with the IronZero bridge extension,
 reads ironzero/1 observations over loopback TCP, converts them into the
@@ -40,7 +40,7 @@ def map_id_for(relative: str) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Record a real RWPP game as an IronZero replay")
     parser.add_argument("--port", type=int, default=5130)
-    parser.add_argument("--ticks", type=int, default=1800)
+    parser.add_argument("--ticks", type=int, default=3600)
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--out-root", default="runs/platform")
     parser.add_argument("--map", default=MAP_RELATIVE)
@@ -93,7 +93,11 @@ def obs_to_frame(message: dict, config: dict) -> dict:
             "own_alive": sum(1 for u in units if u["team"] == 0),
             "enemy_alive": sum(1 for u in units if u["team"] == 1),
         },
-        "result": None,
+        # The bridge reports the native result on the final observation: null for
+        # ordinary frames, "victory"/"defeat" on the terminal frame. Keep it on the
+        # frame so the replay/stream carries the real outcome instead of a guess.
+        "result": message.get("result"),
+        "terminated": bool(message.get("terminated", False)),
     }
 
 
@@ -130,6 +134,11 @@ def main(argv: list[str] | None = None) -> int:
         stderr=subprocess.STDOUT,
     )
     frames: list[dict] = []
+    # Real outcome reported by the bridge. ``None`` means "no result seen yet";
+    # the terminal obs and the ``done`` message both carry it.
+    final_result: str | None = None
+    terminated = False
+    truncated = False
     stream = None
     if args.stream:
         stream_path = Path(args.stream)
@@ -151,7 +160,8 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         sock.settimeout(30)
         buffer = b""
-        while time.time() < deadline:
+        finished = False
+        while time.time() < deadline and not finished:
             try:
                 chunk = sock.recv(1 << 16)
             except socket.timeout:
@@ -166,6 +176,12 @@ def main(argv: list[str] | None = None) -> int:
                 message = json.loads(line)
                 kind = message.get("type")
                 if kind == "obs":
+                    bridge_result = message.get("result")
+                    if bridge_result in ("victory", "defeat"):
+                        final_result = str(bridge_result)
+                        terminated = True
+                    elif message.get("terminated"):
+                        terminated = True
                     frame = obs_to_frame(message, {})
                     frames.append(frame)
                     if stream is not None:
@@ -206,8 +222,32 @@ def main(argv: list[str] | None = None) -> int:
                             except OSError:
                                 pass
                 elif kind == "done":
+                    # Authoritative end-of-episode message. "timeout" means the
+                    # --ticks cap was hit; victory/defeat are real game-over.
+                    done_result = message.get("result")
+                    if done_result in ("victory", "defeat", "timeout"):
+                        final_result = str(done_result)
+                    if final_result in ("victory", "defeat"):
+                        terminated = True
+                        truncated = False
+                    else:
+                        terminated = False
+                        truncated = True
+                    finished = True
                     break
-        print(f"captured {len(frames)} frames, server log {server_log}")
+        # If the bridge closed the socket before the ``done`` message, fall back to
+        # whatever the terminal obs reported; no result at all means the tick cap.
+        if final_result is None:
+            final_result = "timeout"
+        if final_result == "timeout":
+            terminated = False
+            truncated = True
+        elif final_result in ("victory", "defeat"):
+            terminated = True
+            truncated = False
+        if frames and not frames[-1].get("result"):
+            frames[-1]["result"] = final_result
+        print(f"captured {len(frames)} frames, result={final_result}, server log {server_log}")
         if not frames:
             return 2
         meta = {
@@ -229,7 +269,9 @@ def main(argv: list[str] | None = None) -> int:
             },
             "vision_radius": 260,
             "fog": False,
-            "result": "timeout",
+            "result": final_result,
+            "terminated": terminated,
+            "truncated": truncated,
             "return": 0.0,
             "source": "rwpp-bridge",
         }
@@ -244,17 +286,44 @@ def main(argv: list[str] | None = None) -> int:
         )
         (job_dir / "meta.json").write_text(
             json.dumps(
-                {"id": job_dir.name, "name": "鐪熸満 RWPP 褰曞埗", "kind": "infer", "status": "succeeded",
-                 "created_at": meta["created_at"], "config": {"sim_mode": "rwpp", "map": args.map_name}},
+                {"id": job_dir.name, "name": "真机 RWPP 录制", "kind": "infer", "status": "succeeded",
+                 "created_at": meta["created_at"], "result": final_result,
+                 "terminated": terminated, "truncated": truncated,
+                 "config": {"sim_mode": "rwpp", "map": args.map_name}},
                 ensure_ascii=False,
                 indent=2,
             ),
             encoding="utf-8",
         )
         print(f"replay written: {replay_path} ({len(frames)} frames)")
+        # Machine-readable summary for scripts/rwpp_real_service.py (per-episode
+        # result in job metrics / infer job state).
+        print(
+            "rwpp-result: "
+            + json.dumps(
+                {
+                    "result": final_result,
+                    "terminated": terminated,
+                    "truncated": truncated,
+                    "frames": len(frames),
+                    "replay": str(replay_path),
+                },
+                ensure_ascii=False,
+            )
+        )
         if stream is not None:
             stream.write(
-                json.dumps({"type": "done", "replay_path": str(replay_path), "frames": len(frames)}) + "\n"
+                json.dumps(
+                    {
+                        "type": "done",
+                        "replay_path": str(replay_path),
+                        "frames": len(frames),
+                        "result": final_result,
+                        "terminated": terminated,
+                        "truncated": truncated,
+                    }
+                )
+                + "\n"
             )
             stream.flush()
         try:

@@ -70,7 +70,7 @@ def _run_recorder(
     map_width: float = 2600.0,
     map_height: float = 2600.0,
     frame_ms: int = 16,
-) -> tuple[str | None, int, float]:
+) -> tuple[str | None, int, float, str | None]:
     command = [
         sys.executable,
         str(RECORDER),
@@ -102,7 +102,20 @@ def _run_recorder(
     seconds = time.time() - started
     replay_path = None
     frame_count = 0
+    episode_result: str | None = None
     for line in result.stdout.splitlines():
+        if line.startswith("rwpp-result:"):
+            # The recorder prints a machine-readable summary with the real
+            # bridge result (victory/defeat/timeout); use it for job metrics.
+            try:
+                payload = json.loads(line.split("rwpp-result:", 1)[1].strip())
+            except ValueError:
+                payload = {}
+            if payload.get("result"):
+                episode_result = str(payload["result"])
+            if payload.get("replay"):
+                replay_path = str(payload["replay"])
+            continue
         if line.startswith("replay written:"):
             payload = line.split("replay written:", 1)[1].strip()
             replay_path = payload.split(" (")[0]
@@ -113,7 +126,7 @@ def _run_recorder(
                     frame_count = 0
     log_tail = ((result.stdout or "") + (result.stderr or ""))[-1200:]
     _update(job_id, last_log=log_tail)
-    return replay_path, frame_count, seconds
+    return replay_path, frame_count, seconds, episode_result
 
 
 def _run_player(
@@ -128,7 +141,7 @@ def _run_player(
     stream_path: Path,
     port: int,
     frame_ms: int,
-) -> tuple[str | None, int, float]:
+) -> tuple[str | None, int, float, str | None]:
     command = [
         sys.executable,
         str(PLAYER),
@@ -167,8 +180,9 @@ def _run_player(
     log_tail = ((result.stdout or "") + (result.stderr or ""))[-1500:]
     _update(job_id, last_log=log_tail)
     if not payload.get("replay"):
-        return None, 0, seconds
-    return str(payload["replay"]), int(payload.get("frames", 0)), seconds
+        return None, 0, seconds, None
+    episode_result = str(payload["result"]) if payload.get("result") else None
+    return str(payload["replay"]), int(payload.get("frames", 0)), seconds, episode_result
 
 
 def run_infer(
@@ -192,7 +206,7 @@ def run_infer(
     started = time.time()
     try:
         if policy in ("model", "ppo") and checkpoint:
-            replay, frame_count, seconds = _run_player(
+            replay, frame_count, seconds, episode_result = _run_player(
                 job_id,
                 ticks=ticks,
                 checkpoint=checkpoint,
@@ -205,7 +219,7 @@ def run_infer(
                 frame_ms=frame_ms,
             )
         else:
-            replay, frame_count, seconds = _run_recorder(
+            replay, frame_count, seconds, episode_result = _run_recorder(
                 job_id,
                 ticks=ticks,
                 policy="none" if policy == "model" else policy,
@@ -215,6 +229,7 @@ def run_infer(
                 map_path=map_path,
                 map_width=map_width,
                 map_height=map_height,
+                frame_ms=frame_ms,
             )
         _update(
             job_id,
@@ -225,6 +240,8 @@ def run_infer(
             frames_file=_relative(frames_path),
             frames=frame_count,
             port=port,
+            # Real bridge outcome (victory/defeat/timeout) for the dashboard.
+            result=episode_result,
         )
     except Exception as exc:  # noqa: BLE001
         _update(job_id, status="failed", error=str(exc), seconds=round(time.time() - started, 1))
@@ -257,7 +274,7 @@ def run_train(
                     episode = work_queue.get_nowait()
                 except queue.Empty:
                     return
-                replay, frame_count, seconds = _run_recorder(
+                replay, frame_count, seconds, episode_result = _run_recorder(
                     job_id,
                     ticks=ticks,
                     policy=policy,
@@ -279,6 +296,8 @@ def run_train(
                             "seconds": round(seconds, 1),
                             "ticks": ticks,
                             "frames": frame_count,
+                            # Real bridge outcome per episode (victory/defeat/timeout).
+                            "result": episode_result,
                             "replay": _relative(Path(replay)) if replay else None,
                         }
                     )
@@ -604,7 +623,7 @@ class Handler(BaseHTTPRequestHandler):
         updates = int(payload.get("updates", 4))
         envs = int(payload.get("envs", 2))
         rollout_steps = int(payload.get("rollout_steps", 20))
-        episode_ticks = int(payload.get("episode_ticks", 900))
+        episode_ticks = int(payload.get("episode_ticks", 3600))
         device = str(payload.get("device", "auto"))
         map_name = str(payload.get("map_name") or "Artillery")
         map_path = str(payload.get("map_path") or "maps/challenge/Artillery.tmx")
@@ -705,7 +724,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send({"job_id": job_id, "status": "running", "kind": "ppo"})
 
     def _start(self, kind: str, payload: dict) -> None:
-        ticks = int(payload.get("ticks", 2400))
+        ticks = int(payload.get("ticks", 3600))
         policy = str(payload.get("policy", "scripted"))
         if policy not in ("scripted", "none", "model", "ppo"):
             self._send({"error": "policy must be scripted|none|model"}, 400)

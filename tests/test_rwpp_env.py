@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import socket
 import threading
+import time
 import unittest
 
 import numpy as np
@@ -42,6 +43,8 @@ def obs_message(
     *,
     own_xy: tuple[float, float] = (640.0, 2000.0),
     enemy_xy: tuple[float, float] = (640.0, 200.0),
+    result: str | None = None,
+    terminated: bool = False,
 ) -> dict:
     own = [
         {
@@ -81,7 +84,8 @@ def obs_message(
         "own_entities": own,
         "visible_enemy_entities": enemies,
         "reward": 0.0,
-        "terminated": False,
+        "result": result,
+        "terminated": terminated,
         "truncated": False,
     }
 
@@ -189,11 +193,19 @@ class FakeBridge:
         steps: int = 3,
         episodes: int = 1,
         eliminate_on_last: bool = False,
+        result: str = "timeout",
+        result_in_obs: bool = False,
+        done_without_obs: bool = False,
+        close_after_first_obs: bool = False,
     ) -> None:
         self.port = port
         self.steps = steps
         self.episodes = episodes
         self.eliminate_on_last = eliminate_on_last
+        self.result = result
+        self.result_in_obs = result_in_obs
+        self.done_without_obs = done_without_obs
+        self.close_after_first_obs = close_after_first_obs
         self.process = FakeProcess()
         self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -232,6 +244,9 @@ class FakeBridge:
         send({"protocol": "ironzero/1", "type": "hello", "message_id": "hello"})
         tick = 0
         send(obs_message(tick, [210.0, 210.0], [210.0, 210.0, 210.0]))
+        if self.close_after_first_obs:
+            # Simulate a game process that dies right after the first frame.
+            return
         for step in range(self.steps):
             line = reader.readline()
             if not line:
@@ -255,17 +270,28 @@ class FakeBridge:
                     "rejected_count": 0,
                 }
             )
-            send(obs_message(tick, [210.0, 210.0], enemy_hp))
-            if step == self.steps - 1:
+            last = step == self.steps - 1
+            terminal = last and self.result_in_obs and self.result != "timeout"
+            if not (last and self.done_without_obs):
+                send(
+                    obs_message(
+                        tick,
+                        [210.0, 210.0],
+                        enemy_hp,
+                        result=self.result if terminal else None,
+                        terminated=terminal,
+                    )
+                )
+            if last:
                 send(
                     {
                         "protocol": "ironzero/1",
                         "type": "done",
                         "message_id": f"done-{tick}",
                         "tick": tick,
-                        "result": "timeout",
-                        "terminated": False,
-                        "truncated": True,
+                        "result": self.result,
+                        "terminated": self.result != "timeout",
+                        "truncated": self.result == "timeout",
                     }
                 )
                 return
@@ -338,6 +364,70 @@ class RwppBridgeLoopTests(unittest.TestCase):
             _obs, _reward, terminated, _truncated, info = env.step(np.array([2, 0, 0, 0, 0]))
             self.assertTrue(terminated)
             self.assertEqual(info["result"], "victory")
+        finally:
+            env.close()
+
+    def test_env_honors_bridge_victory(self) -> None:
+        port = find_free_port()
+        bridge = FakeBridge(port, steps=2, result="victory", result_in_obs=True)
+        env = make_env(bridge, port)
+        try:
+            env.reset()
+            env.step(np.array([2, 0, 0, 0, 0]))
+            _obs, reward, terminated, truncated, info = env.step(np.array([2, 0, 0, 0, 0]))
+            self.assertTrue(terminated)
+            self.assertFalse(truncated)
+            self.assertEqual(info["result"], "victory")
+            self.assertEqual(info["bridge_result"], "victory")
+            self.assertGreater(reward, 0.0)
+        finally:
+            env.close()
+
+    def test_env_honors_bridge_defeat_from_done_message(self) -> None:
+        port = find_free_port()
+        bridge = FakeBridge(port, steps=2, result="defeat", done_without_obs=True)
+        env = make_env(bridge, port)
+        try:
+            env.reset()
+            env.step(np.array([2, 0, 0, 0, 0]))
+            _obs, reward, terminated, truncated, info = env.step(np.array([2, 0, 0, 0, 0]))
+            self.assertTrue(terminated)
+            self.assertFalse(truncated)
+            self.assertEqual(info["result"], "defeat")
+            self.assertEqual(info["bridge_result"], "defeat")
+            self.assertLess(reward, 0.0)
+        finally:
+            env.close()
+
+    def test_env_treats_tick_cap_as_timeout(self) -> None:
+        port = find_free_port()
+        bridge = FakeBridge(port, steps=2, result="timeout", done_without_obs=True)
+        env = make_env(bridge, port)
+        try:
+            env.reset()
+            env.step(np.array([2, 0, 0, 0, 0]))
+            _obs, _reward, terminated, truncated, info = env.step(np.array([2, 0, 0, 0, 0]))
+            self.assertFalse(terminated)
+            self.assertTrue(truncated)
+            self.assertEqual(info["result"], "timeout")
+        finally:
+            env.close()
+
+    def test_env_fails_fast_when_bridge_closes(self) -> None:
+        port = find_free_port()
+        bridge = FakeBridge(port, steps=2, close_after_first_obs=True)
+        env = make_env(bridge, port)
+        try:
+            env.reset()
+            started = time.time()
+            _obs, _reward, terminated, truncated, info = env.step(np.array([2, 0, 0, 0, 0]))
+            elapsed = time.time() - started
+            self.assertFalse(terminated)
+            self.assertTrue(truncated)
+            self.assertEqual(info["result"], "timeout")
+            self.assertTrue(info["disconnected"])
+            # The old code spun for the full 60 s obs_timeout here.
+            self.assertLess(elapsed, 5.0)
         finally:
             env.close()
 

@@ -213,6 +213,9 @@ class ObservationMessage(MessageBase):
     local_maps: dict[str, list[list[float]]] = Field(default_factory=dict)
     masks: ActionMasks
     reward: float = 0.0
+    # Native game-over signal: null while the battle is running, set on the
+    # terminal observation together with terminated=true.
+    result: DoneResult | None = None
     terminated: bool = False
     truncated: bool = False
     info: dict[str, Any] = Field(default_factory=dict)

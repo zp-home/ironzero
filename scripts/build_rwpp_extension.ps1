@@ -37,11 +37,23 @@ dependsOn=io.github.rwpp.server
 tags=server
 "@ | Set-Content -LiteralPath (Join-Path $meta "extension.properties") -Encoding ascii
 
-$sources = Get-ChildItem -LiteralPath $source -Recurse -Filter "*.java" | ForEach-Object { $_.FullName }
-& (Join-Path $JavaHome "bin\javac.exe") -encoding UTF-8 -cp (Join-Path $RuntimeDir "lib\*") -d $classes @sources
+$sources = [string[]](Get-ChildItem -LiteralPath $source -Recurse -Filter "*.java" | ForEach-Object { $_.FullName })
+$classpath = Join-Path $RuntimeDir "lib\*"
+# Quote the wildcard classpath: Windows PowerShell mangles the bare "*" argument.
+& (Join-Path $JavaHome "bin\javac.exe") -encoding UTF-8 -cp "$classpath" -d $classes @sources
 if ($LASTEXITCODE -ne 0) { throw "extension compilation failed" }
 
-$jarPath = Join-Path $RuntimeDir "extensions\ironzero-bridge.jar"
-& (Join-Path $JavaHome "bin\jar.exe") --create --file $jarPath -C $classes . -C (Split-Path $meta -Parent) .
+$dist = Join-Path $repo ".runtime\bridge-dist"
+New-Item -ItemType Directory -Force $dist | Out-Null
+$stagedJar = Join-Path $dist "ironzero-bridge.jar"
+& (Join-Path $JavaHome "bin\jar.exe") --create --file $stagedJar -C $classes . -C (Split-Path $meta -Parent) .
 if ($LASTEXITCODE -ne 0) { throw "extension packaging failed" }
+
+$jarPath = Join-Path $RuntimeDir "extensions\ironzero-bridge.jar"
+try {
+    Copy-Item -LiteralPath $stagedJar -Destination $jarPath -Force -ErrorAction Stop
+} catch {
+    Write-Host "IronZero extension built at: $stagedJar"
+    throw "could not install extension into $jarPath ($($_.Exception.Message)); copy the staged jar there with sufficient permissions"
+}
 Write-Host "IronZero extension ready: $jarPath"

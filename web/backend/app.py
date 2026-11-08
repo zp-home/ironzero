@@ -81,7 +81,7 @@ class InferRequest(BaseModel):
 
 
 class RwppRecordRequest(BaseModel):
-    ticks: int = Field(default=2400, ge=120, le=20000)
+    ticks: int = Field(default=3600, ge=120, le=20000)
     policy: str = Field(default="scripted", pattern="^(scripted|none|model|ppo)$")
     checkpoint: str | None = Field(default=None, max_length=512)
     frame_ms: int = Field(default=16, ge=0, le=16)
@@ -100,7 +100,7 @@ class RwppPpoRequest(BaseModel):
     updates: int = Field(default=4, ge=1, le=500)
     envs: int = Field(default=2, ge=1, le=8)
     rollout_steps: int = Field(default=20, ge=1, le=512)
-    episode_ticks: int = Field(default=900, ge=120, le=20000)
+    episode_ticks: int = Field(default=3600, ge=120, le=20000)
     device: str = Field(default="auto", pattern="^(auto|cpu|cuda)$")
     map_name: str = Field(default="Artillery", max_length=128)
     map_path: str = Field(default="maps/challenge/Artillery.tmx", max_length=256)
@@ -746,7 +746,7 @@ def rwpp_infer_frames(job_id: str, after: int = Query(default=0, ge=0)) -> dict[
         "next": after + len(pending),
         "frames": pending,
         "status": job.get("status"),
-        "job": {key: job.get(key) for key in ("id", "kind", "status", "episodes_done", "episodes_total", "seconds", "replay_path", "frames_file")},
+        "job": {key: job.get(key) for key in ("id", "kind", "status", "episodes_done", "episodes_total", "seconds", "result", "replay_path", "frames_file")},
     }
 
 
