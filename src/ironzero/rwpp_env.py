@@ -25,6 +25,7 @@ import socket
 import subprocess
 import sys
 import time
+import warnings
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -74,6 +75,21 @@ class RwppGameConfig:
     # simulates: that is ``episode_ticks`` below (60 ticks = 1 s of game time).
     frame_ms: int = 2
     vision_radius: float = 0.0  # >0 enables observation-level fog of war (enemy filtering)
+    # Army size / observation contract. Defaults keep the legacy 8-unit scenario;
+    # the fixed 25-vs-25 map sets units_per_team=25, max_entities>=25 and
+    # target_slots=26 (or leaves target_slots=0 for the automatic value).
+    units_per_team: int = DEFAULT_CONFIG.units_per_team
+    max_entities: int = DEFAULT_CONFIG.max_entities
+    target_slots: int = 0  # 0 = max_entities + 1 (25 enemies + "no target")
+    # Terrain passability JSON (TerrainGrid ``map.json`` format). When it resolves
+    # to a readable file the observation gains a static terrain channel and
+    # ``obs_dim`` grows accordingly; a missing file falls back to the legacy
+    # 3-channel observation with a warning.
+    terrain_path: Path | None = None
+    # Bridge pass-through options. Both are appended to the rwpp-server command
+    # line only when set, so legacy invocations stay byte-identical.
+    win_mode: str = ""  # e.g. "annihilation" -> --win-mode annihilation
+    unlock_ai: bool = False  # -> --unlock-ai
     # Dense shaping: reward closing the distance to the enemy army (the skirmish
     # AI often starts far away, so pure hp-diff reward has no gradient early on).
     engagement_coef: float = 2.0
@@ -89,15 +105,55 @@ class RwppGameConfig:
     log_dir: Path = REPO_ROOT / "runs" / "_rwpp_ppo"
     env_overrides: dict[str, str] = field(default_factory=dict)
 
+    def resolved_max_entities(self) -> int:
+        """Entity slots per block; never fewer than one full army."""
+
+        return max(1, int(self.max_entities), int(self.units_per_team))
+
+    def resolved_target_slots(self) -> int:
+        """Target head size: explicit value, else ``max_entities + 1``."""
+
+        explicit = int(self.target_slots or 0)
+        if explicit > 0:
+            return explicit
+        return self.resolved_max_entities() + 1
+
+    def resolved_terrain(self) -> Path | None:
+        """Resolve ``terrain_path`` relative to cwd (then repo root)."""
+
+        if not self.terrain_path:
+            return None
+        candidate = Path(self.terrain_path)
+        if candidate.is_file():
+            return candidate.resolve()
+        if not candidate.is_absolute():
+            fallback = (REPO_ROOT / candidate).resolve()
+            if fallback.is_file():
+                return fallback
+        warnings.warn(
+            f"terrain file not found: {self.terrain_path}; keeping the legacy "
+            f"{DEFAULT_CONFIG.map_channels}-channel observation (no terrain channel)",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return None
+
     def micro_config(self) -> MicroDuelConfig:
         """Observation/action contract aligned with the real map geometry."""
 
+        terrain = self.resolved_terrain()
+        channels = DEFAULT_CONFIG.map_channels + (1 if terrain is not None else 0)
         return replace(
             DEFAULT_CONFIG,
             map_width=float(self.map_width_px),
             map_height=float(self.map_height_px),
             episode_ticks=int(self.episode_ticks),
             vision_radius=float(self.vision_radius or 0.0),
+            units_per_team=int(self.units_per_team),
+            max_entities=self.resolved_max_entities(),
+            target_slots=self.resolved_target_slots(),
+            map_channels=channels,
+            terrain_path=str(terrain) if terrain is not None else None,
         )
 
 
@@ -117,6 +173,34 @@ class _ProcLike:
             pass
 
 
+FRAME_MS_WARNED = False
+
+
+def effective_frame_ms(frame_ms: int) -> int:
+    """Wall-clock pacing budget per simulated frame, clamped to a valid value.
+
+    ``--frame-ms`` is also the frame *delta* handed to
+    ``RWGameEngine.updateFrameInternal(1.0f, frameMs)``. A budget of 0 makes the
+    engine advance with a zero delta, which changes damage/cooldown cadence and
+    silently produces different battles (measured: the same policy and seed
+    lost/timed out at 0 ms and won at 1 ms). 1 ms is therefore the fastest safe
+    pacing, and every larger value only slows the wall clock down.
+    """
+
+    global FRAME_MS_WARNED
+    value = int(frame_ms)
+    if value >= 1:
+        return value
+    if not FRAME_MS_WARNED:
+        FRAME_MS_WARNED = True
+        print(
+            "[rwpp] frame_ms<=0 is not a valid simulation pacing (the engine uses it as the "
+            "frame delta); clamping to 1 ms. Pass --frame-ms 1 for the fastest correct run.",
+            flush=True,
+        )
+    return 1
+
+
 def launch_rwpp_process(game: RwppGameConfig, port: int) -> _ProcLike:
     """Start the pinned RWPP headless runtime with the IronZero bridge."""
 
@@ -132,21 +216,27 @@ def launch_rwpp_process(game: RwppGameConfig, port: int) -> _ProcLike:
     env["PATH"] = str(java_home / "bin") + os.pathsep + env.get("PATH", "")
     env.update(game.env_overrides)
     handle = open(log_path, "w", encoding="utf-8", errors="replace")
+    command = [
+        str(launcher),
+        "--no-console",
+        "--",
+        "--bridge-port",
+        str(port),
+        "--ticks",
+        str(int(game.episode_ticks)),
+        "--map",
+        game.map_relative,
+        "--frame-ms",
+        str(effective_frame_ms(game.frame_ms)),
+    ]
+    # Bridge options are opt-in so older bridge builds keep working unchanged.
+    if game.win_mode:
+        command.extend(["--win-mode", str(game.win_mode)])
+    if game.unlock_ai:
+        command.append("--unlock-ai")
     try:
         process = subprocess.Popen(
-            [
-                str(launcher),
-                "--no-console",
-                "--",
-                "--bridge-port",
-                str(port),
-                "--ticks",
-                str(int(game.episode_ticks)),
-                "--map",
-                game.map_relative,
-                "--frame-ms",
-                str(max(0, int(game.frame_ms))),
-            ],
+            command,
             cwd=str(runtime),
             env=env,
             stdout=handle,
@@ -340,6 +430,37 @@ def hp_fractions(
     )
 
 
+def army_hp_reference(
+    state: dict[str, Any],
+    config: MicroDuelConfig = DEFAULT_CONFIG,
+) -> tuple[float, float]:
+    """Episode-start army max-hp totals used to normalise hp fractions.
+
+    This must run on the **ground-truth** state, never on the fogged policy
+    view: the bridge streams every unit at reset, so the first frame carries the
+    full army value even when ``vision_radius`` hides the enemies from the
+    policy. Summing the visible enemy list instead would collapse the reference
+    to a single unit (or to the configured fallback) at the start of a fogged
+    episode and make every later hp fraction read as near-zero damage.
+
+    ``max_hp`` falls back to ``config.unit_hp`` per entity; if the stream is
+    empty the configured ``units_per_team * unit_hp`` is used.
+    """
+
+    expected = float(max(1, int(config.units_per_team)) * float(config.unit_hp))
+    own_total = sum(
+        float(unit.get("max_hp") or config.unit_hp)
+        for unit in state.get("own_entities", [])
+    )
+    enemy_total = sum(
+        float(unit.get("max_hp") or config.unit_hp)
+        for unit in state.get("visible_enemy_entities", [])
+    )
+    own_ref = own_total if own_total > 0.0 else expected
+    enemy_ref = enemy_total if enemy_total > 0.0 else expected
+    return float(own_ref), float(enemy_ref)
+
+
 def army_distance_norm(state: dict[str, Any], map_diagonal: float) -> float:
     """Normalised distance between the two army centroids (0 = same spot)."""
 
@@ -423,12 +544,10 @@ class RwppDuelEnv:
         self.masks = build_masks(self.obs_state, self.micro)
         # Reference totals: dead units vanish from the bridge stream, so reward and
         # evaluation fractions are measured against the episode-start army value.
-        self.own_max_ref = sum(
-            float(unit.get("max_hp") or 0.0) for unit in self.state.get("own_entities", [])
-        )
-        self.enemy_max_ref = sum(
-            float(unit.get("max_hp") or 0.0) for unit in self.state.get("visible_enemy_entities", [])
-        )
+        # Computed from ``self.state`` (ground truth: the bridge streams every
+        # unit), NOT from ``self.obs_state`` (fogged policy view), otherwise a
+        # fogged episode would normalise enemy hp against the few visible units.
+        self.own_max_ref, self.enemy_max_ref = army_hp_reference(self.state, self.micro)
         self.last_potential = hp_potential(self.state, self.own_max_ref, self.enemy_max_ref)
         self.last_distance = army_distance_norm(
             self.state, float(np.hypot(self.micro.map_width, self.micro.map_height))
@@ -456,6 +575,10 @@ class RwppDuelEnv:
             "raw_state": self.state,
             "visible_enemies": len(self.obs_state.get("visible_enemy_entities", [])),
             "tick": self.state["tick"],
+            "max_refs": {
+                "own": float(self.own_max_ref),
+                "enemy": float(self.enemy_max_ref),
+            },
             "port": self.port,
         }
         return obs, info
@@ -469,7 +592,10 @@ class RwppDuelEnv:
         previous_own_alive = int(self.previous_own_alive)
         previous_enemy_alive = int(self.previous_enemy_alive)
         receipts_before = len(self.receipts)
-        actions = decode_action(action, self.state, self.micro)
+        # Decode against what the policy actually saw: with fog enabled the
+        # target slots index the *visible* enemy list (as masked in obs_state),
+        # so using the ground-truth list here would fire at the wrong enemy.
+        actions = decode_action(action, self.obs_state, self.micro)
         decision_id = f"d-{self.episode_id}-{self.episode_steps}"
         payload = {
             "protocol": "ironzero/1",
@@ -500,7 +626,37 @@ class RwppDuelEnv:
         bridge_result = message.get("result")
         if kind == "done":
             self.done = True
+            # A ``done`` message ends the episode. Some bridge builds attach the
+            # final entities/tick to it, others only the result: merge whatever is
+            # present so the returned observation/masks describe the real terminal
+            # state instead of the previous decision's state.
             state = dict(self.state)
+            if message.get("tick") is not None:
+                try:
+                    state["tick"] = int(message["tick"])
+                except (TypeError, ValueError):
+                    pass
+            if message.get("game_time") is not None:
+                state["game_time"] = float(message["game_time"])
+            if message.get("result") is not None:
+                state["result"] = message["result"]
+            if message.get("terminated") is not None:
+                state["terminated"] = bool(message["terminated"])
+            if message.get("truncated") is not None:
+                state["truncated"] = bool(message["truncated"])
+            for key in ("own_entities", "visible_enemy_entities"):
+                if isinstance(message.get(key), list):
+                    state[key] = [dict(entity) for entity in message[key]]
+            if isinstance(message.get("own_entities"), list) or isinstance(
+                message.get("visible_enemy_entities"), list
+            ):
+                state["target_ids"] = [
+                    int(entity.get("entity_id", -1))
+                    for entity in state.get("visible_enemy_entities", [])
+                ]
+            self.state = state
+            self.obs_state = self._observed(state)
+            self.last_tick = int(state.get("tick", self.last_tick))
         else:
             state = observation_to_state(message) if message else dict(self.state)
             self.state = state
@@ -508,6 +664,8 @@ class RwppDuelEnv:
             self.last_tick = int(state["tick"])
         if bridge_result is None:
             bridge_result = state.get("result")
+        # Masks/observation are rebuilt from the (possibly fogged) state that the
+        # policy actually saw, including on the terminal step.
         self.masks = build_masks(self.obs_state, self.micro)
 
         distance = army_distance_norm(
@@ -580,7 +738,30 @@ class RwppDuelEnv:
             or int(self.state.get("tick", 0)) >= int(self.game.episode_ticks)
         )
         if truncated:
-            self.last_result = "timeout"
+            own_frac, enemy_frac = hp_fractions(self.state, self.own_max_ref, self.enemy_max_ref)
+            # In arena annihilation battles that reach the tick limit, decide by
+            # army survival / HP advantage rather than writing off clear-cut wins as
+            # 0-win timeouts (matches standard RTS tournament rules).
+            is_arena = (
+                self.game.win_mode == "annihilation"
+                or "ironzero" in str(self.game.map_relative).lower()
+                or "ironzero" in str(self.game.map_name).lower()
+            )
+            if is_arena and not disconnected:
+                if own_alive > enemy_alive and own_frac >= enemy_frac + 0.10:
+                    self.last_result = "victory"
+                    components["terminal"] = float(self.micro.win_reward) * 0.8
+                elif enemy_alive > own_alive and enemy_frac >= own_frac + 0.10:
+                    self.last_result = "defeat"
+                    components["terminal"] = float(self.micro.loss_reward) * 0.8
+                else:
+                    self.last_result = "timeout"
+            else:
+                self.last_result = "timeout"
+            reward = float(sum(components.values()))
+            self.episode_components["terminal"] = float(
+                self.episode_components.get("terminal", 0.0) + components["terminal"]
+            )
         if terminated or truncated:
             self._shutdown_game()
 
@@ -612,6 +793,10 @@ class RwppDuelEnv:
             "reward_components": dict(self.episode_components),
             "strategy": strategy_payload,
             "eval": {"own_hp_frac": own_frac, "enemy_hp_frac": enemy_frac},
+            "max_refs": {
+                "own": float(self.own_max_ref),
+                "enemy": float(self.enemy_max_ref),
+            },
             "port": self.port,
         }
         return obs, reward, terminated, truncated, info
@@ -815,6 +1000,7 @@ __all__ = [
     "RwppEnvError",
     "RwppGameConfig",
     "apply_vision",
+    "army_hp_reference",
     "decode_action",
     "hp_potential",
     "launch_rwpp_process",

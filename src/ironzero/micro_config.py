@@ -62,6 +62,11 @@ class MicroDuelConfig:
     map_grid: int = 8
     global_dim: int = 12
     entity_features: int = 10
+    # Optional terrain passability layer. When set, ``map_channels`` should be 4
+    # (three army channels + one static terrain channel) and the encoder reads
+    # the blocked-tile grid from this JSON file (TerrainGrid ``map.json`` format).
+    # ``None`` keeps the legacy 3-channel observation and the old ``obs_dim``.
+    terrain_path: str | None = None
 
     # Reward shaping
     potential_coef: float = 0.5
@@ -86,6 +91,12 @@ class MicroDuelConfig:
         entity_block = self.max_entities * self.entity_features
         grid_block = self.map_channels * self.map_grid * self.map_grid
         return self.global_dim + 2 * entity_block + grid_block
+
+    @property
+    def terrain_channel(self) -> bool:
+        """True when the observation carries the static terrain passability channel."""
+
+        return self.map_channels > 3 and bool(self.terrain_path)
 
     def grid_to_world(self, gx: int, gy: int) -> tuple[float, float]:
         return (

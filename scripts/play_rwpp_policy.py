@@ -16,6 +16,7 @@ import json
 import sys
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -41,7 +42,14 @@ def map_id_for(relative: str) -> str:
     return base64.urlsafe_b64encode(relative.encode("utf-8")).decode("ascii").rstrip("=")
 
 
-def state_to_frame(state: dict, tick: int, episode: int = 0) -> dict:
+def state_to_frame(
+    state: dict,
+    tick: int,
+    episode: int = 0,
+    *,
+    own_max_ref: float | None = None,
+    enemy_max_ref: float | None = None,
+) -> dict:
     units = []
     for entity in state.get("own_entities", []) + state.get("visible_enemy_entities", []):
         team = entity.get("team_id", -1)
@@ -60,7 +68,10 @@ def state_to_frame(state: dict, tick: int, episode: int = 0) -> dict:
                 "target": None,
             }
         )
-    own_frac, enemy_frac = hp_fractions(state)
+    # Normalise against the episode-start full-army hp, not the alive-unit
+    # maximum: dead units vanish from the stream, so without the reference a
+    # damaged army that lost units would still show hp_frac == 1.0.
+    own_frac, enemy_frac = hp_fractions(state, own_max_ref, enemy_max_ref)
     return {
         "episode": episode,
         "decision": tick // 10,
@@ -89,6 +100,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--map-width", type=float, default=2700.0)
     parser.add_argument("--map-height", type=float, default=2500.0)
     parser.add_argument("--frame-ms", type=int, default=16, help="16 = real time playback, 2 = fast")
+    parser.add_argument("--terrain", default="",
+                        help="override the checkpoint's terrain JSON path (same obs_dim only)")
+    parser.add_argument("--win-mode", default="", help="bridge --win-mode passthrough (e.g. annihilation)")
+    parser.add_argument("--unlock-ai", action="store_true", help="bridge --unlock-ai passthrough")
     parser.add_argument("--stream", default="")
     parser.add_argument("--out-root", default="runs/platform")
     parser.add_argument("--device", default="cpu")
@@ -101,6 +116,25 @@ def main(argv: list[str] | None = None) -> int:
     device = torch.device(args.device)
     policy, micro = load_policy(args.checkpoint, device=device)
     policy.eval()
+    # Optional terrain override: only legal when it keeps the checkpoint's
+    # observation layout (same obs_dim), otherwise the policy cannot consume it.
+    if args.terrain:
+        terrain_path = Path(args.terrain)
+        if not terrain_path.is_absolute() and not terrain_path.is_file():
+            terrain_path = REPO_ROOT / terrain_path
+        if not terrain_path.is_file():
+            raise SystemExit(f"--terrain file not found: {args.terrain}")
+        candidate = replace(
+            micro,
+            terrain_path=str(terrain_path.resolve()),
+            map_channels=max(int(micro.map_channels), 4),
+        )
+        if candidate.flat_obs_dim != int(getattr(policy, "obs_dim", micro.flat_obs_dim)):
+            raise SystemExit(
+                f"--terrain changes obs_dim {micro.flat_obs_dim} -> {candidate.flat_obs_dim}; "
+                "this checkpoint was trained without the terrain channel"
+            )
+        micro = candidate
 
     stamp = time.strftime("%Y%m%d-%H%M%S")
     unique = uuid.uuid4().hex[:6]
@@ -116,8 +150,16 @@ def main(argv: list[str] | None = None) -> int:
         episode_ticks=int(args.ticks),
         map_width_px=float(args.map_width),
         map_height_px=float(args.map_height),
+        units_per_team=int(micro.units_per_team),
+        max_entities=int(micro.max_entities),
+        target_slots=int(micro.target_slots),
+        terrain_path=Path(micro.terrain_path) if micro.terrain_path else None,
         frame_ms=max(0, int(args.frame_ms)),
-        vision_radius=0.0,  # the checkpoint was trained with fog internally? keep full obs for eval parity
+        # Inference parity: the policy was trained (and evaluated) with this fog
+        # radius, so the replay must not hand it a different observation.
+        vision_radius=float(micro.vision_radius or 0.0),
+        win_mode=str(args.win_mode or ""),
+        unlock_ai=bool(args.unlock_ai),
     )
     env = RwppDuelEnv(game, port=args.port, seed=0, micro_config=micro, episode_prefix="policy")
     stream = None
@@ -131,11 +173,20 @@ def main(argv: list[str] | None = None) -> int:
     started = time.time()
     result = "timeout"
     total_reward = 0.0
+    own_ref: float | None = None
+    enemy_ref: float | None = None
     try:
         obs, info = env.reset()
+        own_ref = float(getattr(env, "own_max_ref", 0.0)) or None
+        enemy_ref = float(getattr(env, "enemy_max_ref", 0.0)) or None
         deadline = time.time() + args.timeout
         while time.time() < deadline:
-            frame = state_to_frame(env.state, int(env.last_tick))
+            frame = state_to_frame(
+                env.state,
+                int(env.last_tick),
+                own_max_ref=own_ref,
+                enemy_max_ref=enemy_ref,
+            )
             frames.append(frame)
             if stream is not None:
                 stream.write(json.dumps({"type": "frame", **frame}, ensure_ascii=False) + "\n")
@@ -152,7 +203,12 @@ def main(argv: list[str] | None = None) -> int:
         result = str(info.get("result") or "timeout")
         # The env returns the real bridge result in info["result"]; write it on the
         # terminal frame so the replay/stream shows the actual outcome.
-        final_frame = state_to_frame(env.state, int(env.last_tick))
+        final_frame = state_to_frame(
+            env.state,
+            int(env.last_tick),
+            own_max_ref=own_ref,
+            enemy_max_ref=enemy_ref,
+        )
         final_frame["result"] = result
         frames.append(final_frame)
         if stream is not None:
@@ -189,13 +245,13 @@ def main(argv: list[str] | None = None) -> int:
         "map": {
             "id": map_id_for(args.map),
             "name": args.map_name,
-            "width_px": args.map_width,
-            "height_px": args.map_height,
+            "width_px": float(micro.map_width),
+            "height_px": float(micro.map_height),
             "tile_width": 20,
             "tile_height": 20,
         },
-        "vision_radius": 0,
-        "fog": False,
+        "vision_radius": float(micro.vision_radius or 0.0),
+        "fog": float(micro.vision_radius or 0.0) > 0.0,
         "result": result,
         "terminated": result in ("victory", "defeat"),
         "truncated": result == "timeout",
@@ -211,11 +267,12 @@ def main(argv: list[str] | None = None) -> int:
         ),
         encoding="utf-8",
     )
+    final_own_frac, final_enemy_frac = hp_fractions(env.state, own_ref, enemy_ref)
     summary = summarize(
         [result],
         [total_reward],
-        [hp_fractions(env.state)[0]],
-        [hp_fractions(env.state)[1]],
+        [final_own_frac],
+        [final_enemy_frac],
         [len(frames)],
     )
     print(

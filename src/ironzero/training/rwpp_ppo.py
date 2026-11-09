@@ -9,6 +9,7 @@ the next observation comes from the real engine.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from ..micro_config import MicroDuelConfig
@@ -63,6 +64,7 @@ class RwppPPOTrainer(PPOTrainer):
         return {}
 
     def _real_eval(self, trainer: PPOTrainer) -> dict[str, Any]:
+        out_dir = Path(self.config.out_dir)
         return evaluate_rwpp_policy(
             trainer.policy,
             game=self.game,
@@ -71,6 +73,8 @@ class RwppPPOTrainer(PPOTrainer):
             port_base=self.eval_port_base,
             seed=70_000 + self.config.seed,
             device=trainer.device,
+            update=getattr(self, "_current_update", None),
+            report_path=out_dir / "eval_report.json",
         )
 
     def close(self) -> None:

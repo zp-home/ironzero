@@ -40,6 +40,104 @@ JOBS_LOCK = threading.Lock()
 PORT_SLOTS: "queue.Queue[int]" = queue.Queue()
 MAX_PARALLEL = 4
 
+#: Wall-clock cost of one simulated tick *beyond* the pacing sleep. Measured on
+#: the challenge maps, the engine + bridge + client pipeline adds ~6 ms per tick.
+TICK_OVERHEAD_MS = 6.0
+#: Extra wall clock for engine startup, map load and the final replay write.
+EPISODE_TIMEOUT_MARGIN_S = 90.0
+
+
+ACTIVE_PROCESSES: dict[str, list[subprocess.Popen]] = {}
+STOPPED_JOBS: set[str] = set()
+
+
+def _run_managed_proc(
+    job_id: str, command: list[str], timeout: float
+) -> tuple[int, str]:
+    """Execute a subprocess while tracking it so stop_job can terminate it immediately."""
+
+    if job_id in STOPPED_JOBS:
+        return -1, ""
+    try:
+        proc = subprocess.Popen(
+            command,
+            cwd=str(REPO_ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except Exception as exc:
+        return -1, str(exc)
+
+    with JOBS_LOCK:
+        ACTIVE_PROCESSES.setdefault(job_id, []).append(proc)
+
+    try:
+        stdout, _ = proc.communicate(timeout=timeout)
+        return proc.returncode, stdout or ""
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        stdout, _ = proc.communicate()
+        return -1, stdout or ""
+    except Exception:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        return -1, ""
+    finally:
+        with JOBS_LOCK:
+            procs = ACTIVE_PROCESSES.get(job_id, [])
+            if proc in procs:
+                procs.remove(proc)
+
+
+def stop_job(job_id: str) -> bool:
+    """Safely terminate all subprocesses associated with a job and mark it stopped."""
+
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            return False
+        STOPPED_JOBS.add(job_id)
+        job["status"] = "stopped"
+        job["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        procs = list(ACTIVE_PROCESSES.get(job_id, []))
+        if job_id in PPO_PROCESSES:
+            procs.append(PPO_PROCESSES[job_id])
+            PPO_STOP.add(job_id)
+        for p in procs:
+            try:
+                p.kill()
+            except OSError:
+                pass
+        ACTIVE_PROCESSES[job_id] = []
+    return True
+
+
+def stop_all_jobs() -> int:
+    with JOBS_LOCK:
+        running = [jid for jid, j in JOBS.items() if j.get("status") == "running"]
+    for jid in running:
+        stop_job(jid)
+    return len(running)
+
+
+def _episode_timeout(ticks: int, frame_ms: int) -> float:
+    """Wall-clock budget for one episode, derived from its tick count and pacing.
+
+    The old hard-coded 300 s cut every long request short (20000 ticks at the
+    real-time 16 ms budget needs 330 s+ of pacing alone), so the episode was
+    always reported as ``timeout``. Deriving the budget keeps long runs honest
+    while still bounding a wedged game.
+    """
+
+    per_tick_ms = max(0, int(frame_ms)) + TICK_OVERHEAD_MS
+    return max(120.0, round(ticks * per_tick_ms / 1000.0 + EPISODE_TIMEOUT_MARGIN_S, 1))
+
 
 def _relative(path: Path) -> str:
     try:
@@ -69,7 +167,7 @@ def _run_recorder(
     map_path: str | None = None,
     map_width: float = 2600.0,
     map_height: float = 2600.0,
-    frame_ms: int = 16,
+    frame_ms: int = 2,
 ) -> tuple[str | None, int, float, str | None]:
     command = [
         sys.executable,
@@ -81,7 +179,7 @@ def _run_recorder(
         "--port",
         str(port),
         "--timeout",
-        "300",
+        str(_episode_timeout(ticks, frame_ms)),
         "--frame-ms",
         str(max(0, int(frame_ms))),
         "--map-width",
@@ -96,14 +194,14 @@ def _run_recorder(
     if stream_path is not None:
         command.extend(["--stream", str(stream_path)])
     started = time.time()
-    result = subprocess.run(
-        command, cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=360
+    code, stdout = _run_managed_proc(
+        job_id, command, timeout=_episode_timeout(ticks, frame_ms) + 60.0
     )
     seconds = time.time() - started
     replay_path = None
     frame_count = 0
     episode_result: str | None = None
-    for line in result.stdout.splitlines():
+    for line in stdout.splitlines():
         if line.startswith("rwpp-result:"):
             # The recorder prints a machine-readable summary with the real
             # bridge result (victory/defeat/timeout); use it for job metrics.
@@ -124,7 +222,7 @@ def _run_recorder(
                     frame_count = int(payload.split("(")[1].split(" ")[0])
                 except (IndexError, ValueError):
                     frame_count = 0
-    log_tail = ((result.stdout or "") + (result.stderr or ""))[-1200:]
+    log_tail = stdout[-1200:]
     _update(job_id, last_log=log_tail)
     return replay_path, frame_count, seconds, episode_result
 
@@ -152,7 +250,7 @@ def _run_player(
         "--port",
         str(port),
         "--timeout",
-        "300",
+        str(_episode_timeout(ticks, frame_ms)),
         "--stream",
         str(stream_path),
         "--frame-ms",
@@ -166,18 +264,22 @@ def _run_player(
         command.extend(["--map", map_path])
     if map_name:
         command.extend(["--map-name", map_name])
+    if "ironzero" in str(map_path or "").lower():
+        command.extend(["--win-mode", "annihilation", "--unlock-ai"])
     started = time.time()
-    result = subprocess.run(command, cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=360)
+    code, stdout = _run_managed_proc(
+        job_id, command, timeout=_episode_timeout(ticks, frame_ms) + 60.0
+    )
     seconds = time.time() - started
     payload: dict = {}
-    for line in result.stdout.splitlines():
+    for line in stdout.splitlines():
         line = line.strip()
         if line.startswith("{"):
             try:
                 payload = json.loads(line)  # last JSON line wins (the summary)
             except ValueError:
                 continue
-    log_tail = ((result.stdout or "") + (result.stderr or ""))[-1500:]
+    log_tail = stdout[-1500:]
     _update(job_id, last_log=log_tail)
     if not payload.get("replay"):
         return None, 0, seconds, None
@@ -194,7 +296,7 @@ def run_infer(
     map_width: float = 2600.0,
     map_height: float = 2600.0,
     checkpoint: str | None = None,
-    frame_ms: int = 16,
+    frame_ms: int = 2,
 ) -> None:
     port = PORT_SLOTS.get()
     # Publish the bridge port immediately so the dashboard can show it while the
@@ -270,9 +372,13 @@ def run_train(
         port = PORT_SLOTS.get()
         try:
             while True:
+                if job_id in STOPPED_JOBS:
+                    return
                 try:
                     episode = work_queue.get_nowait()
                 except queue.Empty:
+                    return
+                if job_id in STOPPED_JOBS:
                     return
                 replay, frame_count, seconds, episode_result = _run_recorder(
                     job_id,
@@ -365,6 +471,13 @@ def run_ppo(
     eval_every: int = 0,
     eval_episodes: int = 1,
     use_llm: bool = False,
+    units_per_team: int | None = None,
+    max_entities: int | None = None,
+    target_slots: int | None = None,
+    terrain: str | None = None,
+    win_mode: str = "",
+    unlock_ai: bool = False,
+    init_checkpoint: str | None = None,
 ) -> None:
     job_dir = RUNS / f"rwpp-ppo-{job_id}"
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -408,6 +521,23 @@ def run_ppo(
     ]
     if use_llm:
         command.append("--use-llm")
+    # Arena scenarios (e.g. the 25-vs-25 IronZero25 map) need the wider
+    # observation/action contract, the terrain channel and the bridge's
+    # annihilation win condition; legacy maps keep the old 8-unit defaults.
+    if units_per_team:
+        command.extend(["--units-per-team", str(int(units_per_team))])
+    if max_entities:
+        command.extend(["--max-entities", str(int(max_entities))])
+    if target_slots:
+        command.extend(["--target-slots", str(int(target_slots))])
+    if terrain:
+        command.extend(["--terrain", str(terrain)])
+    if win_mode:
+        command.extend(["--win-mode", str(win_mode)])
+    if unlock_ai:
+        command.append("--unlock-ai")
+    if init_checkpoint:
+        command.extend(["--init-checkpoint", str(init_checkpoint)])
     started = time.time()
     handle = log_path.open("w", encoding="utf-8", errors="replace")
     environment = dict(os.environ)
@@ -609,13 +739,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path.startswith("/jobs/") and self.path.rstrip("/").endswith("/stop"):
             job_id = self.path.split("?")[0].rstrip("/").rsplit("/", 2)[-2]
-            process = PPO_PROCESSES.get(job_id)
-            if process is None:
-                self._send({"error": "job is not a running ppo job"}, 404)
+            stopped = stop_job(job_id)
+            if not stopped:
+                self._send({"error": f"job not found: {job_id}"}, 404)
                 return
-            PPO_STOP.add(job_id)
-            process.terminate()
             self._send({"ok": True, "job_id": job_id, "stopped": True})
+            return
+        if self.path.rstrip("/") in ("/jobs/stop_all", "/jobs/stop-all", "/stop_all"):
+            count = stop_all_jobs()
+            self._send({"ok": True, "stopped_count": count})
             return
         self._send({"error": "not found"}, 404)
 
@@ -634,6 +766,62 @@ class Handler(BaseHTTPRequestHandler):
         eval_every = int(payload.get("eval_every", 0))
         eval_episodes = int(payload.get("eval_episodes", 1))
         use_llm = bool(payload.get("use_llm", False))
+        # Arena preset: configurable tank counts (1..25 per side)
+        units_per_team = payload.get("units_per_team")
+        arena = (
+            bool(payload.get("arena"))
+            or "ironzero" in map_path.lower()
+            or "ironzero" in map_name.lower()
+            or (units_per_team is not None)
+        )
+        max_entities = payload.get("max_entities")
+        target_slots = payload.get("target_slots")
+        terrain = str(payload.get("terrain") or "")
+        win_mode = str(payload.get("win_mode") or "")
+        unlock_ai = bool(payload.get("unlock_ai", False))
+        if arena:
+            if units_per_team is not None:
+                units_per_team = max(1, min(25, int(units_per_team)))
+            else:
+                digits = "".join(filter(str.isdigit, map_name))
+                units_per_team = int(digits) if digits and 1 <= int(digits) <= 25 else 25
+            max_entities = int(max_entities or units_per_team)
+            target_slots = int(target_slots or (max_entities + 1))
+            try:
+                import sys
+                scripts_dir = str(REPO_ROOT / "scripts")
+                if scripts_dir not in sys.path:
+                    sys.path.insert(0, scripts_dir)
+                from make_ironzero_map import ensure_arena_map
+                _, rel_path, arena_map_name = ensure_arena_map(units_per_team)
+                map_path = rel_path
+                map_name = arena_map_name
+            except Exception:
+                pass
+            terrain = terrain or str(REPO_ROOT / "configs" / "maps" / f"{map_name}.terrain.json")
+            if not Path(terrain).is_file():
+                terrain = str(REPO_ROOT / "configs" / "maps" / "IronZero25.terrain.json")
+            win_mode = win_mode or "annihilation"
+            unlock_ai = True
+
+        init_checkpoint = payload.get("init_checkpoint")
+        init_mode = payload.get("init_mode")
+        if (init_mode == "warmstart" or not init_checkpoint) and init_mode != "scratch":
+            # 根据当前坦克数量优先寻找最匹配的预热权重
+            best_bc = REPO_ROOT / "runs" / f"bc_ironzero{units_per_team}" / "checkpoint.pt"
+            if not best_bc.is_file():
+                best_bc = REPO_ROOT / "runs" / "bc_ironzero25" / "checkpoint.pt"
+            if best_bc.is_file():
+                init_checkpoint = str(best_bc)
+        if init_checkpoint:
+            candidate = Path(str(init_checkpoint))
+            if not candidate.is_absolute():
+                candidate = REPO_ROOT / candidate
+            if candidate.is_file():
+                init_checkpoint = str(candidate.resolve())
+            else:
+                init_checkpoint = None
+
         if not 0 <= frame_ms <= 16:
             self._send({"error": "frame_ms must be 0..16"}, 400)
             return
@@ -665,10 +853,12 @@ class Handler(BaseHTTPRequestHandler):
                 if job.get("kind") in ("infer", "train") and job.get("status") == "running"
             ]
         if running_ppo:
-            self._send({"error": "a ppo training job is already running"}, 409)
+            running_id = running_ppo[0]["id"]
+            self._send({"error": f"当前已有 PPO 训练任务正在进行 ({running_id})，请先停止它再启动新训练", "running_job_id": running_id}, 409)
             return
         if running_real:
-            self._send({"error": "real-game jobs are running; wait for them to finish"}, 409)
+            running_id = running_real[0]["id"]
+            self._send({"error": f"当前已有实机任务正在进行 ({running_id})，请先停止它或等待完成", "running_job_id": running_id}, 409)
             return
         job_id = f"ppo-{uuid.uuid4().hex[:8]}"
         with JOBS_LOCK:
@@ -689,6 +879,13 @@ class Handler(BaseHTTPRequestHandler):
                 "eval_every": eval_every,
                 "eval_episodes": eval_episodes,
                 "use_llm": use_llm,
+                "arena": arena,
+                "units_per_team": units_per_team,
+                "max_entities": max_entities,
+                "target_slots": target_slots,
+                "terrain": terrain,
+                "win_mode": win_mode,
+                "unlock_ai": unlock_ai,
                 "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "started_ts": time.time(),
                 "elapsed": 0.0,
@@ -718,6 +915,13 @@ class Handler(BaseHTTPRequestHandler):
                 eval_every=eval_every,
                 eval_episodes=eval_episodes,
                 use_llm=use_llm,
+                units_per_team=units_per_team,
+                max_entities=max_entities,
+                target_slots=target_slots,
+                terrain=terrain,
+                win_mode=win_mode,
+                unlock_ai=unlock_ai,
+                init_checkpoint=init_checkpoint,
             )
 
         threading.Thread(target=runner, daemon=True).start()
@@ -734,7 +938,7 @@ class Handler(BaseHTTPRequestHandler):
         map_path = payload.get("map_path")
         map_width = float(payload.get("map_width") or 2600.0)
         map_height = float(payload.get("map_height") or 2600.0)
-        frame_ms = int(payload.get("frame_ms", 16))
+        frame_ms = int(payload.get("frame_ms", 2))
         episodes = int(payload.get("episodes", 1))
         concurrency = int(payload.get("concurrency", 1))
         if kind == "train" and not 1 <= episodes <= 50:
@@ -758,7 +962,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             checkpoint = str(candidate)
         if self._ppo_running():
-            self._send({"error": "a ppo training job is running; stop it before starting real-game jobs"}, 409)
+            with JOBS_LOCK:
+                running_ppo = [job["id"] for job in JOBS.values() if job.get("kind") == "ppo" and job.get("status") == "running"]
+            running_id = running_ppo[0] if running_ppo else "unknown"
+            self._send({"error": f"当前有 PPO 训练任务正在进行 ({running_id})，请先停止它再启动实机任务", "running_job_id": running_id}, 409)
             return
         if PORT_SLOTS.qsize() <= 0:
             self._send({"error": "all parallel slots are busy"}, 409)

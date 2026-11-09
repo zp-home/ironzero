@@ -1,14 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
 """Command line entry point: PPO with a policy in the loop of the real game.
 
-The default scenario is the ``Artillery`` challenge map: the engine pre-places
-22 player units against 25 AI units, so an episode is a real battle rather than
-an economy skirmish.
-
-Example (2 real game instances, 6 PPO updates):
+The default scenario is the legacy ``Artillery`` challenge map (22 player units
+against 25 AI units). Defaults keep that old contract; the fixed IronZero25
+25-vs-25 arena is selected with the explicit entity/terrain/map flags:
 
     $env:PYTHONPATH = "src"
-    python -m ironzero.training.train_rwpp --updates 6 --envs 2 --episode-ticks 900
+    python -m ironzero.training.train_rwpp `
+      --map "maps/ironzero/IronZero25.tmx" --map-name "IronZero25" `
+      --map-width 2700 --map-height 2500 `
+      --units-per-team 25 --max-entities 25 --target-slots 26 `
+      --terrain "configs/maps/IronZero25.terrain.json" `
+      --win-mode annihilation --unlock-ai `
+      --envs 2 --updates 100 --frame-ms 1 --out runs/rwpp_ppo_25
+
+Observation/action contract for that command: obs_dim 768 (12 global + 2x25x10
+entity + 4x8x8 grid) and action heads ``(5, 5, 8, 8, 26)``.
 """
 
 from __future__ import annotations
@@ -19,7 +26,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-from ..micro_config import MicroDuelConfig
+from ..micro_config import DEFAULT_CONFIG, MicroDuelConfig
 from ..rwpp_env import DEFAULT_RUNTIME, DEFAULT_JAVA_HOME, RwppGameConfig
 from .ppo import PPOConfig
 from .rwpp_ppo import RwppPPOTrainer
@@ -44,13 +51,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--eval-every", type=int, default=2)
-    parser.add_argument("--eval-episodes", type=int, default=2, help="real-game evaluation episodes")
+    parser.add_argument("--eval-episodes", type=int, default=2,
+                        help="real-game evaluation episodes per eval (sequential fresh games; keep <= 8)")
+    parser.add_argument("--save-best", action=argparse.BooleanOptionalAction, default=True,
+                        help="write checkpoint_best.pt whenever the eval win rate improves")
     parser.add_argument("--port-base", type=int, default=5140, help="first bridge port for training envs")
     parser.add_argument("--eval-port-base", type=int, default=5200)
     parser.add_argument("--map", default="maps/challenge/Artillery.tmx")
     parser.add_argument("--map-name", default="Artillery")
     parser.add_argument("--map-width", type=float, default=2700.0)
     parser.add_argument("--map-height", type=float, default=2500.0)
+    parser.add_argument("--units-per-team", type=int, default=DEFAULT_CONFIG.units_per_team,
+                        help="units per side in the observation/action contract (25 for the IronZero25 map)")
+    parser.add_argument("--max-entities", type=int, default=DEFAULT_CONFIG.max_entities,
+                        help="entity slots per team block in the observation (>= units-per-team)")
+    parser.add_argument("--target-slots", type=int, default=0,
+                        help="target head size; 0 = max-entities + 1 (25 enemies + no-target)")
+    parser.add_argument("--terrain", default="",
+                        help="terrain passability JSON (TerrainGrid map.json format); adds a 4th map channel")
+    parser.add_argument("--win-mode", default="",
+                        help="bridge win condition passed through as --win-mode (e.g. annihilation); omitted by default")
+    parser.add_argument("--unlock-ai", action="store_true",
+                        help="let the built-in AI play; passed through as --unlock-ai to the bridge")
     parser.add_argument("--engagement", type=float, default=2.0, help="dense reward for closing distance to the enemy army")
     parser.add_argument("--frame-ms", type=int, default=2,
                         help="wall-clock ms per simulated frame: 16=real time, 2=~8x faster, 0=unpaced (too fast for the client)")
@@ -59,15 +81,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runtime", default=str(DEFAULT_RUNTIME))
     parser.add_argument("--java-home", default=str(DEFAULT_JAVA_HOME))
     parser.add_argument("--out", default="runs/rwpp_ppo")
+    parser.add_argument("--init-checkpoint", default="",
+                        help="initialize the PPO policy from a checkpoint (e.g. a behavior-cloning warm start)")
     parser.add_argument("--live", default="", help="JSONL live event stream (dashboard)")
     parser.add_argument("--use-llm", action="store_true",
                         help="enable the LLM strategic layer (falls back to the rule strategy)")
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    game = RwppGameConfig(
+def build_game(args: argparse.Namespace) -> RwppGameConfig:
+    """Build the real-game config from parsed CLI args (kept testable)."""
+
+    return RwppGameConfig(
         runtime=Path(args.runtime),
         java_home=Path(args.java_home),
         map_relative=args.map,
@@ -75,10 +100,21 @@ def main(argv: list[str] | None = None) -> int:
         episode_ticks=int(args.episode_ticks),
         map_width_px=float(args.map_width),
         map_height_px=float(args.map_height),
+        units_per_team=int(args.units_per_team),
+        max_entities=int(args.max_entities),
+        target_slots=int(args.target_slots),
+        terrain_path=Path(args.terrain) if args.terrain else None,
+        win_mode=str(args.win_mode or ""),
+        unlock_ai=bool(args.unlock_ai),
         engagement_coef=float(args.engagement),
         frame_ms=max(0, int(args.frame_ms)),
         vision_radius=float(args.vision_radius),
     )
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    game = build_game(args)
     micro = game.micro_config()
     config = PPOConfig(
         total_updates=args.updates,
@@ -95,11 +131,22 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         eval_every=args.eval_every,
         eval_episodes=args.eval_episodes,
+        save_best=bool(args.save_best),
         out_dir=args.out,
     )
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     live = Path(args.live) if args.live else out_dir / "live.jsonl"
+    if args.eval_episodes > 8:
+        print(
+            f"[warn] --eval-episodes {args.eval_episodes} launches one fresh game per episode; "
+            "training-loop evaluation above 8 games is usually too slow"
+        )
+    if micro.max_entities < micro.units_per_team:
+        print(
+            f"[warn] max_entities {micro.max_entities} < units_per_team {micro.units_per_team}: "
+            "some units will not be visible in the observation"
+        )
 
     trainer = RwppPPOTrainer(
         config,
@@ -118,6 +165,11 @@ def main(argv: list[str] | None = None) -> int:
                 "gpu": _gpu_name(),
                 "envs": args.envs,
                 "episode_ticks": args.episode_ticks,
+                "units_per_team": micro.units_per_team,
+                "max_entities": micro.max_entities,
+                "target_slots": micro.target_slots,
+                "map_channels": micro.map_channels,
+                "terrain": micro.terrain_path,
                 "obs_dim": micro.flat_obs_dim,
                 "action_heads": list(micro.action_nvec),
                 "strategy": getattr(trainer.vec.envs[0], "strategy", None).__class__.__name__
@@ -130,6 +182,25 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     started = time.time()
+    if args.init_checkpoint:
+        import torch
+
+        payload = torch.load(Path(args.init_checkpoint), map_location="cpu", weights_only=False)
+        state_dict = payload.get("model") or payload.get("state_dict")
+        if state_dict is None:
+            raise SystemExit(f"--init-checkpoint has no model weights: {args.init_checkpoint}")
+        loaded = _load_compatible_weights(trainer.policy, state_dict)
+        print(
+            json.dumps(
+                {
+                    "init_checkpoint": str(args.init_checkpoint),
+                    "init_update": payload.get("update"),
+                    "initialized": True,
+                    "loaded_parameters": len(loaded),
+                },
+                ensure_ascii=False,
+            )
+        )
     try:
         metrics = trainer.train()
     finally:
@@ -145,6 +216,8 @@ def main(argv: list[str] | None = None) -> int:
         "episodes": sum(record.get("episodes", 0) for record in metrics.get("updates", [])),
         "total_seconds": elapsed,
         "final_eval": metrics.get("final_eval"),
+        "best_eval": metrics.get("best_eval"),
+        "best_checkpoint": metrics.get("best_checkpoint"),
         "config": asdict(config),
         "game": {
             "map": game.map_name,
@@ -153,6 +226,12 @@ def main(argv: list[str] | None = None) -> int:
             "episode_ticks": game.episode_ticks,
             "frame_ms": game.frame_ms,
             "vision_radius": game.vision_radius,
+            "units_per_team": micro.units_per_team,
+            "max_entities": micro.max_entities,
+            "target_slots": micro.target_slots,
+            "terrain": micro.terrain_path,
+            "win_mode": game.win_mode,
+            "unlock_ai": bool(game.unlock_ai),
             "runtime": str(game.runtime),
         },
         "micro": asdict(micro),
@@ -160,7 +239,15 @@ def main(argv: list[str] | None = None) -> int:
     (out_dir / "rwpp_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    print(json.dumps({key: summary[key] for key in ("updates", "episodes", "total_seconds", "final_eval")}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                key: summary[key]
+                for key in ("updates", "episodes", "total_seconds", "final_eval", "best_checkpoint")
+            },
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 
@@ -189,6 +276,44 @@ def _build_strategy(use_llm: bool):
     except Exception as exc:  # noqa: BLE001
         print(f"[strategy] build failed ({exc}); continuing without a strategy layer")
         return None
+
+
+def _load_compatible_weights(policy, state_dict: dict) -> list[str]:
+    """Load weights flexibly, adapting mismatched entity/input dimensions where possible."""
+
+    import torch
+
+    model_dict = policy.state_dict()
+    loaded_keys = []
+    for name, param in model_dict.items():
+        if name not in state_dict:
+            continue
+        src = state_dict[name]
+        if src.shape == param.shape:
+            model_dict[name] = src
+            loaded_keys.append(name)
+        elif name == "trunk.0.weight" and src.dim() == 2 and param.dim() == 2:
+            out_ch = min(param.shape[0], src.shape[0])
+            in_ch = min(param.shape[1], src.shape[1])
+            param_copy = param.clone()
+            param_copy[:out_ch, :in_ch] = src[:out_ch, :in_ch]
+            model_dict[name] = param_copy
+            loaded_keys.append(f"{name} (adapted {src.shape} -> {param.shape})")
+        elif name == "heads.4.weight" and src.dim() == 2 and param.dim() == 2:
+            n_slots = min(param.shape[0], src.shape[0])
+            param_copy = param.clone()
+            param_copy[:n_slots, :] = src[:n_slots, :]
+            model_dict[name] = param_copy
+            loaded_keys.append(f"{name} (adapted {src.shape} -> {param.shape})")
+        elif name == "heads.4.bias" and src.dim() == 1 and param.dim() == 1:
+            n_slots = min(param.shape[0], src.shape[0])
+            param_copy = param.clone()
+            param_copy[:n_slots] = src[:n_slots]
+            model_dict[name] = param_copy
+            loaded_keys.append(f"{name} (adapted {src.shape} -> {param.shape})")
+
+    policy.load_state_dict(model_dict)
+    return loaded_keys
 
 
 if __name__ == "__main__":  # pragma: no cover

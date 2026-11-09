@@ -1,0 +1,537 @@
+{
+  "map_id": "IronZero25",
+  "map_name": "IronZero25",
+  "source_map": "maps/challenge/Artillery.tmx",
+  "target_map": "maps/ironzero/IronZero25.tmx",
+  "runtime_assets": "E:\\qwq\\强化学习笔记\\铁锈战争\\.runtime\\rwpp-runtime-1.15\\assets",
+  "size": {
+    "width": 135,
+    "height": 125,
+    "tile_width": 20,
+    "tile_height": 20,
+    "width_px": 2700,
+    "height_px": 2500
+  },
+  "unit_counts": {
+    "team_0": 25,
+    "team_1": 25,
+    "total": 50
+  },
+  "unit_type": "tank",
+  "tank_tile": {
+    "tileset": "units",
+    "tileset_firstgid": 485,
+    "team_0_local_tile_id": 2,
+    "team_0_gid": 487,
+    "team_1_local_tile_id": 47,
+    "team_1_gid": 532
+  },
+  "spawn": {
+    "grid": {
+      "rows": 5,
+      "cols": 5,
+      "step_tiles": 2,
+      "step_px": 40
+    },
+    "center_px": [
+      1350.0,
+      1250.0
+    ],
+    "center_offset_px": 621.0,
+    "spacing": {
+      "min_within_team_px": 40.0,
+      "min_between_teams_px": 1052.24,
+      "required_min_px": 24.0
+    },
+    "team_0": {
+      "center_px": [
+        1190.0,
+        650.0
+      ],
+      "bbox_px": [
+        1110.0,
+        570.0,
+        1270.0,
+        730.0
+      ],
+      "bbox_tile": [
+        55,
+        28,
+        63,
+        36
+      ],
+      "tiles": [
+        [
+          55,
+          28
+        ],
+        [
+          57,
+          28
+        ],
+        [
+          59,
+          28
+        ],
+        [
+          61,
+          28
+        ],
+        [
+          63,
+          28
+        ],
+        [
+          55,
+          30
+        ],
+        [
+          57,
+          30
+        ],
+        [
+          59,
+          30
+        ],
+        [
+          61,
+          30
+        ],
+        [
+          63,
+          30
+        ],
+        [
+          55,
+          32
+        ],
+        [
+          57,
+          32
+        ],
+        [
+          59,
+          32
+        ],
+        [
+          61,
+          32
+        ],
+        [
+          63,
+          32
+        ],
+        [
+          55,
+          34
+        ],
+        [
+          57,
+          34
+        ],
+        [
+          59,
+          34
+        ],
+        [
+          61,
+          34
+        ],
+        [
+          63,
+          34
+        ],
+        [
+          55,
+          36
+        ],
+        [
+          57,
+          36
+        ],
+        [
+          59,
+          36
+        ],
+        [
+          61,
+          36
+        ],
+        [
+          63,
+          36
+        ]
+      ],
+      "positions_px": [
+        [
+          1110.0,
+          570.0
+        ],
+        [
+          1150.0,
+          570.0
+        ],
+        [
+          1190.0,
+          570.0
+        ],
+        [
+          1230.0,
+          570.0
+        ],
+        [
+          1270.0,
+          570.0
+        ],
+        [
+          1110.0,
+          610.0
+        ],
+        [
+          1150.0,
+          610.0
+        ],
+        [
+          1190.0,
+          610.0
+        ],
+        [
+          1230.0,
+          610.0
+        ],
+        [
+          1270.0,
+          610.0
+        ],
+        [
+          1110.0,
+          650.0
+        ],
+        [
+          1150.0,
+          650.0
+        ],
+        [
+          1190.0,
+          650.0
+        ],
+        [
+          1230.0,
+          650.0
+        ],
+        [
+          1270.0,
+          650.0
+        ],
+        [
+          1110.0,
+          690.0
+        ],
+        [
+          1150.0,
+          690.0
+        ],
+        [
+          1190.0,
+          690.0
+        ],
+        [
+          1230.0,
+          690.0
+        ],
+        [
+          1270.0,
+          690.0
+        ],
+        [
+          1110.0,
+          730.0
+        ],
+        [
+          1150.0,
+          730.0
+        ],
+        [
+          1190.0,
+          730.0
+        ],
+        [
+          1230.0,
+          730.0
+        ],
+        [
+          1270.0,
+          730.0
+        ]
+      ]
+    },
+    "team_1": {
+      "center_px": [
+        1510.0,
+        1850.0
+      ],
+      "bbox_px": [
+        1430.0,
+        1770.0,
+        1590.0,
+        1930.0
+      ],
+      "bbox_tile": [
+        71,
+        88,
+        79,
+        96
+      ],
+      "tiles": [
+        [
+          79,
+          96
+        ],
+        [
+          77,
+          96
+        ],
+        [
+          75,
+          96
+        ],
+        [
+          73,
+          96
+        ],
+        [
+          71,
+          96
+        ],
+        [
+          79,
+          94
+        ],
+        [
+          77,
+          94
+        ],
+        [
+          75,
+          94
+        ],
+        [
+          73,
+          94
+        ],
+        [
+          71,
+          94
+        ],
+        [
+          79,
+          92
+        ],
+        [
+          77,
+          92
+        ],
+        [
+          75,
+          92
+        ],
+        [
+          73,
+          92
+        ],
+        [
+          71,
+          92
+        ],
+        [
+          79,
+          90
+        ],
+        [
+          77,
+          90
+        ],
+        [
+          75,
+          90
+        ],
+        [
+          73,
+          90
+        ],
+        [
+          71,
+          90
+        ],
+        [
+          79,
+          88
+        ],
+        [
+          77,
+          88
+        ],
+        [
+          75,
+          88
+        ],
+        [
+          73,
+          88
+        ],
+        [
+          71,
+          88
+        ]
+      ],
+      "positions_px": [
+        [
+          1590.0,
+          1930.0
+        ],
+        [
+          1550.0,
+          1930.0
+        ],
+        [
+          1510.0,
+          1930.0
+        ],
+        [
+          1470.0,
+          1930.0
+        ],
+        [
+          1430.0,
+          1930.0
+        ],
+        [
+          1590.0,
+          1890.0
+        ],
+        [
+          1550.0,
+          1890.0
+        ],
+        [
+          1510.0,
+          1890.0
+        ],
+        [
+          1470.0,
+          1890.0
+        ],
+        [
+          1430.0,
+          1890.0
+        ],
+        [
+          1590.0,
+          1850.0
+        ],
+        [
+          1550.0,
+          1850.0
+        ],
+        [
+          1510.0,
+          1850.0
+        ],
+        [
+          1470.0,
+          1850.0
+        ],
+        [
+          1430.0,
+          1850.0
+        ],
+        [
+          1590.0,
+          1810.0
+        ],
+        [
+          1550.0,
+          1810.0
+        ],
+        [
+          1510.0,
+          1810.0
+        ],
+        [
+          1470.0,
+          1810.0
+        ],
+        [
+          1430.0,
+          1810.0
+        ],
+        [
+          1590.0,
+          1770.0
+        ],
+        [
+          1550.0,
+          1770.0
+        ],
+        [
+          1510.0,
+          1770.0
+        ],
+        [
+          1470.0,
+          1770.0
+        ],
+        [
+          1430.0,
+          1770.0
+        ]
+      ]
+    }
+  },
+  "symmetry": {
+    "kind": "180_degree_rotation_about_map_center",
+    "rule": "(x, y) -> (width_px - x, height_px - y); team_1 = rotate(team_0)",
+    "center_px": [
+      1350.0,
+      1250.0
+    ]
+  },
+  "terrain": {
+    "blocked_tiles": 8914,
+    "walkable_tiles": 7961,
+    "total_tiles": 16875,
+    "blocked_ratio": 0.52824,
+    "walkable_components": 1,
+    "blocked_rule": "blocked=1 for LAND movement. Ground: water|cliff|cliff-soft|trees|large-cliff|large-rock|block-land|lava|lava-cliff OR blockLevel<0. Items: res_pool|trees|large-cliff|large-rock|block-land OR blockLevel<0. Small water is NOT special: Shallow Water tiles carry the 'water' property, so LAND units (tank) cannot enter them in real 1.15. small-rock (blockLevel=40) is passable but costly; the singular 'tree' property is ignored by 1.15.",
+    "blocked_stats": {
+      "ground_water_or_cliff": 8907,
+      "items_resource_or_blocking": 7,
+      "total": 8914
+    }
+  },
+  "triggers": {
+    "map_info": {
+      "type": "mission",
+      "winCondition": "none",
+      "fog": "map"
+    },
+    "team_0_info": {
+      "team": 0,
+      "credits": 0,
+      "allyGroup": 0
+    },
+    "team_1_info": {
+      "team": 1,
+      "credits": 0,
+      "allyGroup": 1,
+      "basicAI": true
+    }
+  },
+  "artifacts": {
+    "tmx": "E:\\qwq\\强化学习笔记\\铁锈战争\\configs\\maps\\IronZero25.tmx",
+    "installed_tmx": "E:\\qwq\\强化学习笔记\\铁锈战争\\.runtime\\rwpp-runtime-1.15\\assets\\maps\\ironzero\\IronZero25.tmx",
+    "terrain_json": "E:\\qwq\\强化学习笔记\\铁锈战争\\configs\\maps\\IronZero25.terrain.json",
+    "meta_json": "E:\\qwq\\强化学习笔记\\铁锈战争\\configs\\maps\\IronZero25.meta.json"
+  },
+  "generator": "scripts/make_ironzero_map.py"
+}

@@ -10,12 +10,19 @@ module guarantees the mask layout and the observation layout stay aligned with
 
 from __future__ import annotations
 
+import math
+import warnings
+from functools import lru_cache
+from pathlib import Path
+
 import numpy as np
 
 from .micro_config import DEFAULT_CONFIG, MicroDuelConfig
 from .mock_engine import ORDER_IDS
+from .terrain import TerrainGrid
 
 GROUP_DIM = 4  # matches the four unit groups in the micro-duel scenario
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def encode_observation(state: dict, config: MicroDuelConfig = DEFAULT_CONFIG) -> np.ndarray:
@@ -90,11 +97,111 @@ def encode_observation(state: dict, config: MicroDuelConfig = DEFAULT_CONFIG) ->
         gx, gy = _cell(unit, cfg)
         grid[1, gy, gx] += 1.0
     grid[2] = np.clip(grid[0] - grid[1], -1.0, 1.0)
-    vector[offset : offset + grid.size] = grid.reshape(-1) / max(1.0, cfg.units_per_team)
+    # Channel 3 is the static terrain passability prior: 1 = fully passable,
+    # 0 = fully blocked (water/cliff/trees/lava on the real map). It is scaled
+    # to the same map_grid as the army channels so a convolution sees both.
+    # Channels 0..2 count units, so only they are normalised by army size.
+    if cfg.map_channels > 3:
+        terrain = terrain_passable_channel(cfg)
+        if terrain is not None:
+            grid[3] = terrain
+    army_channels = min(3, cfg.map_channels)
+    grid[:army_channels] /= max(1.0, cfg.units_per_team)
+    vector[offset : offset + grid.size] = grid.reshape(-1)
     offset += grid.size
 
     assert offset == cfg.flat_obs_dim
     return vector
+
+
+# ----------------------------------------------------------------------
+# Terrain observation channel
+# ----------------------------------------------------------------------
+def terrain_passable_channel(config: MicroDuelConfig = DEFAULT_CONFIG) -> np.ndarray | None:
+    """Downsampled terrain passability prior ``(map_grid, map_grid)`` in ``[0, 1]``.
+
+    Returns ``None`` when the config has no terrain channel or the terrain file
+    cannot be read (callers then leave the channel zeroed; the observation
+    dimension is unaffected because it was fixed when the config was built).
+    """
+
+    if not config.terrain_channel:
+        return None
+    path = _resolve_terrain_path(config.terrain_path)
+    if path is None:
+        warnings.warn(
+            f"terrain file not found: {config.terrain_path!r}; the terrain observation "
+            "channel stays zero",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return None
+    channel = _terrain_passable_channel(str(path), int(config.map_grid))
+    if channel is None:
+        warnings.warn(
+            f"terrain file could not be parsed: {path}; the terrain observation "
+            "channel stays zero",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    return channel
+
+
+def _resolve_terrain_path(path: str | None) -> Path | None:
+    """Resolve a terrain path against cwd first, then the repository root."""
+
+    if not path:
+        return None
+    candidate = Path(path)
+    if candidate.is_file():
+        return candidate.resolve()
+    if not candidate.is_absolute():
+        fallback = (REPO_ROOT / candidate).resolve()
+        if fallback.is_file():
+            return fallback
+    return None
+
+
+@lru_cache(maxsize=16)
+def _terrain_passable_channel(path: str, resolution: int) -> np.ndarray | None:
+    try:
+        grid = TerrainGrid.from_file(path)
+    except (OSError, ValueError):
+        return None
+    return _downsample_passable(grid, resolution)
+
+
+def _downsample_passable(grid: TerrainGrid, resolution: int) -> np.ndarray:
+    """Average the blocked mask into a ``resolution x resolution`` passable grid.
+
+    Each output cell covers the same *fraction* of the map regardless of the
+    terrain tile size, so this works for any map resolution.
+    """
+
+    resolution = max(1, int(resolution))
+    out = np.ones((resolution, resolution), dtype=np.float32)
+    if grid.width <= 0 or grid.height <= 0:
+        return out
+    for cell_y in range(resolution):
+        y0 = grid.height_px * cell_y / resolution
+        y1 = grid.height_px * (cell_y + 1) / resolution
+        ty0 = min(grid.height - 1, max(0, int(math.floor(y0 / grid.tile_height))))
+        ty1 = min(grid.height - 1, max(ty0, int(math.ceil(y1 / grid.tile_height)) - 1))
+        for cell_x in range(resolution):
+            x0 = grid.width_px * cell_x / resolution
+            x1 = grid.width_px * (cell_x + 1) / resolution
+            tx0 = min(grid.width - 1, max(0, int(math.floor(x0 / grid.tile_width))))
+            tx1 = min(grid.width - 1, max(tx0, int(math.ceil(x1 / grid.tile_width)) - 1))
+            total = 0
+            passable = 0
+            for ty in range(ty0, ty1 + 1):
+                base = ty * grid.width
+                for tx in range(tx0, tx1 + 1):
+                    total += 1
+                    if not grid.blocked[base + tx]:
+                        passable += 1
+            out[cell_y, cell_x] = (passable / total) if total else 1.0
+    return out
 
 
 def _entity_features(
@@ -111,7 +218,7 @@ def _entity_features(
     hp = float(unit.get("hp") or 0.0)
     max_hp = float(unit.get("max_hp") or cfg.unit_hp)
     order = ORDER_IDS.get(str(unit.get("order_type", "idle")), 0)
-    group = float(unit.get("group_id", 0))
+    group = _unit_group(unit, cfg)
     rel_x = (x - centroid[0]) / cfg.map_width
     rel_y = (y - centroid[1]) / cfg.map_height
     if enemy:
@@ -140,6 +247,28 @@ def _entity_features(
         ],
         dtype=np.float32,
     )
+
+
+def _unit_group(unit: dict, cfg: MicroDuelConfig) -> float:
+    """Unit group index, inferred from ``entity_id % groups`` when not streamed.
+
+    The real RWPP bridge does not send ``group_id``; the game-side controller
+    derives groups from ``unit.id % groups`` (the same convention the action
+    group head uses). Inferring it here keeps the entity block consistent with
+    the action semantics instead of collapsing every unit to group 0.
+    """
+
+    raw = unit.get("group_id")
+    if raw is not None:
+        try:
+            return float(int(raw))
+        except (TypeError, ValueError):
+            pass
+    try:
+        entity_id = int(unit.get("entity_id", 0))
+    except (TypeError, ValueError):
+        entity_id = 0
+    return float(entity_id % max(1, cfg.groups))
 
 
 def _cell(unit: dict, cfg: MicroDuelConfig) -> tuple[int, int]:
@@ -174,8 +303,16 @@ def build_masks(state: dict, config: MicroDuelConfig = DEFAULT_CONFIG) -> dict[s
     enemies = state.get("visible_enemy_entities", [])
     kind_mask = np.ones(5, dtype=bool)
     group_mask = np.zeros(cfg.groups + 1, dtype=bool)
-    for unit in own:
-        group_mask[int(unit.get("group_id", 0)) % cfg.groups] = True
+    group_ids_known = any(unit.get("group_id") is not None for unit in own)
+    if group_ids_known:
+        for unit in own:
+            group_mask[int(unit.get("group_id") or 0) % cfg.groups] = True
+    elif own:
+        # The real RWPP bridge streams unit ids but no ``group_id``: the
+        # game-side controller derives groups from ``unit.id % groups``, so all
+        # groups are addressable and masking the head down to group 0 would
+        # silently disable 75% of the army.
+        group_mask[: cfg.groups] = True
     group_mask[-1] = True  # broadcast to every alive group
     x_mask = np.ones(cfg.position_grid, dtype=bool)
     y_mask = np.ones(cfg.position_grid, dtype=bool)

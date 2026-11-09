@@ -376,11 +376,15 @@
                     <select id="fe-train-map"><option value="">加载中…</option></select>
                   </label>
                   <label class="field field-wide">
-                    <span>策略</span>
+                    <span>策略驱动</span>
                     <select id="fe-train-policy">
-                      <option value="scripted">scripted（脚本 AI 驱动）</option>
-                      <option value="model" disabled>模型策略（PPO 接入中）</option>
+                      <option value="scripted" selected>scripted（脚本 AI 驱动 · 规则对手）</option>
+                      <option value="model">PPO 模型策略（加载 Checkpoint 对战采集）</option>
                     </select>
+                  </label>
+                  <label class="field field-wide" id="fe-train-checkpoint-field" hidden>
+                    <span>模型 Checkpoint</span>
+                    <select id="fe-train-checkpoint-select"><option value="">加载中…</option></select>
                   </label>
                   <label class="field">
                     <span>局数 episodes</span>
@@ -400,6 +404,7 @@
                     </select>
                   </label>
                   <button class="btn btn-primary field-wide" type="button" id="fe-train-start">开始实机训练</button>
+                  <button class="btn btn-danger field-wide" type="button" id="fe-train-stop" hidden>停止训练</button>
                 </div>
                 <div class="hint-line" id="fe-train-hint">并行跑多个真实游戏进程，每线程独立采集一局；当前阶段为真机数据采集。</div>
               </section>
@@ -434,9 +439,9 @@
               <div class="kpi-foot">latest_update.mean_return</div>
             </div>
             <div class="kpi-card accent-green">
-              <div class="kpi-label">最新 win_rate</div>
+              <div class="kpi-label">实战评估胜率</div>
               <div class="kpi-value"><b id="fe-ppo-kpi-win">0.0</b><span class="kpi-unit">%</span></div>
-              <div class="kpi-foot">latest_update.win_rate</div>
+              <div class="kpi-foot">真机盲测评估胜率</div>
             </div>
             <div class="kpi-card">
               <div class="kpi-label">最新 entropy</div>
@@ -456,7 +461,7 @@
               <div class="chart-box"><canvas id="fe-ppo-chart-return"></canvas></div>
             </div>
             <div class="chart-card">
-              <header><span>Win Rate</span><span class="chart-legend">win_rate / update</span></header>
+              <header><span>实机评估胜率</span><span class="chart-legend">评估局胜率 / eval</span></header>
               <div class="chart-box"><canvas id="fe-ppo-chart-win"></canvas></div>
             </div>
             <div class="chart-card">
@@ -528,57 +533,90 @@
                   </span>
                 </div>
                 <div class="form-grid">
+                  <!-- 地图与场景配置 -->
+                  <label class="field field-wide">
+                    <span>训练场景 / 对战地图</span>
+                    <select id="fe-ppo-map">
+                      <option value="IronZero25" selected>IronZero25（25v25 对称竞技场 · 纯坦克 · 推荐）</option>
+                      <option value="IronZero20">IronZero20（20v20 对称竞技场 · 纯坦克）</option>
+                      <option value="IronZero15">IronZero15（15v15 对称竞技场 · 纯坦克）</option>
+                      <option value="IronZero10">IronZero10（10v10 对称竞技场 · 纯坦克 · 快速验证）</option>
+                      <option value="IronZero5">IronZero5（5v5 对称竞技场 · 纯坦克 · 极速验证）</option>
+                      <option value="Artillery">Artillery（原版战役挑战图 · 22v25 带工厂建筑）</option>
+                    </select>
+                  </label>
+                  <label class="field field-wide" id="fe-ppo-units-field">
+                    <span>双方坦克数量（每方 1–25 辆）</span>
+                    <input id="fe-ppo-units" type="number" min="1" max="25" step="1" value="25" />
+                  </label>
+
+                  <!-- 基础策略与初始化权重 -->
+                  <label class="field field-wide">
+                    <span>基础策略 / 初始权重（推荐预热）</span>
+                    <select id="fe-ppo-init-mode">
+                      <option value="warmstart" selected>预热策略 (BC Warmstart: 已掌握集火推进 · 强烈推荐)</option>
+                      <option value="checkpoint">加载已有 Checkpoint 微调继续训练</option>
+                      <option value="scratch">从零随机探索 (Scratch: 探索空间大 · 早期胜率低)</option>
+                    </select>
+                  </label>
+                  <label class="field field-wide" id="fe-ppo-checkpoint-field" hidden>
+                    <span>初始 Checkpoint</span>
+                    <select id="fe-ppo-init-checkpoint"><option value="">加载中…</option></select>
+                  </label>
+                  <div class="hint-line subtle field-wide" id="fe-ppo-init-hint">预热策略基于真实对战规则蒸馏，坦克开局会自动集火与编队推进，可避免从零探索在前几百轮毫无击杀的问题。</div>
+
+                  <!-- 训练超参 -->
                   <label class="field">
                     <span>更新轮数 updates</span>
-                    <input id="fe-ppo-updates" type="number" min="1" max="500" step="1" value="20" />
+                    <input id="fe-ppo-updates" type="number" min="1" max="500" step="1" value="40" />
                   </label>
                   <label class="field">
                     <span>并行实例 envs（1–6）</span>
-                    <input id="fe-ppo-envs" type="number" min="1" max="6" step="1" value="2" />
+                    <input id="fe-ppo-envs" type="number" min="1" max="6" step="1" value="4" />
                   </label>
                   <label class="field">
                     <span>每轮决策 rollout</span>
-                    <input id="fe-ppo-rollout" type="number" min="1" max="512" step="1" value="20" />
+                    <input id="fe-ppo-rollout" type="number" min="1" max="512" step="1" value="64" />
                   </label>
                   <label class="field">
                     <span>每局 tick</span>
-                    <input id="fe-ppo-ticks" type="number" min="120" max="20000" step="60" value="3600" />
+                    <input id="fe-ppo-ticks" type="number" min="120" max="20000" step="60" value="4800" />
                   </label>
                   <label class="field field-wide">
                     <span>仿真速度 frame_ms</span>
                     <select id="fe-ppo-frame-ms">
+                      <option value="1" selected>极速（1ms，约 16× · 推荐）</option>
+                      <option value="2">快速（2ms，约 8×）</option>
                       <option value="16">真实时间（16ms，1×）</option>
-                      <option value="2" selected>快速（2ms，约 8×）</option>
-                      <option value="1">极速（1ms，约 16×）</option>
                     </select>
                   </label>
                   <label class="field field-wide">
                     <span>观测迷雾半径（px）</span>
-                    <input id="fe-ppo-vision" type="number" min="0" max="2000" step="10" value="260" />
+                    <input id="fe-ppo-vision" type="number" min="0" max="2000" step="10" value="0" />
                   </label>
                   <label class="field field-wide">
                     <span>设备 device</span>
                     <select id="fe-ppo-device">
                       <option value="auto" selected>auto（自动选择）</option>
+                      <option value="cuda">cuda（显卡加速）</option>
                       <option value="cpu">cpu</option>
-                      <option value="cuda">cuda</option>
                     </select>
                   </label>
                   <label class="field">
                     <span>评估间隔 eval_every</span>
                     <select id="fe-ppo-eval-every">
-                      <option value="0" selected>仅最后评估</option>
-                      <option value="2">每 2 轮</option>
-                      <option value="5">每 5 轮</option>
                       <option value="10">每 10 轮</option>
+                      <option value="20" selected>每 20 轮</option>
+                      <option value="0">仅最后评估</option>
                     </select>
                   </label>
                   <label class="field">
                     <span>评估局数 eval_episodes</span>
                     <select id="fe-ppo-eval-episodes">
-                      <option value="1" selected>1 局</option>
+                      <option value="4" selected>4 局</option>
                       <option value="2">2 局</option>
-                      <option value="3">3 局</option>
+                      <option value="1">1 局</option>
+                      <option value="8">8 局</option>
                     </select>
                   </label>
                   <label class="field field-wide checkbox-field">
@@ -589,9 +627,9 @@
                   <button class="btn btn-primary field-wide" type="button" id="fe-ppo-start">开始 PPO 真机训练</button>
                   <button class="btn btn-danger field-wide" type="button" id="fe-ppo-stop" hidden>停止训练</button>
                 </div>
-                <div class="hint-line" id="fe-ppo-hint">固定场景：Artillery 挑战图 · 22 我方 vs 25 AI。仿真速度 frame_ms 只改变墙钟播放速度（16ms=真实时间，2ms≈8×，1ms≈极速），不改变每局仿真时长；每局时长由「每局 tick」决定（60 tick ≈ 1 秒，3600 tick ≈ 60 秒），引擎判出胜负会提前结束。观测迷雾：训练时策略只看到我方单位半径内敌人（0=关闭，默认 260px）。</div>
-                <div class="hint-line subtle">默认每局 3600 tick ≈ 60 秒仿真时长；引擎判出胜负会提前结束该局，不会等到 tick 上限。小任务验证：updates=3 / envs=1 / rollout_steps=6 / episode_ticks=600 / 极速(1ms) + 260px 雾。</div>
-                <div class="hint-line subtle">评估：eval_every=0 仅最后评估；启用 LLM 战略层需要 IRONZERO_LLM_API_KEY，缺失时自动退回规则策略。</div>
+                <div class="hint-line" id="fe-ppo-hint">竞技场对战：采用中心对称地形与歼灭战规则（敌方全灭判胜）。仿真速度 frame_ms：1ms 极速、2ms 快速。</div>
+                <div class="hint-line subtle">默认每局 4800 tick ≈ 80 秒仿真时长；双方分出胜负会提前结束，不会盲目等待超时。</div>
+                <div class="hint-line subtle">评估：每隔若干轮自动重置独立游戏进行真机评估并记录 Wilson 胜率置信区间。</div>
               </section>
             </aside>
           </div>

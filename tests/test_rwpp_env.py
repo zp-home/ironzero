@@ -43,35 +43,41 @@ def obs_message(
     *,
     own_xy: tuple[float, float] = (640.0, 2000.0),
     enemy_xy: tuple[float, float] = (640.0, 200.0),
+    own_positions: list[tuple[float, float]] | None = None,
+    enemy_positions: list[tuple[float, float]] | None = None,
     result: str | None = None,
     terminated: bool = False,
 ) -> dict:
-    own = [
-        {
-            "entity_id": 100 + index,
-            "team_id": 0,
-            "x": own_xy[0] + index * 20.0,
-            "y": own_xy[1],
-            "hp": hp,
-            "max_hp": 210.0,
-            "is_alive": True,
-        }
-        for index, hp in enumerate(own_hp)
-        if hp > 0.0
-    ]
-    enemies = [
-        {
-            "entity_id": 200 + index,
-            "team_id": 1,
-            "x": enemy_xy[0] + index * 20.0,
-            "y": enemy_xy[1],
-            "hp": hp,
-            "max_hp": 210.0,
-            "is_alive": True,
-        }
-        for index, hp in enumerate(enemy_hp)
-        if hp > 0.0
-    ]
+    def entities(
+        hp_values: list[float],
+        positions: list[tuple[float, float]] | None,
+        base_xy: tuple[float, float],
+        team: int,
+        base_id: int,
+    ) -> list[dict]:
+        items = []
+        for index, hp in enumerate(hp_values):
+            if hp <= 0.0:
+                continue
+            if positions is not None:
+                x, y = positions[index]
+            else:
+                x, y = base_xy[0] + index * 20.0, base_xy[1]
+            items.append(
+                {
+                    "entity_id": base_id + index,
+                    "team_id": team,
+                    "x": x,
+                    "y": y,
+                    "hp": hp,
+                    "max_hp": 210.0,
+                    "is_alive": True,
+                }
+            )
+        return items
+
+    own = entities(own_hp, own_positions, own_xy, 0, 100)
+    enemies = entities(enemy_hp, enemy_positions, enemy_xy, 1, 200)
     return {
         "protocol": "ironzero/1",
         "type": "obs",
@@ -197,6 +203,11 @@ class FakeBridge:
         result_in_obs: bool = False,
         done_without_obs: bool = False,
         close_after_first_obs: bool = False,
+        own_hp: list[float] | None = None,
+        enemy_hp: list[float] | None = None,
+        enemy_step_hp: list[float] | None = None,
+        own_positions: list[tuple[float, float]] | None = None,
+        enemy_positions: list[tuple[float, float]] | None = None,
     ) -> None:
         self.port = port
         self.steps = steps
@@ -206,6 +217,13 @@ class FakeBridge:
         self.result_in_obs = result_in_obs
         self.done_without_obs = done_without_obs
         self.close_after_first_obs = close_after_first_obs
+        self.own_hp = list(own_hp) if own_hp is not None else [210.0, 210.0]
+        self.enemy_hp = list(enemy_hp) if enemy_hp is not None else [210.0, 210.0, 210.0]
+        self.enemy_step_hp = (
+            list(enemy_step_hp) if enemy_step_hp is not None else [120.0, 210.0, 210.0]
+        )
+        self.own_positions = own_positions
+        self.enemy_positions = enemy_positions
         self.process = FakeProcess()
         self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -243,7 +261,15 @@ class FakeBridge:
 
         send({"protocol": "ironzero/1", "type": "hello", "message_id": "hello"})
         tick = 0
-        send(obs_message(tick, [210.0, 210.0], [210.0, 210.0, 210.0]))
+        send(
+            obs_message(
+                tick,
+                self.own_hp,
+                self.enemy_hp,
+                own_positions=self.own_positions,
+                enemy_positions=self.enemy_positions,
+            )
+        )
         if self.close_after_first_obs:
             # Simulate a game process that dies right after the first frame.
             return
@@ -255,9 +281,9 @@ class FakeBridge:
             if message.get("type") == "shutdown":
                 return
             tick += 10
-            enemy_hp = [120.0, 210.0, 210.0]
+            enemy_hp = list(self.enemy_step_hp)
             if step == self.steps - 1 and self.eliminate_on_last:
-                enemy_hp = [0.0, 0.0, 0.0]
+                enemy_hp = [0.0] * len(enemy_hp)
             send(
                 {
                     "protocol": "ironzero/1",
@@ -276,8 +302,10 @@ class FakeBridge:
                 send(
                     obs_message(
                         tick,
-                        [210.0, 210.0],
+                        self.own_hp,
                         enemy_hp,
+                        own_positions=self.own_positions,
+                        enemy_positions=self.enemy_positions,
                         result=self.result if terminal else None,
                         terminated=terminal,
                     )
@@ -442,6 +470,89 @@ class RwppBridgeLoopTests(unittest.TestCase):
         try:
             with self.assertRaises(RwppEnvError):
                 env.reset()
+        finally:
+            env.close()
+
+
+class RwppEnvFogTests(unittest.TestCase):
+    def test_enemy_hp_reference_uses_ground_truth_not_visible_subset(self) -> None:
+        # Enemies spawn far away: with a 260 px fog the policy sees none of them.
+        # The hp reference must still be the full 3-unit enemy army, otherwise
+        # every later enemy_hp_frac would be normalised against nothing.
+        port = find_free_port()
+        bridge = FakeBridge(port, steps=2)
+        game = RwppGameConfig(episode_ticks=30, vision_radius=260.0)
+        env = RwppDuelEnv(
+            game,
+            port=port,
+            micro_config=make_micro(),
+            launcher=bridge.launcher,
+            episode_prefix="fogref",
+        )
+        try:
+            _obs, info = env.reset()
+            self.assertEqual(info["visible_enemies"], 0)
+            self.assertAlmostEqual(env.own_max_ref, 2 * 210.0)
+            self.assertAlmostEqual(env.enemy_max_ref, 3 * 210.0)
+            self.assertAlmostEqual(info["max_refs"]["enemy"], 630.0)
+            _obs, _reward, _terminated, _truncated, _info = env.step(np.array([1, 4, 0, 0, 0]))
+            self.assertAlmostEqual(env.enemy_max_ref, 630.0, msg="reference must not shrink after a step")
+        finally:
+            env.close()
+
+    def test_fog_target_slot_decodes_against_visible_enemy_list(self) -> None:
+        # Only enemy id=201 is near our army; 200/202 are across the map. Target
+        # slot 0 refers to the visible list, so the decodes action must target
+        # 201 (the ground-truth list would wrongly pick 200).
+        port = find_free_port()
+        bridge = FakeBridge(
+            port,
+            steps=2,
+            enemy_positions=[(640.0, 200.0), (660.0, 2000.0), (640.0, 200.0)],
+        )
+        game = RwppGameConfig(episode_ticks=30, vision_radius=260.0)
+        env = RwppDuelEnv(
+            game,
+            port=port,
+            micro_config=make_micro(),
+            launcher=bridge.launcher,
+            episode_prefix="fogdecode",
+        )
+        try:
+            env.reset()
+            visible_ids = [
+                int(entity["entity_id"])
+                for entity in env.obs_state.get("visible_enemy_entities", [])
+            ]
+            self.assertEqual(visible_ids, [201])
+            _obs, _reward, _terminated, _truncated, info = env.step(
+                np.array([2, 4, 0, 0, 0])
+            )
+            self.assertEqual(info["actions"][0]["kind"], "attack_target")
+            self.assertEqual(info["actions"][0]["target_entity_id"], 201)
+        finally:
+            env.close()
+
+
+class RwppEnvDoneTests(unittest.TestCase):
+    def test_done_message_updates_terminal_tick_and_observation(self) -> None:
+        port = find_free_port()
+        bridge = FakeBridge(port, steps=2, result="timeout", done_without_obs=True)
+        env = make_env(bridge, port)
+        try:
+            obs, info = env.reset()
+            self.assertEqual(info["tick"], 0)
+            env.step(np.array([2, 0, 0, 0, 0]))
+            obs, _reward, terminated, truncated, info = env.step(np.array([2, 0, 0, 0, 0]))
+            self.assertFalse(terminated)
+            self.assertTrue(truncated)
+            # The done message carried tick=20; the returned observation/state
+            # must describe that terminal frame, not the previous decision.
+            self.assertEqual(info["tick"], 20)
+            self.assertEqual(env.last_tick, 20)
+            self.assertEqual(obs.shape, (make_micro().flat_obs_dim,))
+            self.assertEqual(len(env.masks["target"]), make_micro().target_slots)
+            self.assertTrue(env.masks["target"][-1])
         finally:
             env.close()
 

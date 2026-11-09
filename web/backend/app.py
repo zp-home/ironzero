@@ -42,7 +42,7 @@ CHECKPOINT_ROOTS = [
     if item.strip()
 ]
 FRONTEND_DIR = REPO_ROOT / "web" / "frontend"
-RWPP_SERVICE = os.environ.get("IRONZERO_RWPP_SERVICE", "http://host.docker.internal:8300")
+RWPP_SERVICE = os.environ.get("IRONZERO_RWPP_SERVICE", "http://127.0.0.1:8300")
 RUNS_ROOT.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="IronZero Platform", version=APP_VERSION)
@@ -84,7 +84,9 @@ class RwppRecordRequest(BaseModel):
     ticks: int = Field(default=3600, ge=120, le=20000)
     policy: str = Field(default="scripted", pattern="^(scripted|none|model|ppo)$")
     checkpoint: str | None = Field(default=None, max_length=512)
-    frame_ms: int = Field(default=16, ge=0, le=16)
+    # 2 ms/tick is ~8x real time; the policy only decides every 10 ticks, so the
+    # old 16 ms (= real time) default just made every episode take minutes.
+    frame_ms: int = Field(default=2, ge=0, le=16)
     map_name: str | None = Field(default=None, max_length=128)
     map_path: str | None = Field(default=None, max_length=256)
     map_width: float = Field(default=2600.0, gt=0.0, le=20000.0)
@@ -111,6 +113,9 @@ class RwppPpoRequest(BaseModel):
     eval_every: int = Field(default=0, ge=0, le=500, description="0 = evaluate only on the final update")
     eval_episodes: int = Field(default=1, ge=0, le=16)
     use_llm: bool = Field(default=False, description="enable the LLM strategic layer (rule fallback if unconfigured)")
+    units_per_team: int | None = Field(default=None, ge=1, le=25, description="双方坦克数量（1..25）")
+    init_checkpoint: str | None = Field(default=None, max_length=512, description="初始策略 Checkpoint 路径")
+    init_mode: str | None = Field(default=None, max_length=64, description="策略初始化模式: warmstart / checkpoint / scratch")
 
 
 # ----------------------------------------------------------------------
@@ -779,6 +784,16 @@ def rwpp_ppo_events(job_id: str, after: int = Query(default=0, ge=0)) -> dict[st
 @app.post("/api/rwpp/ppo/{job_id}/stop")
 def rwpp_ppo_stop(job_id: str) -> dict[str, Any]:
     return _rwpp_call(f"/jobs/{job_id}/stop", {}, timeout=10.0)
+
+
+@app.post("/api/rwpp/jobs/{job_id}/stop")
+def rwpp_job_stop(job_id: str) -> dict[str, Any]:
+    return _rwpp_call(f"/jobs/{job_id}/stop", {}, timeout=10.0)
+
+
+@app.post("/api/rwpp/stop_all")
+def rwpp_stop_all() -> dict[str, Any]:
+    return _rwpp_call("/stop_all", {}, timeout=10.0)
 
 
 # Static frontend assets

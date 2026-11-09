@@ -111,6 +111,8 @@ const Api = {
   rwppPpo: (config) => api('/api/rwpp/ppo', { method: 'POST', body: config, timeout: 30000 }),
   rwppPpoEvents: (id, after) => api('/api/rwpp/ppo/' + encodeURIComponent(id) + '/events?after=' + Math.max(0, Math.floor(after || 0)), { timeout: 10000 }),
   rwppPpoStop: (id) => api('/api/rwpp/ppo/' + encodeURIComponent(id) + '/stop', { method: 'POST', body: {}, timeout: 10000 }),
+  rwppJobStop: (id) => api('/api/rwpp/jobs/' + encodeURIComponent(id) + '/stop', { method: 'POST', body: {}, timeout: 10000 }),
+  rwppStopAll: () => api('/api/rwpp/stop_all', { method: 'POST', body: {}, timeout: 10000 }),
 };
 
 /* ============================================================
@@ -385,7 +387,7 @@ function cacheEls() {
     'fe-kpi-fps', 'fe-kpi-tick', 'fe-task-count', 'fe-task-summary', 'fe-task-cards',
     'fe-chart-fps', 'fe-chart-hp', 'fe-chart-alive',
     'fe-slots-max', 'fe-slots-free', 'fe-slots-running',
-    'fe-train-map', 'fe-train-policy', 'fe-train-episodes', 'fe-train-ticks', 'fe-train-start',
+    'fe-train-map', 'fe-train-policy', 'fe-train-checkpoint-field', 'fe-train-checkpoint-select', 'fe-train-episodes', 'fe-train-ticks', 'fe-train-start', 'fe-train-stop',
     'fe-train-concurrency', 'fe-train-status', 'fe-train-progress', 'fe-train-episodes-label',
     'fe-train-current', 'fe-train-seconds', 'fe-train-summary', 'fe-train-log',
     'fe-train-log-status', 'fe-train-artifacts', 'fe-train-artifact-count', 'fe-train-refresh',
@@ -399,7 +401,8 @@ function cacheEls() {
     'fe-ppo-status', 'fe-ppo-progress', 'fe-ppo-progress-label', 'fe-ppo-current', 'fe-ppo-seconds',
     'fe-ppo-eval-hint', 'fe-ppo-summary-card', 'fe-ppo-summary', 'fe-ppo-summary-badge',
     'fe-ppo-checkpoint', 'fe-ppo-checkpoint-path', 'fe-ppo-log', 'fe-ppo-log-status',
-    'fe-ppo-updates', 'fe-ppo-envs', 'fe-ppo-rollout', 'fe-ppo-ticks', 'fe-ppo-device',
+    'fe-ppo-updates', 'fe-ppo-envs', 'fe-ppo-rollout', 'fe-ppo-ticks', 'fe-ppo-units', 'fe-ppo-device',
+    'fe-ppo-map', 'fe-ppo-units-field', 'fe-ppo-init-mode', 'fe-ppo-checkpoint-field', 'fe-ppo-init-checkpoint', 'fe-ppo-init-hint',
     'fe-ppo-start', 'fe-ppo-stop', 'fe-ppo-hint', 'rwpp-status-ppo', 'rwpp-status-ppo-text',
     'fe-ppo-frame-ms', 'fe-ppo-vision', 'fe-ppo-kpi-device-foot',
     'fe-checkpoint-field', 'fe-checkpoint-select', 'fe-model-note', 'fe-map-count',
@@ -2105,7 +2108,10 @@ async function loadReplays() {
 
 const RWPP_TICKS = 3600;
 const RWPP_POLL_MS = 2000;
-const RWPP_MAX_SECONDS = 300;
+// Upper bound for following one real-game job in the UI. Long requests (20000
+// ticks at 2 ms/tick) still take minutes, so the old 300 s cap dropped the
+// stream while the job was healthy.
+const RWPP_MAX_SECONDS = 900;
 const RWPP_STATUS_TTL_MS = 30000;
 
 function isRealReplay(item) {
@@ -4699,6 +4705,7 @@ function bindEvents() {
   if (els.rwppRecordBtn) els.rwppRecordBtn.addEventListener('click', startRwppRecord);
   if (els.feStartBtn) els.feStartBtn.addEventListener('click', feStartInfer);
   if (els.feTrainStart) els.feTrainStart.addEventListener('click', feStartTrain);
+  if (els.feTrainStop) els.feTrainStop.addEventListener('click', feStopTrain);
   if (els.feTrainRefresh) els.feTrainRefresh.addEventListener('click', feRefreshTrainArtifacts);
   for (const button of document.querySelectorAll('[data-train-mode-btn]')) {
     button.addEventListener('click', () => feApplyTrainMode(button.getAttribute('data-train-mode-btn')));
@@ -4706,6 +4713,9 @@ function bindEvents() {
   if (els.fePpoStart) els.fePpoStart.addEventListener('click', feStartPpo);
   if (els.fePpoStop) els.fePpoStop.addEventListener('click', feStopPpo);
   if (els.fePolicy) els.fePolicy.addEventListener('change', feSyncInferPolicyUi);
+  if (els.feTrainPolicy) els.feTrainPolicy.addEventListener('change', feSyncTrainPolicyUi);
+  if (els.fePpoMap) els.fePpoMap.addEventListener('change', feSyncPpoConfigUi);
+  if (els.fePpoInitMode) els.fePpoInitMode.addEventListener('change', feSyncPpoConfigUi);
   if (els.fePpoUseLlm) {
     els.fePpoUseLlm.addEventListener('change', () => {
       if (els.fePpoLlmNote) els.fePpoLlmNote.hidden = !els.fePpoUseLlm.checked;
@@ -5717,6 +5727,10 @@ async function feStartInferInner() {
   const inferConfig = {
     ticks: ticks,
     policy: policy,
+    // 2 ms/tick ≈ 8x faster than real time. The policy decides every 10 ticks and
+    // the scripted recorder samples every 4th observation, so real-time pacing
+    // (16 ms) only makes the wait longer without changing what happens in game.
+    frame_ms: 2,
     map_name: mapItem.name,
     map_path: mapItem.relative || '',
     map_width: num(mapItem.width_px, 0),
@@ -5724,7 +5738,6 @@ async function feStartInferInner() {
   };
   if (policy === 'model') {
     inferConfig.checkpoint = checkpointPath;
-    inferConfig.frame_ms = 16;
   }
   const results = await Promise.allSettled(
     Array.from({ length: launchCount }, () => Api.rwppInfer(inferConfig))
@@ -5897,7 +5910,12 @@ async function feRestoreInferJobs() {
 function feSetTrainRunning(running) {
   if (els.feTrainStart) {
     els.feTrainStart.disabled = running;
+    els.feTrainStart.hidden = running;
     els.feTrainStart.textContent = running ? '实机训练中…' : '开始实机训练';
+  }
+  if (els.feTrainStop) {
+    els.feTrainStop.hidden = !running;
+    els.feTrainStop.disabled = !running;
   }
   if (els.feTrainEpisodes) els.feTrainEpisodes.disabled = running;
   if (els.feTrainTicks) els.feTrainTicks.disabled = running;
@@ -6027,9 +6045,13 @@ async function feStartTrain() {
   const ticks = clampInt(els.feTrainTicks && els.feTrainTicks.value, 120, 20000, 1200);
   const concurrency = clampInt(els.feTrainConcurrency && els.feTrainConcurrency.value, 1, 4, 2);
   const policy = (els.feTrainPolicy && els.feTrainPolicy.value) || 'scripted';
-  if (policy !== 'scripted') {
-    toast('模型策略尚未接入，当前仅支持 scripted', 'error');
-    return;
+  let checkpoint = null;
+  if (policy === 'model') {
+    checkpoint = (els.feTrainCheckpointSelect && els.feTrainCheckpointSelect.value) || null;
+    if (!checkpoint) {
+      toast('请选择用于采集对战的模型 Checkpoint', 'error');
+      return;
+    }
   }
   fe.trainMetrics = [];
   fe.trainEpisodes = episodes;
@@ -6048,6 +6070,7 @@ async function feStartTrain() {
       episodes: episodes,
       ticks: ticks,
       policy: policy,
+      checkpoint: checkpoint,
       map_name: mapName,
       concurrency: concurrency,
     });
@@ -6062,10 +6085,26 @@ async function feStartTrain() {
   } catch (error) {
     feSetTrainRunning(false);
     fe.trainStatus = 'failed';
-    handleFeError(error, '实机训练');
+    if (error && error.status === 409) {
+      toast('已有训练或实机任务正在运行，请先在控制台停止旧任务或稍候重试', 'error');
+    } else {
+      handleFeError(error, '实机训练');
+    }
     feRenderTrainDashboard(null);
     feSetStatusPill(els.feTrainStatus, '失败', 'bad');
     feRenderTrainLog({ status: 'failed', episodes_done: 0, episodes_total: episodes, concurrency: concurrency, ticks: ticks, frames: 0, ticks_total: 0, error: error && error.message ? error.message : String(error) });
+  }
+}
+
+async function feStopTrain() {
+  const fe = state.fe;
+  if (!fe.trainJobId || fe.trainStatus !== 'running') return;
+  if (els.feTrainStop) els.feTrainStop.disabled = true;
+  try {
+    await Api.rwppJobStop(fe.trainJobId);
+    toast('已请求停止实机数据采集任务', 'ok');
+  } catch (error) {
+    handleFeError(error, '停止训练');
   }
 }
 
@@ -6238,7 +6277,7 @@ function feMapList() {
 }
 
 function feInferMapList() {
-  const allowed = { skirmish: true, challenge: true, testing: true };
+  const allowed = { skirmish: true, challenge: true, testing: true, ironzero: true };
   return feMapList().filter((item) => allowed[String(item.folder || '')]);
 }
 
@@ -6335,6 +6374,17 @@ Object.assign(state.fe, {
 
 function fePpoUpdateEvents() {
   const events = (state.fe.ppo.events || []).filter((event) => event && event.kind === 'update');
+  return events
+    .map((event) => event.payload || {})
+    .sort((left, right) => num(left.update, 0) - num(right.update, 0));
+}
+
+function fePpoEvalEvents() {
+  const ppo = state.fe.ppo;
+  if (Array.isArray(ppo.evaluations) && ppo.evaluations.length) {
+    return ppo.evaluations.slice().sort((a, b) => num(a.update, 0) - num(b.update, 0));
+  }
+  const events = (ppo.events || []).filter((event) => event && event.kind === 'eval');
   return events
     .map((event) => event.payload || {})
     .sort((left, right) => num(left.update, 0) - num(right.update, 0));
@@ -6534,14 +6584,17 @@ function feDrawPpoCharts() {
     emptyText: '等待 update 事件…',
   });
 
-  const wins = updates.map((update) => ({ x: num(update.update, 0), y: num(update.win_rate, 0) * 100 }));
+  const evals = fePpoEvalEvents();
+  const wins = evals.length
+    ? evals.map((ev) => ({ x: num(ev.update, 0), y: num(ev.win_rate, 0) * 100 }))
+    : updates.filter((u) => u.episodes > 0).map((update) => ({ x: num(update.update, 0), y: num(update.win_rate, 0) * 100 }));
   drawDashLine(els.fePpoChartWin, {
     series: [{ color: DASH_COLORS.green, points: wins }],
     yMin: 0,
     yMax: 100,
     yFormatter: (value) => Math.round(value) + '%',
     xFormatter: (value) => '#' + Math.round(value),
-    emptyText: '等待 update 事件…',
+    emptyText: '等待评估事件…',
   });
 
   const entropy = updates.map((update) => ({ x: num(update.update, 0), y: num(update.entropy, 0) }));
@@ -6603,7 +6656,12 @@ function feRenderPpoKpis() {
   feSetText(els.fePpoKpiAvg, avg.toFixed(1));
   feSetText(els.fePpoKpiDps, dps.toFixed(1));
   feSetText(els.fePpoKpiReturn, num(latest.mean_return, 0).toFixed(2));
-  feSetText(els.fePpoKpiWin, (num(latest.win_rate, 0) * 100).toFixed(1));
+  const evalsList = fePpoEvalEvents();
+  const lastEv = evalsList.length ? evalsList[evalsList.length - 1] : null;
+  const displayWinRate = lastEv && numOrNull(lastEv.win_rate) !== null
+    ? num(lastEv.win_rate, 0)
+    : (numOrNull(latest.win_rate) !== null ? num(latest.win_rate, 0) : 0);
+  feSetText(els.fePpoKpiWin, (displayWinRate * 100).toFixed(1));
   feSetText(els.fePpoKpiEntropy, num(latest.entropy, 0).toFixed(3));
   const deviceLabel = String(job.device || (els.fePpoDevice && els.fePpoDevice.value) || 'auto').toLowerCase();
   feSetText(els.fePpoKpiDevice, deviceLabel.toUpperCase());
@@ -6762,6 +6820,30 @@ async function feStartPpo() {
   const evalEvery = clampInt(els.fePpoEvalEvery && els.fePpoEvalEvery.value, 0, 500, 0);
   const evalEpisodes = clampInt(els.fePpoEvalEpisodes && els.fePpoEvalEpisodes.value, 1, 16, 1);
   const useLlm = !!(els.fePpoUseLlm && els.fePpoUseLlm.checked);
+  const selectedMap = (els.fePpoMap && els.fePpoMap.value) || 'IronZero25';
+  let ppoMapName = selectedMap;
+  let ppoMapPath = `maps/ironzero/${selectedMap}.tmx`;
+  let unitsPerTeam = clampInt(els.fePpoUnits && els.fePpoUnits.value, 1, 25, 25);
+  let mapWidth = 2700.0;
+  let mapHeight = 2500.0;
+
+  if (selectedMap === 'Artillery') {
+    ppoMapName = 'Artillery';
+    ppoMapPath = 'maps/challenge/Artillery.tmx';
+    unitsPerTeam = 22;
+  } else {
+    ppoMapName = `IronZero${unitsPerTeam}`;
+    ppoMapPath = `maps/ironzero/${ppoMapName}.tmx`;
+  }
+
+  const initMode = (els.fePpoInitMode && els.fePpoInitMode.value) || 'warmstart';
+  let initCheckpoint = null;
+  if (initMode === 'checkpoint') {
+    initCheckpoint = (els.fePpoInitCheckpoint && els.fePpoInitCheckpoint.value) || null;
+  } else if (initMode === 'warmstart') {
+    initCheckpoint = 'runs/bc_ironzero25/checkpoint.pt';
+  }
+
   ppo.jobId = null;
   ppo.job = null;
   ppo.events = [];
@@ -6790,29 +6872,34 @@ async function feStartPpo() {
       rollout_steps: rollout,
       episode_ticks: episodeTicks,
       device: device,
-      map_name: PPO_MAP.name,
-      map_path: PPO_MAP.path,
-      map_width: PPO_MAP.width,
-      map_height: PPO_MAP.height,
+      map_name: ppoMapName,
+      map_path: ppoMapPath,
+      map_width: mapWidth,
+      map_height: mapHeight,
       frame_ms: frameMs,
       vision_radius: visionRadius,
       eval_every: evalEvery,
       eval_episodes: evalEpisodes,
       use_llm: useLlm,
+      units_per_team: unitsPerTeam,
+      init_checkpoint: initCheckpoint,
+      init_mode: initMode,
     });
     const jobId = response && (response.job_id || response.id);
     if (!jobId) throw new Error('后端未返回 PPO 任务 id');
     ppo.jobId = String(jobId);
     ppo.status = 'running';
     startFePpoPolling();
-    toast('PPO 真机训练已开始 · ' + updates + ' 轮 × ' + envs + ' 实例 · frame_ms=' + frameMs
+    const initDesc = initMode === 'warmstart' ? '预热策略(BC)' : (initMode === 'checkpoint' ? '选定Checkpoint' : '从零随机');
+    toast('PPO 真机训练已开始 · ' + ppoMapName + ' · ' + unitsPerTeam + 'v' + unitsPerTeam + ' 坦克 · 起点: ' + initDesc
+      + ' · ' + updates + ' 轮 × ' + envs + ' 实例 · frame_ms=' + frameMs
       + ' · fog=' + (visionRadius || 'off')
       + (useLlm ? ' · LLM 战略层' : ''), 'ok');
   } catch (error) {
     ppo.status = 'failed';
     feSetPpoRunning(false);
     if (error && error.status === 409) {
-      toast('已有 PPO 训练任务在运行，正在尝试接入…', 'error');
+      toast('已有训练或实机任务正在运行中，请先在控制台点击【停止训练】或等待完成', 'error');
       void feRestorePpoJob(true);
     } else {
       handleFeError(error, 'PPO 训练');
@@ -6966,7 +7053,88 @@ function renderFeCheckpointOptions() {
     if (modelOption) modelOption.disabled = !list.length;
     if (!list.length && els.fePolicy.value === 'model') els.fePolicy.value = 'scripted';
   }
+  // 同步填充数据采集面板的模型 Checkpoint 下拉框
+  const trainSelect = els.feTrainCheckpointSelect;
+  if (trainSelect) {
+    const previous = trainSelect.value;
+    trainSelect.innerHTML = '';
+    if (!list.length) {
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = '（无可用模型）';
+      trainSelect.appendChild(option);
+      trainSelect.disabled = true;
+    } else {
+      for (const item of list) {
+        const option = document.createElement('option');
+        option.value = item.path;
+        option.textContent = feCheckpointDisplayName(item)
+          + (numOrNull(item.update) !== null ? ' · update ' + num(item.update, 0) : '')
+          + (item.size_mb ? ' · ' + item.size_mb + 'MB' : '');
+        trainSelect.appendChild(option);
+      }
+      trainSelect.disabled = false;
+      trainSelect.value = list.some((item) => item.path === previous) ? previous : list[0].path;
+    }
+  }
+  // 同步填充 PPO 训练面板的初始 Checkpoint 下拉框
+  const ppoSelect = els.fePpoInitCheckpoint;
+  if (ppoSelect) {
+    const previous = ppoSelect.value;
+    ppoSelect.innerHTML = '';
+    if (!list.length) {
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = '（无可用权重）';
+      ppoSelect.appendChild(option);
+      ppoSelect.disabled = true;
+    } else {
+      for (const item of list) {
+        const option = document.createElement('option');
+        option.value = item.path;
+        option.textContent = feCheckpointDisplayName(item)
+          + (numOrNull(item.update) !== null ? ' · update ' + num(item.update, 0) : '')
+          + (item.size_mb ? ' · ' + item.size_mb + 'MB' : '');
+        ppoSelect.appendChild(option);
+      }
+      ppoSelect.disabled = false;
+      const bestDefault = list.find((item) => /bc|best|ft/i.test(item.name || item.path)) || list[0];
+      ppoSelect.value = list.some((item) => item.path === previous) ? previous : (bestDefault ? bestDefault.path : list[0].path);
+    }
+  }
   feSyncInferPolicyUi();
+  feSyncTrainPolicyUi();
+  feSyncPpoConfigUi();
+}
+
+function feSyncTrainPolicyUi() {
+  const isModel = !!(els.feTrainPolicy && els.feTrainPolicy.value === 'model');
+  if (els.feTrainCheckpointField) els.feTrainCheckpointField.hidden = !isModel;
+}
+
+function feSyncPpoConfigUi() {
+  const mapChoice = (els.fePpoMap && els.fePpoMap.value) || 'IronZero25';
+  if (els.fePpoUnits) {
+    if (mapChoice === 'IronZero25') els.fePpoUnits.value = '25';
+    else if (mapChoice === 'IronZero20') els.fePpoUnits.value = '20';
+    else if (mapChoice === 'IronZero15') els.fePpoUnits.value = '15';
+    else if (mapChoice === 'IronZero10') els.fePpoUnits.value = '10';
+    else if (mapChoice === 'IronZero5') els.fePpoUnits.value = '5';
+    else if (mapChoice === 'Artillery') els.fePpoUnits.value = '22';
+  }
+  const initMode = (els.fePpoInitMode && els.fePpoInitMode.value) || 'warmstart';
+  if (els.fePpoCheckpointField) {
+    els.fePpoCheckpointField.hidden = (initMode !== 'checkpoint');
+  }
+  if (els.fePpoInitHint) {
+    if (initMode === 'warmstart') {
+      els.fePpoInitHint.textContent = '预热策略基于真实对战规则蒸馏（BC），坦克开局会自动集火与编队推进，可避免从零探索在前几百轮毫无击杀的问题。';
+    } else if (initMode === 'checkpoint') {
+      els.fePpoInitHint.textContent = '在上方选定的 Checkpoint 权重基础上继续进行 PPO 在环对抗强化学习。';
+    } else {
+      els.fePpoInitHint.textContent = '从完全随机参数的神经网络从零探索。RTS 微操动作空间庞大，初始几十轮胜率提升较慢。';
+    }
+  }
 }
 
 function feSyncInferPolicyUi() {
@@ -7160,7 +7328,14 @@ async function boot() {
   requestAnimationFrame(animationLoop);
   renderConn();
 
-  await checkHealth();
+  // 避免网络挂起导致右上角一直停留在 boot 连接中
+  try {
+    const healthPromise = checkHealth();
+    const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve(false), 4000));
+    await Promise.race([healthPromise, timeoutPromise]);
+  } catch (e) {
+    state.connected = false;
+  }
   if (state.connected) {
     state.mode = 'live';
     renderConn();

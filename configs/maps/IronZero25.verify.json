@@ -1,0 +1,182 @@
+{
+  "map_relative": "maps/ironzero/IronZero25.tmx",
+  "runtime": "C:\\Users\\ADMINI~1.DES\\AppData\\Local\\Temp\\dsh-ExtQgL\\ironzero-rwpp-runtime-1.15",
+  "runtime_origin": "explicit --runtime",
+  "win_mode": "annihilation",
+  "unlock_ai": true,
+  "args": {
+    "port": 5401,
+    "ticks": 300,
+    "frame_ms": 2,
+    "min_ticks": 120,
+    "full_run": true
+  },
+  "ok": true,
+  "installed_map": "C:\\Users\\ADMINI~1.DES\\AppData\\Local\\Temp\\dsh-ExtQgL\\ironzero-rwpp-runtime-1.15\\assets\\maps\\ironzero\\IronZero25.tmx",
+  "map_bytes": 16620,
+  "map_sha256": "10127714e16130abc3190026d62fe1b45d00cf519bb089dc24891967d0f56a44",
+  "server_log": "E:\\qwq\\强化学习笔记\\铁锈战争\\runs\\_ironzero25_verify_server.log",
+  "hello": {
+    "protocol": "ironzero/1",
+    "type": "hello",
+    "message_id": "bridge-hello",
+    "adapter_version": "0.1.0-rwpp",
+    "game_version": "1.15",
+    "capabilities": [
+      "obs",
+      "tick",
+      "real-game",
+      "result",
+      "building-flags",
+      "annihilation",
+      "unlock-ai",
+      "unit-groups"
+    ]
+  },
+  "done": {
+    "protocol": "ironzero/1",
+    "type": "done",
+    "message_id": "done-300",
+    "episode_id": "rwpp-bridge",
+    "tick": 300,
+    "result": "timeout",
+    "reward": 0.0,
+    "terminated": false,
+    "truncated": true
+  },
+  "assertions": [
+    {
+      "name": "first_obs_own_count_25",
+      "ok": true,
+      "detail": "own=25"
+    },
+    {
+      "name": "first_obs_enemy_count_25",
+      "ok": true,
+      "detail": "enemy=25"
+    },
+    {
+      "name": "tank_max_hp_210",
+      "ok": true,
+      "detail": "max_hp_values=[210.0]"
+    },
+    {
+      "name": "all_units_are_mobile_units",
+      "ok": true,
+      "detail": "no buildings/factories/builders in the arena"
+    },
+    {
+      "name": "team_ids_0_and_1",
+      "ok": true,
+      "detail": "own=team0, visible_enemy=team1"
+    },
+    {
+      "name": "team0_spawn_coordinates",
+      "ok": true,
+      "detail": "max deviation from meta=0.00px"
+    },
+    {
+      "name": "team1_spawn_coordinates",
+      "ok": true,
+      "detail": "max deviation from meta=0.00px"
+    },
+    {
+      "name": "spawn_180_degree_symmetry",
+      "ok": true,
+      "detail": "max |enemy - rotate(own)| nearest deviation=0.00px"
+    },
+    {
+      "name": "observations_received",
+      "ok": true,
+      "detail": "obs_count=30"
+    },
+    {
+      "name": "own_entities_25",
+      "ok": true,
+      "detail": "counts=[25]"
+    },
+    {
+      "name": "enemy_entities_25",
+      "ok": true,
+      "detail": "counts=[25]"
+    },
+    {
+      "name": "ticks_monotonic",
+      "ok": true,
+      "detail": "ticks=[1, 11, 21]...[271, 281, 291]"
+    },
+    {
+      "name": "ticks_advanced",
+      "ok": true,
+      "detail": "last_tick=291 required>=290"
+    },
+    {
+      "name": "no_early_termination",
+      "ok": true,
+      "detail": "no terminated obs frames while the episode is still running (annihilation mode keeps the building-less arena live)"
+    },
+    {
+      "name": "ran_full_horizon",
+      "ok": true,
+      "detail": "last_tick=291 ticks=300"
+    },
+    {
+      "name": "done_received",
+      "ok": true,
+      "detail": "done={'protocol': 'ironzero/1', 'type': 'done', 'message_id': 'done-300', 'episode_id': 'rwpp-bridge', 'tick': 300, 'result': 'timeout', 'reward': 0.0, 'terminated': False, 'truncated': True}"
+    },
+    {
+      "name": "done_timeout_at_tick_cap",
+      "ok": true,
+      "detail": "done.tick=300 done.result=timeout"
+    }
+  ],
+  "observation_count": 30,
+  "first_obs": {
+    "tick": 1,
+    "own": 25,
+    "enemy": 25,
+    "result": null
+  },
+  "last_obs": {
+    "tick": 291,
+    "own": 25,
+    "enemy": 25,
+    "result": null
+  },
+  "obs_ticks": [
+    1,
+    11,
+    21,
+    31,
+    41,
+    51,
+    61,
+    71,
+    81,
+    91,
+    101,
+    111,
+    121,
+    131,
+    141,
+    151,
+    161,
+    171,
+    181,
+    191,
+    201,
+    211,
+    221,
+    231,
+    241,
+    251,
+    261,
+    271,
+    281,
+    291
+  ],
+  "failed_assertions": [],
+  "server_exit_code": 0,
+  "duration_s": 5.86
+}

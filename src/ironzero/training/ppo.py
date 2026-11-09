@@ -37,6 +37,10 @@ class PPOConfig:
     seed: int = 0
     eval_every: int = 20
     eval_episodes: int = 24
+    # Save ``checkpoint_best.pt`` whenever an evaluation beats the previous best
+    # (win rate first, mean return second). ``checkpoint.pt`` stays the final
+    # update so both "latest" and "best" are always available.
+    save_best: bool = True
     opponent: str = "scripted"
     out_dir: str = "runs/micro_duel"
     log_every: int = 5
@@ -101,6 +105,10 @@ class PPOTrainer:
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.config.lr, eps=1e-5)
         self.history: list[dict[str, Any]] = []
         self.start_time = time.time()
+        self.best_eval: dict[str, Any] | None = None
+        self.best_score: tuple[float, float] | None = None
+        self.best_update: int | None = None
+        self._current_update: int = 0
 
     # ------------------------------------------------------------------
     # Live event stream (dashboard)
@@ -131,6 +139,7 @@ class PPOTrainer:
         )
 
     def evaluate(self, update: int) -> dict[str, Any]:
+        self._current_update = int(update)
         if self._eval_fn is not None:
             return self._eval_fn(self)
         return evaluate_policy(
@@ -141,6 +150,52 @@ class PPOTrainer:
             seed=50_000 + update,
             device=self.device,
         )
+
+    # ------------------------------------------------------------------
+    # Best-checkpoint bookkeeping
+    # ------------------------------------------------------------------
+    def _eval_score(self, evaluation: dict[str, Any] | None) -> tuple[float, float]:
+        """Ranking key: win rate first (higher), mean return second."""
+
+        if not evaluation:
+            return (float("-inf"), float("-inf"))
+        try:
+            win_rate = float(evaluation.get("win_rate", 0.0))
+        except (TypeError, ValueError):
+            win_rate = 0.0
+        try:
+            mean_return = float(evaluation.get("mean_return", 0.0))
+        except (TypeError, ValueError):
+            mean_return = 0.0
+        return (win_rate, mean_return)
+
+    def maybe_save_best(
+        self,
+        out_dir: Path,
+        update: int,
+        evaluation: dict[str, Any] | None,
+        metrics: dict[str, Any] | None = None,
+    ) -> bool:
+        """Persist ``checkpoint_best.pt`` when this eval beats the running best."""
+
+        if not self.config.save_best or not evaluation:
+            return False
+        score = self._eval_score(evaluation)
+        if self.best_score is not None and score <= self.best_score:
+            return False
+        self.best_score = score
+        self.best_update = int(update)
+        self.best_eval = {"update": int(update), **dict(evaluation)}
+        payload: dict[str, Any] = {
+            "model": self.policy.state_dict(),
+            "micro_config": asdict(self.micro),
+            "ppo_config": asdict(self.config),
+            "update": int(update),
+            "best_eval": self.best_eval,
+            "metrics": metrics.get("evaluations", []) if metrics else [],
+        }
+        torch.save(payload, out_dir / "checkpoint_best.pt")
+        return True
 
     # ------------------------------------------------------------------
     # Rollout collection
@@ -337,18 +392,26 @@ class PPOTrainer:
             if update % cfg.eval_every == 0 or update == cfg.total_updates:
                 evaluation = self.evaluate(update)
                 evaluations = {"update": update, **evaluation}
+                best = self.maybe_save_best(out_dir, update, evaluation, metrics)
+                evaluations["is_best"] = bool(best)
                 metrics["evaluations"].append(evaluations)
                 self._emit("eval", evaluations)
                 if evaluation:
+                    display = {key: value for key, value in evaluation.items() if key != "update"}
                     print(
                         "[eval ] update {update:03d} win={win_rate:.2f} loss={loss_rate:.2f} "
                         "timeout={timeout_rate:.2f} return={mean_return:+.3f} own_hp={mean_own_hp_frac:.2f}".format(
-                            update=update, **evaluation
+                            update=update, **display
                         )
                     )
                 self.save(out_dir, update, metrics)
         final_eval = metrics["evaluations"][-1] if metrics["evaluations"] else None
         metrics["final_eval"] = final_eval
+        metrics["best_eval"] = self.best_eval
+        metrics["best_update"] = self.best_update
+        metrics["best_checkpoint"] = (
+            str(out_dir / "checkpoint_best.pt") if self.best_eval is not None else None
+        )
         metrics["total_seconds"] = round(time.time() - self.start_time, 2)
         self.save(out_dir, cfg.total_updates, metrics)
         with (out_dir / "metrics.json").open("w", encoding="utf-8") as handle:
@@ -357,8 +420,11 @@ class PPOTrainer:
             "done",
             {
                 "final_eval": final_eval,
+                "best_eval": self.best_eval,
+                "best_update": self.best_update,
                 "total_seconds": metrics["total_seconds"],
                 "checkpoint": str(out_dir / "checkpoint.pt"),
+                "checkpoint_best": metrics["best_checkpoint"],
             },
         )
         self.close()
@@ -391,10 +457,29 @@ class PPOTrainer:
 
 
 def load_policy(path: str | Path, device: str | torch.device = "cpu") -> tuple[MaskedActorCritic, MicroDuelConfig]:
+    """Rebuild a policy from a checkpoint.
+
+    The network architecture (observation dim, action heads, hidden width) is
+    taken from the checkpoint itself - ``micro_config`` for the task contract
+    and ``ppo_config`` for the trunk width - so a checkpoint trained with a
+    non-default ``--hidden`` or a 25-vs-25 / terrain observation loads without
+    the caller having to know those numbers.
+    """
+
     payload = torch.load(Path(path), map_location=device, weights_only=False)
     micro = MicroDuelConfig(**payload["micro_config"])
-    policy = MaskedActorCritic(micro.flat_obs_dim, nvec=micro.action_nvec)
-    policy.load_state_dict(payload["model"])
+    ppo_config = dict(payload.get("ppo_config") or {})
+    try:
+        hidden = int(ppo_config.get("hidden", 256))
+    except (TypeError, ValueError):
+        hidden = 256
+    state_dict = payload["model"]
+    trunk_key = "trunk.0.weight"
+    if trunk_key in state_dict:
+        # Authoritative: the saved matrix shape cannot disagree with the weights.
+        hidden = int(state_dict[trunk_key].shape[0])
+    policy = MaskedActorCritic(micro.flat_obs_dim, nvec=micro.action_nvec, hidden=hidden)
+    policy.load_state_dict(state_dict)
     policy.to(torch.device(device))
     policy.eval()
     return policy, micro

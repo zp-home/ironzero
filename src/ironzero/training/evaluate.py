@@ -106,6 +106,28 @@ def evaluate_random(
     return summarize(results, returns, own_hp, enemy_hp, decisions)
 
 
+def wilson_interval(successes: int, total: int, z: float = 1.96) -> tuple[float, float]:
+    """Wilson score interval for a binomial proportion (default 95% CI).
+
+    Evaluation episodes are expensive on the real game (one fresh JVM each), so
+    reports must show how much a win rate could move with a handful more games.
+    The Wilson interval is well behaved for the tiny sample sizes used here
+    (unlike the normal approximation, it does not collapse to zero width at
+    ``p = 0`` or ``p = 1``).
+    """
+
+    total = int(total)
+    if total <= 0:
+        return (0.0, 1.0)
+    successes = min(max(0, int(successes)), total)
+    p = successes / total
+    z2 = z * z
+    denominator = 1.0 + z2 / total
+    centre = (p + z2 / (2.0 * total)) / denominator
+    half_width = z * np.sqrt(p * (1.0 - p) / total + z2 / (4.0 * total * total)) / denominator
+    return (max(0.0, float(centre - half_width)), min(1.0, float(centre + half_width)))
+
+
 def summarize(
     results: list[str],
     returns: list[float],
@@ -114,11 +136,23 @@ def summarize(
     decisions: list[int],
 ) -> dict[str, Any]:
     count = max(1, len(results))
+    wins = sum(1 for r in results if r == "victory")
+    win_low, win_high = wilson_interval(wins, len(results))
+    loss_low, loss_high = wilson_interval(sum(1 for r in results if r == "defeat"), len(results))
+    timeout_low, timeout_high = wilson_interval(
+        sum(1 for r in results if r == "timeout"), len(results)
+    )
     return {
         "episodes": len(results),
-        "win_rate": sum(1 for r in results if r == "victory") / count,
+        "wins": wins,
+        "losses": sum(1 for r in results if r == "defeat"),
+        "timeouts": sum(1 for r in results if r == "timeout"),
+        "win_rate": wins / count,
         "loss_rate": sum(1 for r in results if r == "defeat") / count,
         "timeout_rate": sum(1 for r in results if r == "timeout") / count,
+        "win_rate_ci95": [win_low, win_high],
+        "loss_rate_ci95": [loss_low, loss_high],
+        "timeout_rate_ci95": [timeout_low, timeout_high],
         "mean_return": float(np.mean(returns)) if returns else 0.0,
         "mean_own_hp_frac": float(np.mean(own_hp)) if own_hp else 0.0,
         "mean_enemy_hp_frac": float(np.mean(enemy_hp)) if enemy_hp else 0.0,
@@ -126,4 +160,10 @@ def summarize(
     }
 
 
-__all__ = ["sample_masked_action", "evaluate_policy", "evaluate_random", "summarize"]
+__all__ = [
+    "sample_masked_action",
+    "evaluate_policy",
+    "evaluate_random",
+    "summarize",
+    "wilson_interval",
+]
