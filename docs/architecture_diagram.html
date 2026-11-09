@@ -3,434 +3,1049 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>IronZero 实机强化学习闭环系统架构设计图</title>
+  <title>IronZero 实机强化学习闭环系统架构交互全景图</title>
   <style>
     :root {
-      --bg-primary: #0a0f1d;
-      --bg-secondary: #131b2e;
-      --text-main: #f1f5f9;
+      --bg-dark: #0b0f19;
+      --bg-card: #111827;
+      --bg-card-hover: #1f2937;
+      --bg-side: #0f172a;
+      --border-subtle: #1e293b;
+      --border-focus: #38bdf8;
+      --text-main: #f8fafc;
       --text-muted: #94a3b8;
-      --border-color: #243049;
-      --blue: #38bdf8;
-      --purple: #a855f7;
-      --green: #22c55e;
-      --amber: #f59e0b;
-      --rose: #f43f5e;
+      --text-dim: #64748b;
+      
+      --color-control: #38bdf8; /* 调度控制流 - 蓝 */
+      --color-data: #22c55e;    /* 训练数据流 - 绿 */
+      --color-ipc: #f59e0b;     /* 桥接IPC流 - 橙 */
+      --color-eval: #c084fc;    /* 评估指标流 - 紫 */
+      --color-engine: #f43f5e;  /* 引擎物理层 - 红 */
     }
 
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      background: radial-gradient(circle at 50% 0%, #1e293b, var(--bg-primary) 70%);
+      background: var(--bg-dark);
       color: var(--text-main);
-      min-height: 100vh;
+      height: 100vh;
       display: flex;
       flex-direction: column;
-      align-items: center;
-      padding: 24px 16px;
+      overflow: hidden;
     }
 
+    /* 顶部导航与工具栏 */
     header {
-      text-align: center;
-      margin-bottom: 20px;
-      max-width: 900px;
+      background: #0f172a;
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 10px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+      z-index: 10;
     }
 
-    h1 {
-      font-size: 28px;
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .title-group h1 {
+      font-size: 18px;
       font-weight: 700;
-      letter-spacing: -0.5px;
       background: linear-gradient(135deg, #38bdf8, #818cf8, #c084fc);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
-      margin-bottom: 8px;
     }
 
-    p.subtitle {
-      font-size: 14px;
+    .title-group p {
+      font-size: 12px;
       color: var(--text-muted);
-      line-height: 1.5;
     }
 
-    .meta-badges {
+    /* 流程流向过滤器 */
+    .filter-group {
       display: flex;
-      justify-content: center;
-      gap: 10px;
-      margin-top: 12px;
-      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      background: var(--bg-card);
+      padding: 4px;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
     }
 
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      padding: 4px 10px;
-      border-radius: 9999px;
+    .filter-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
       font-size: 12px;
       font-weight: 500;
-      border: 1px solid var(--border-color);
-      background: var(--bg-secondary);
+      padding: 5px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s ease;
     }
-    .badge.cyan { border-color: rgba(56, 189, 248, 0.4); color: #7dd3fc; }
-    .badge.green { border-color: rgba(34, 197, 94, 0.4); color: #86efac; }
-    .badge.amber { border-color: rgba(245, 158, 11, 0.4); color: #fde68a; }
-    .badge.purple { border-color: rgba(168, 85, 247, 0.4); color: #d8b4fe; }
 
-    .diagram-container {
+    .filter-btn:hover { color: var(--text-main); background: #1e293b; }
+    .filter-btn.active { background: #1e293b; color: #fff; font-weight: 600; }
+    .filter-btn .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+
+    /* 主工作区分割布局 */
+    .main-layout {
+      flex: 1;
+      display: flex;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* 左侧画布区 */
+    .canvas-pane {
+      flex: 1;
+      position: relative;
+      background: radial-gradient(circle at 50% 50%, #172033 0%, #0b0f19 80%);
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .svg-viewport {
       width: 100%;
-      max-width: 1240px;
-      background: var(--bg-secondary);
-      border: 1px solid var(--border-color);
-      border-radius: 16px;
-      padding: 20px;
-      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.05);
-      overflow-x: auto;
+      height: 100%;
+      cursor: grab;
+      user-select: none;
+    }
+    .svg-viewport:active { cursor: grabbing; }
+
+    /* 画布悬浮控制小部件 */
+    .canvas-overlay-controls {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      background: rgba(17, 24, 39, 0.85);
+      backdrop-filter: blur(8px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 6px;
+      display: flex;
+      gap: 6px;
+      z-index: 5;
     }
 
-    svg {
-      display: block;
-      width: 100%;
-      height: auto;
-      min-width: 1100px;
-    }
-
-    /* SVG 交互与文字微调 */
-    .layer-card {
-      transition: filter 0.2s ease, stroke 0.2s ease;
-    }
-    .layer-card:hover {
-      filter: brightness(1.05);
-    }
-
-    .node-box {
-      transition: transform 0.2s ease;
-      cursor: default;
-    }
-
-    footer {
-      margin-top: 24px;
+    .control-btn {
+      background: #1e293b;
+      color: var(--text-main);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 6px 10px;
       font-size: 12px;
+      cursor: pointer;
+    }
+    .control-btn:hover { background: #334155; }
+
+    /* 右侧二级详情抽屉面板 */
+    .detail-drawer {
+      width: 440px;
+      background: var(--bg-side);
+      border-left: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      z-index: 20;
+      box-shadow: -10px 0 30px rgba(0, 0, 0, 0.5);
+    }
+
+    .detail-drawer.collapsed {
+      transform: translateX(100%);
+    }
+
+    .drawer-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      background: #111827;
+    }
+
+    .drawer-title-group h2 {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-main);
+      margin-bottom: 4px;
+    }
+
+    .drawer-title-group .subsystem-tag {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 600;
+      display: inline-block;
+      margin-top: 4px;
+    }
+
+    .drawer-close-btn {
+      background: transparent;
+      border: none;
       color: var(--text-muted);
-      text-align: center;
+      font-size: 20px;
+      cursor: pointer;
+      padding: 4px 8px;
+      line-height: 1;
+    }
+    .drawer-close-btn:hover { color: #fff; }
+
+    .drawer-body {
+      flex: 1;
+      padding: 20px;
+      overflow-y: auto;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .detail-section {
+      margin-bottom: 20px;
+      background: #111827;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 14px;
+    }
+
+    .detail-section h3 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .code-badge {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      background: #1e293b;
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #38bdf8;
+      word-break: break-all;
+    }
+
+    .schema-kv {
+      display: grid;
+      grid-template-columns: 80px 1fr;
+      gap: 6px;
+      font-size: 12px;
+      margin-top: 6px;
+    }
+    .schema-kv .key { color: var(--text-dim); }
+    .schema-kv .val { color: #e2e8f0; font-family: monospace; }
+
+    ul.feature-list {
+      padding-left: 18px;
+      color: #cbd5e1;
+    }
+    ul.feature-list li { margin-bottom: 6px; }
+
+    /* 抽屉浮动触发器 (折叠时提示) */
+    .drawer-tab-btn {
+      position: absolute;
+      right: 0;
+      top: 100px;
+      background: #1e293b;
+      color: var(--text-main);
+      border: 1px solid var(--border-subtle);
+      border-right: none;
+      border-radius: 8px 0 0 8px;
+      padding: 10px 8px;
+      font-size: 12px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      z-index: 15;
+      box-shadow: -4px 0 10px rgba(0, 0, 0, 0.3);
+    }
+
+    /* SVG 样式与交互响应 */
+    .svg-node {
+      cursor: pointer;
+      transition: all 0.25s ease;
+    }
+    .svg-node:hover rect.node-card {
+      filter: brightness(1.25) drop-shadow(0 0 12px rgba(56, 189, 248, 0.4));
+      stroke-width: 2px;
+    }
+    .svg-node.selected rect.node-card {
+      stroke: #38bdf8 !important;
+      stroke-width: 2.5px !important;
+      filter: drop-shadow(0 0 16px rgba(56, 189, 248, 0.6)) !important;
+    }
+
+    /* 关系连线样式 */
+    .edge-line {
+      transition: stroke-width 0.2s ease, opacity 0.2s ease;
+    }
+    .edge-line.active {
+      stroke-width: 3.5px !important;
+      opacity: 1 !important;
+      filter: drop-shadow(0 0 8px currentColor);
+    }
+    .edge-line.dimmed {
+      opacity: 0.15 !important;
+    }
+    .svg-node.dimmed {
+      opacity: 0.25 !important;
     }
   </style>
 </head>
 <body>
 
+  <!-- 顶部工具栏 -->
   <header>
-    <h1>IronZero 铁锈战争强化学习实机闭环系统架构</h1>
-    <p class="subtitle">端到端微观战术强化学习系统架构设计 · 多规模对称竞技场 · 跨语言字节码桥接 · 确定性实时对战闭环</p>
-    <div class="meta-badges">
-      <span class="badge green">● 实机对抗胜率 75% ~ 100%</span>
-      <span class="badge cyan">● 支持 5v5 ~ 25v25 动态规模</span>
-      <span class="badge amber">● Annihilation 纯坦克全歼闭环</span>
-      <span class="badge purple">● 观测维度弹性切片兼容</span>
+    <div class="header-left">
+      <div class="title-group">
+        <h1>IronZero 铁锈战争强化学习实机闭环架构全景图</h1>
+        <p>系统拓扑设计 · 跨进程/跨语言边界 · 双向数据闭环 · 点击各模块展开二级规格</p>
+      </div>
+    </div>
+
+    <!-- 流向高亮过滤切换 -->
+    <div class="filter-group">
+      <button class="filter-btn active" data-flow="all">
+        <span class="dot" style="background: #94a3b8;"></span>全部流向
+      </button>
+      <button class="filter-btn" data-flow="control">
+        <span class="dot" style="background: var(--color-control);"></span>调度控制流
+      </button>
+      <button class="filter-btn" data-flow="data">
+        <span class="dot" style="background: var(--color-data);"></span>RL数据/动作环
+      </button>
+      <button class="filter-btn" data-flow="ipc">
+        <span class="dot" style="background: var(--color-ipc);"></span>Java桥接通信
+      </button>
+      <button class="filter-btn" data-flow="eval">
+        <span class="dot" style="background: var(--color-eval);"></span>评估指标反馈
+      </button>
     </div>
   </header>
 
-  <div class="diagram-container">
-    <svg viewBox="0 0 1200 960" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <!-- 箭头标记 -->
-        <marker id="arrow-down" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-          <path d="M 0 1 L 10 5 L 0 9 z" fill="#64748b" />
-        </marker>
-        <marker id="arrow-down-active" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-          <path d="M 0 1 L 10 5 L 0 9 z" fill="#38bdf8" />
-        </marker>
-        <marker id="arrow-up-metric" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-          <path d="M 0 1 L 10 5 L 0 9 z" fill="#22c55e" />
-        </marker>
+  <!-- 主工作区 -->
+  <div class="main-layout">
 
-        <!-- 阴影滤镜 -->
-        <filter id="box-shadow" x="-5%" y="-5%" width="110%" height="115%" filterUnits="userSpaceOnUse">
-          <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.35" />
-        </filter>
+    <!-- 画布区 -->
+    <div class="canvas-pane" id="canvasPane">
+      <svg id="archSvg" class="svg-viewport" viewBox="0 0 1440 920" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <!-- 箭头定义 -->
+          <marker id="arrow-ctrl" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 1 L 10 5 L 0 9 z" fill="#38bdf8" />
+          </marker>
+          <marker id="arrow-data" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 1 L 10 5 L 0 9 z" fill="#22c55e" />
+          </marker>
+          <marker id="arrow-ipc" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 1 L 10 5 L 0 9 z" fill="#f59e0b" />
+          </marker>
+          <marker id="arrow-eval" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 1 L 10 5 L 0 9 z" fill="#c084fc" />
+          </marker>
 
-        <!-- 背景渐变 -->
-        <linearGradient id="bg-grad-layer1" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="#0c2340" />
-          <stop offset="100%" stop-color="#081829" />
-        </linearGradient>
-        <linearGradient id="bg-grad-layer2" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="#1f1538" />
-          <stop offset="100%" stop-color="#120c24" />
-        </linearGradient>
-        <linearGradient id="bg-grad-layer3" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="#0a2a1b" />
-          <stop offset="100%" stop-color="#061a11" />
-        </linearGradient>
-        <linearGradient id="bg-grad-layer4" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="#2d1c06" />
-          <stop offset="100%" stop-color="#1a1003" />
-        </linearGradient>
-        <linearGradient id="bg-grad-layer5" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="#2a0c14" />
-          <stop offset="100%" stop-color="#17060a" />
-        </linearGradient>
+          <!-- 区域背景渐变 -->
+          <linearGradient id="grad-subsystem-1" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#0c2340" stop-opacity="0.85"/>
+            <stop offset="100%" stop-color="#081829" stop-opacity="0.85"/>
+          </linearGradient>
+          <linearGradient id="grad-subsystem-2" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#1f1538" stop-opacity="0.85"/>
+            <stop offset="100%" stop-color="#120c24" stop-opacity="0.85"/>
+          </linearGradient>
+          <linearGradient id="grad-subsystem-3" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#0a2a1b" stop-opacity="0.85"/>
+            <stop offset="100%" stop-color="#061a11" stop-opacity="0.85"/>
+          </linearGradient>
+          <linearGradient id="grad-subsystem-4" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#2d1c06" stop-opacity="0.85"/>
+            <stop offset="100%" stop-color="#1a1003" stop-opacity="0.85"/>
+          </linearGradient>
+          <linearGradient id="grad-subsystem-5" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#2a0c14" stop-opacity="0.85"/>
+            <stop offset="100%" stop-color="#17060a" stop-opacity="0.85"/>
+          </linearGradient>
+        </defs>
 
-        <!-- 节点微渐变 -->
-        <linearGradient id="node-cyan" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#1e3a5f" />
-          <stop offset="100%" stop-color="#0f243e" />
-        </linearGradient>
-        <linearGradient id="node-purple" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#2d1d4d" />
-          <stop offset="100%" stop-color="#1b1033" />
-        </linearGradient>
-        <linearGradient id="node-green" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#134427" />
-          <stop offset="100%" stop-color="#0b2817" />
-        </linearGradient>
-        <linearGradient id="node-amber" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#422909" />
-          <stop offset="100%" stop-color="#261704" />
-        </linearGradient>
-        <linearGradient id="node-rose" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#45121e" />
-          <stop offset="100%" stop-color="#290911" />
-        </linearGradient>
-      </defs>
+        <!-- ============================================================== -->
+        <!-- 容器大边界 (SUBSYSTEM BOUNDARIES) -->
+        <!-- ============================================================== -->
 
-      <!-- ============================================================== -->
-      <!-- LAYER 1: Web GUI & 控制大屏 -->
-      <!-- ============================================================== -->
-      <g id="layer1" class="layer-card">
-        <rect x="40" y="30" width="1120" height="145" rx="12" fill="url(#bg-grad-layer1)" stroke="#0284c7" stroke-width="1.5" filter="url(#box-shadow)" />
-        <text x="60" y="60" fill="#38bdf8" font-size="15" font-weight="700" letter-spacing="1">1. 前端交互与控制大屏层 (Web GUI &amp; Dashboard)</text>
-        <text x="60" y="78" fill="#94a3b8" font-size="11">提供基于浏览器的实时训练监控、参数在线配置、模型评估曲线大屏与全生命周期交互控制</text>
+        <!-- 1. 前端层 -->
+        <rect x="30" y="25" width="1380" height="135" rx="14" fill="url(#grad-subsystem-1)" stroke="#0284c7" stroke-width="1.5" />
+        <text x="50" y="52" fill="#38bdf8" font-size="14" font-weight="700">【表现层】Web UI 前端控制中心 (web/frontend/)</text>
 
-        <!-- Node 1.1 -->
-        <g transform="translate(60, 92)" class="node-box">
-          <rect width="250" height="65" rx="8" fill="url(#node-cyan)" stroke="#38bdf8" stroke-width="1" />
-          <text x="15" y="24" fill="#e0f2fe" font-size="13" font-weight="600">📊 实时指标看板大屏</text>
-          <text x="15" y="42" fill="#94a3b8" font-size="11">● 真实确定性评估胜率 (Win Rate %)</text>
-          <text x="15" y="55" fill="#94a3b8" font-size="11">● Mean Return / 策略损失 / 步进用时</text>
-        </g>
+        <!-- 2. 网关与调度层 -->
+        <rect x="30" y="185" width="1380" height="135" rx="14" fill="url(#grad-subsystem-2)" stroke="#7c3aed" stroke-width="1.5" />
+        <text x="50" y="212" fill="#c084fc" font-size="14" font-weight="700">【控制网关层】微服务路由与实机守护进程 (FastAPI :8100 &amp; Daemon :8300)</text>
 
-        <!-- Node 1.2 -->
-        <g transform="translate(330, 92)" class="node-box">
-          <rect width="250" height="65" rx="8" fill="url(#node-cyan)" stroke="#38bdf8" stroke-width="1" />
-          <text x="15" y="24" fill="#e0f2fe" font-size="13" font-weight="600">⚙️ 对抗参数动态同步</text>
-          <text x="15" y="42" fill="#94a3b8" font-size="11">● 规模配置: 5v5 / 10v10 / 20v20 / 25v25</text>
-          <text x="15" y="55" fill="#94a3b8" font-size="11">● 竞技场选择: IronZero5 ~ IronZero25</text>
-        </g>
+        <!-- 3. RL 算法核心层 -->
+        <rect x="30" y="345" width="1380" height="235" rx="14" fill="url(#grad-subsystem-3)" stroke="#16a34a" stroke-width="1.5" />
+        <text x="50" y="372" fill="#4ade80" font-size="14" font-weight="700">【决策核心层】强化学习算法与特征引擎 (IronZero RL Core - src/ironzero/)</text>
 
-        <!-- Node 1.3 -->
-        <g transform="translate(600, 92)" class="node-box">
-          <rect width="250" height="65" rx="8" fill="url(#node-cyan)" stroke="#38bdf8" stroke-width="1" />
-          <text x="15" y="24" fill="#e0f2fe" font-size="13" font-weight="600">🚀 预热与初始化策略选择</text>
-          <text x="15" y="42" fill="#94a3b8" font-size="11">● BC Warmstart 专属行为克隆模型载入</text>
-          <text x="15" y="55" fill="#94a3b8" font-size="11">● 克服高维动作空间的"探索荒漠"</text>
-        </g>
+        <!-- 4. 跨语言桥接层 -->
+        <rect x="30" y="605" width="1380" height="145" rx="14" fill="url(#grad-subsystem-4)" stroke="#d97706" stroke-width="1.5" />
+        <text x="50" y="632" fill="#fbbf24" font-size="14" font-weight="700">【桥接控制层】Java 25 字节码注入与协议适配 (IronZero Java Bridge - TCP Socket)</text>
 
-        <!-- Node 1.4 -->
-        <g transform="translate(870, 92)" class="node-box">
-          <rect width="265" height="65" rx="8" fill="url(#node-cyan)" stroke="#38bdf8" stroke-width="1" />
-          <text x="15" y="24" fill="#e0f2fe" font-size="13" font-weight="600">🛑 训练生命周期管理</text>
-          <text x="15" y="42" fill="#94a3b8" font-size="11">● 开始训练 / 实时推流 (live.jsonl 轮询)</text>
-          <text x="15" y="55" fill="#94a3b8" font-size="11">● 一键中止 Stop / 级联释放端口与内存</text>
-        </g>
-      </g>
+        <!-- 5. 原生引擎仿真层 -->
+        <rect x="30" y="775" width="1380" height="120" rx="14" fill="url(#grad-subsystem-5)" stroke="#e11d48" stroke-width="1.5" />
+        <text x="50" y="802" fill="#fb7185" font-size="14" font-weight="700">【原生仿真层】铁锈战争 PC 引擎独立仿真基座 (RWPP Headless 1.15)</text>
 
-      <!-- 连接线: Layer 1 -> Layer 2 -->
-      <path d="M 600 175 L 600 205" stroke="#38bdf8" stroke-width="2" stroke-dasharray="4,4" marker-end="url(#arrow-down-active)" />
-      <text x="615" y="196" fill="#7dd3fc" font-size="11">HTTP REST / 状态轮询</text>
+        <!-- ============================================================== -->
+        <!-- 连线拓扑 (RELATIONSHIP EDGES) -->
+        <!-- ============================================================== -->
+        <g id="edgesGroup">
+          <!-- 控制流: UI -> FastAPI -->
+          <path id="e_ui_api" class="edge-line flow-control" d="M 160 140 L 160 220" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow-ctrl)" />
+          <!-- 控制流: FastAPI -> Daemon -->
+          <path id="e_api_daemon" class="edge-line flow-control" d="M 270 255 L 370 255" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow-ctrl)" />
+          <!-- 控制流: Daemon -> PPO Subprocess -->
+          <path id="e_daemon_ppo" class="edge-line flow-control" d="M 480 290 L 480 390" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow-ctrl)" />
 
-      <!-- ============================================================== -->
-      <!-- LAYER 2: 网关与任务调度服务层 -->
-      <!-- ============================================================== -->
-      <g id="layer2" class="layer-card">
-        <rect x="40" y="210" width="1120" height="135" rx="12" fill="url(#bg-grad-layer2)" stroke="#7c3aed" stroke-width="1.5" filter="url(#box-shadow)" />
-        <text x="60" y="238" fill="#c084fc" font-size="15" font-weight="700" letter-spacing="1">2. 服务网关与进程调度层 (API Gateway &amp; Process Daemon)</text>
-        <text x="60" y="256" fill="#94a3b8" font-size="11">负责统一 API 路由、宿主机实机守护服务、多环境并发调度以及训练事件流中继</text>
+          <!-- 控制流: Daemon -> Stop Signal -->
+          <path id="e_daemon_proc" class="edge-line flow-control" d="M 590 255 L 720 255" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow-ctrl)" />
 
-        <!-- Node 2.1 -->
-        <g transform="translate(60, 268)" class="node-box">
-          <rect width="250" height="60" rx="8" fill="url(#node-purple)" stroke="#a855f7" stroke-width="1" />
-          <text x="15" y="22" fill="#f3e8ff" font-size="13" font-weight="600">🌐 FastAPI 反向代理网关</text>
-          <text x="15" y="38" fill="#94a3b8" font-size="11">● 宿主机 :8100 &amp; Docker 容器 :8000</text>
-          <text x="15" y="51" fill="#94a3b8" font-size="11">● 桥接 host.docker.internal 寻址</text>
-        </g>
+          <!-- 数据流: PPO -> VecRwppEnv -->
+          <path id="e_ppo_vec" class="edge-line flow-data" d="M 400 460 L 260 460" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-data)" />
+          <!-- 数据流: VecRwppEnv -> RwppDuelEnv -->
+          <path id="e_vec_duel" class="edge-line flow-data" d="M 160 520 L 160 645" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-data)" />
 
-        <!-- Node 2.2 -->
-        <g transform="translate(330, 268)" class="node-box">
-          <rect width="250" height="60" rx="8" fill="url(#node-purple)" stroke="#a855f7" stroke-width="1" />
-          <text x="15" y="22" fill="#f3e8ff" font-size="13" font-weight="600">⚡ rwpp_real_service (:8300)</text>
-          <text x="15" y="38" fill="#94a3b8" font-size="11">● 宿主机原生并发调度守护进程</text>
-          <text x="15" y="51" fill="#94a3b8" font-size="11">● 动态派发 5000+ TCP 专属端口</text>
-        </g>
+          <!-- IPC流: RwppDuelEnv <-> Socket IPC -->
+          <path id="e_duel_sock" class="edge-line flow-ipc" d="M 270 680 L 370 680" stroke="#f59e0b" stroke-width="2" marker-end="url(#arrow-ipc)" />
+          <!-- IPC流: Socket IPC <-> Java Agent -->
+          <path id="e_sock_java" class="edge-line flow-ipc" d="M 590 680 L 720 680" stroke="#f59e0b" stroke-width="2" marker-end="url(#arrow-ipc)" />
 
-        <!-- Node 2.3 -->
-        <g transform="translate(600, 268)" class="node-box">
-          <rect width="250" height="60" rx="8" fill="url(#node-purple)" stroke="#a855f7" stroke-width="1" />
-          <text x="15" y="22" fill="#f3e8ff" font-size="13" font-weight="600">🛡️ 活跃进程生命周期管控</text>
-          <text x="15" y="38" fill="#94a3b8" font-size="11">● ACTIVE_PROCESSES / STOPPED_JOBS</text>
-          <text x="15" y="51" fill="#94a3b8" font-size="11">● Stop 请求拦截与 Java 进程干净终结</text>
-        </g>
-
-        <!-- Node 2.4 -->
-        <g transform="translate(870, 268)" class="node-box">
-          <rect width="265" height="60" rx="8" fill="url(#node-purple)" stroke="#a855f7" stroke-width="1" />
-          <text x="15" y="22" fill="#f3e8ff" font-size="13" font-weight="600">📡 事件中继总线 (live.jsonl)</text>
-          <text x="15" y="38" fill="#94a3b8" font-size="11">● 增量游标 /events?after=seq</text>
-          <text x="15" y="51" fill="#94a3b8" font-size="11">● 无状态、低开销消费更新与评估包</text>
-        </g>
-      </g>
-
-      <!-- 连接线: Layer 2 -> Layer 3 -->
-      <path d="M 600 345 L 600 375" stroke="#a855f7" stroke-width="2" marker-end="url(#arrow-down)" />
-      <text x="615" y="364" fill="#c084fc" font-size="11">子进程拉起 / 参数注入</text>
-
-      <!-- ============================================================== -->
-      <!-- LAYER 3: 算法与强化学习核心层 -->
-      <!-- ============================================================== -->
-      <g id="layer3" class="layer-card">
-        <rect x="40" y="380" width="1120" height="225" rx="12" fill="url(#bg-grad-layer3)" stroke="#16a34a" stroke-width="1.5" filter="url(#box-shadow)" />
-        <text x="60" y="408" fill="#4ade80" font-size="15" font-weight="700" letter-spacing="1">3. 强化学习算法与模型核心层 (IronZero RL Core)</text>
-        <text x="60" y="426" fill="#94a3b8" font-size="11">包含分布式 PPO 训练器、分层动作空间神经网络、自适应权重切片加载器与高精地形特征编码</text>
-
-        <!-- Node 3.1: 策略网络模块 -->
-        <g transform="translate(60, 438)" class="node-box">
-          <rect width="360" height="152" rx="8" fill="url(#node-green)" stroke="#22c55e" stroke-width="1" />
-          <text x="15" y="24" fill="#dcfce7" font-size="13" font-weight="600">🧠 神经网络模型 (MaskedActorCritic)</text>
-          <text x="15" y="46" fill="#86efac" font-size="11" font-weight="500">【特征编码 (668 ~ 768 维观测)】</text>
-          <text x="15" y="62" fill="#94a3b8" font-size="11">● 动态实体: 坐标/血量/装填冷却/编队Group</text>
-          <text x="15" y="76" fill="#94a3b8" font-size="11">● 4通道静态地形栅格: 高度/水域/阻挡/通道</text>
+          <!-- 桥接驱动: Java Agent -> RWPP Server -->
+          <path id="e_java_rwpp" class="edge-line flow-ipc" d="M 830 725 L 830 815" stroke="#f59e0b" stroke-width="2" marker-end="url(#arrow-ipc)" />
           
-          <text x="15" y="98" fill="#86efac" font-size="11" font-weight="500">【分层动作头 (Hierarchical Action Heads)】</text>
-          <text x="15" y="114" fill="#94a3b8" font-size="11">● [Kind:5, Group:4, X:8, Y:8, Target:N+1]</text>
-          <text x="15" y="130" fill="#94a3b8" font-size="11">● 动态动作掩码 (Action Masking) 阻断非法行为</text>
+          <!-- 引擎加载: RWPP -> MapLoader -->
+          <path id="e_rwpp_map" class="edge-line flow-data" d="M 720 850 L 590 850" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-data)" />
+
+          <!-- 特征流: 地图栅格 -> 特征编码器 -->
+          <path id="e_map_obs" class="edge-line flow-data" d="M 480 815 L 480 540" stroke="#22c55e" stroke-width="2" stroke-dasharray="4,4" marker-end="url(#arrow-data)" />
+
+          <!-- 决策闭环: ObsEncoder -> PolicyNet -> ActionMask -->
+          <path id="e_obs_net" class="edge-line flow-data" d="M 590 460 L 720 460" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-data)" />
+          <path id="e_net_mask" class="edge-line flow-data" d="M 830 520 L 830 540 L 720 540" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-data)" />
+
+          <!-- 权重预热: BC Warmstart -> Slicer -> PolicyNet -->
+          <path id="e_bc_slicer" class="edge-line flow-data" d="M 1250 425 L 1250 490" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-data)" />
+          <path id="e_slicer_net" class="edge-line flow-data" d="M 1140 520 L 940 520" stroke="#22c55e" stroke-width="2" stroke-dasharray="4,4" marker-end="url(#arrow-data)" />
+
+          <!-- 评估反馈流: Policy -> Evaluator -> live.jsonl -> UI -->
+          <path id="e_ppo_eval" class="edge-line flow-eval" d="M 480 430 L 480 370 L 1020 370 L 1020 430" fill="none" stroke="#c084fc" stroke-width="2" marker-end="url(#arrow-eval)" />
+          <path id="e_eval_bus" class="edge-line flow-eval" d="M 1020 430 L 1020 290" stroke="#c084fc" stroke-width="2" marker-end="url(#arrow-eval)" />
+          <path id="e_bus_ui" class="edge-line flow-eval" d="M 1020 220 L 1020 140" stroke="#c084fc" stroke-width="2" marker-end="url(#arrow-eval)" />
         </g>
 
-        <!-- Node 3.2: 训练优化与权重加载 -->
-        <g transform="translate(440, 438)" class="node-box">
-          <rect width="330" height="152" rx="8" fill="url(#node-green)" stroke="#22c55e" stroke-width="1" />
-          <text x="15" y="24" fill="#dcfce7" font-size="13" font-weight="600">⚡ 训练引擎与维度切片机制</text>
-          <text x="15" y="46" fill="#86efac" font-size="11" font-weight="500">【PPO + GAE 强化学习】</text>
-          <text x="15" y="62" fill="#94a3b8" font-size="11">● 裁剪比率 clip=0.2 / 价值损失 / 熵正则化</text>
-          <text x="15" y="76" fill="#94a3b8" font-size="11">● 势函数塑形 + 交战拉扯 + 毁伤奖励机制</text>
+        <!-- ============================================================== -->
+        <!-- 节点组件 (INTERACTIVE NODES) -->
+        <!-- ============================================================== -->
 
-          <text x="15" y="98" fill="#86efac" font-size="11" font-weight="500">【自适应维度切片加载器】</text>
-          <text x="15" y="114" fill="#94a3b8" font-size="11">● _load_compatible_weights 解决 shape mismatch</text>
-          <text x="15" y="130" fill="#94a3b8" font-size="11">● 修复 Exit Code 1 闪退，实现跨规模无缝迁移</text>
+        <!-- NODE 1: Web Dashboard -->
+        <g id="node_dash" class="svg-node" transform="translate(50, 65)" onclick="selectNode('node_dash')">
+          <rect class="node-card" width="220" height="75" rx="8" fill="#13233a" stroke="#38bdf8" stroke-width="1.5" />
+          <text x="14" y="24" fill="#38bdf8" font-size="12" font-weight="700">UI · 看板大屏与图表</text>
+          <text x="14" y="44" fill="#f8fafc" font-size="11" font-weight="600">Canvas KPI 仪表盘</text>
+          <text x="14" y="60" fill="#94a3b8" font-size="10">实时评估胜率/回报折线/日志</text>
         </g>
 
-        <!-- Node 3.3: 评估与专家库 -->
-        <g transform="translate(790, 438)" class="node-box">
-          <rect width="345" height="152" rx="8" fill="url(#node-green)" stroke="#22c55e" stroke-width="1" />
-          <text x="15" y="24" fill="#dcfce7" font-size="13" font-weight="600">🎯 专家预热库与确定性评估</text>
-          <text x="15" y="46" fill="#86efac" font-size="11" font-weight="500">【专家行为克隆库 (BC Warmstart)】</text>
-          <text x="15" y="62" fill="#94a3b8" font-size="11">● 针对 5v5 / 10v10 / 15v15 / 20v20 / 25v25 全量就绪</text>
-          <text x="15" y="76" fill="#94a3b8" font-size="11">● 学习质心突进、残血风筝与最近优先策略</text>
-
-          <text x="15" y="98" fill="#86efac" font-size="11" font-weight="500">【Wilson 95% 置信区间实战评测】</text>
-          <text x="15" y="114" fill="#94a3b8" font-size="11">● 纯贪婪关闭随机探索，多局严谨验证胜率</text>
-          <text x="15" y="130" fill="#94a3b8" font-size="11">● 实机压测胜率稳定达 75% ~ 100%</text>
-        </g>
-      </g>
-
-      <!-- 连接线: Layer 3 -> Layer 4 -->
-      <path d="M 600 605 L 600 635" stroke="#16a34a" stroke-width="2" marker-end="url(#arrow-down)" />
-      <text x="615" y="624" fill="#4ade80" font-size="11">VecRwppEnv 并行对战环境派发</text>
-
-      <!-- ============================================================== -->
-      <!-- LAYER 4: 跨语言控制桥接层 -->
-      <!-- ============================================================== -->
-      <g id="layer4" class="layer-card">
-        <rect x="40" y="640" width="1120" height="140" rx="12" fill="url(#bg-grad-layer4)" stroke="#d97706" stroke-width="1.5" filter="url(#box-shadow)" />
-        <text x="60" y="668" fill="#fbbf24" font-size="15" font-weight="700" letter-spacing="1">4. 跨语言控制桥接层 (IronZero Java Bridge &amp; IPC)</text>
-        <text x="60" y="686" fill="#94a3b8" font-size="11">Java 25 Agent 字节码注入、全歼胜负判定重载、地图原生 AI 唤醒与防崩溃微步同步</text>
-
-        <!-- Node 4.1 -->
-        <g transform="translate(60, 698)" class="node-box">
-          <rect width="250" height="65" rx="8" fill="url(#node-amber)" stroke="#f59e0b" stroke-width="1" />
-          <text x="15" y="24" fill="#fef3c7" font-size="13" font-weight="600">☕ Java 25 字节码注入 Agent</text>
-          <text x="15" y="42" fill="#94a3b8" font-size="11">● ironzero.IronZeroBridge 自挂载</text>
-          <text x="15" y="55" fill="#94a3b8" font-size="11">● 拦截 RWGameEngine 原生主循环</text>
+        <!-- NODE 2: Web Config -->
+        <g id="node_config" class="svg-node" transform="translate(370, 65)" onclick="selectNode('node_config')">
+          <rect class="node-card" width="220" height="75" rx="8" fill="#13233a" stroke="#38bdf8" stroke-width="1.5" />
+          <text x="14" y="24" fill="#38bdf8" font-size="12" font-weight="700">UI · 参数配置与同步器</text>
+          <text x="14" y="44" fill="#f8fafc" font-size="11" font-weight="600">规模/地图/预热选择</text>
+          <text x="14" y="60" fill="#94a3b8" font-size="10">5v5~25v25 | IronZero 地图联动</text>
         </g>
 
-        <!-- Node 4.2 -->
-        <g transform="translate(330, 698)" class="node-box">
-          <rect width="250" height="65" rx="8" fill="url(#node-amber)" stroke="#f59e0b" stroke-width="1" />
-          <text x="15" y="24" fill="#fef3c7" font-size="13" font-weight="600">🏆 全歼判定重载 (--win-mode)</text>
-          <text x="15" y="42" fill="#94a3b8" font-size="11">● clearNativeDefeatFlags() 清除误判</text>
-          <text x="15" y="55" fill="#94a3b8" font-size="11">● 绕过无建造厂判定，依全歼核算胜负</text>
+        <!-- NODE 3: Web Lifecycle & Stream -->
+        <g id="node_stream" class="svg-node" transform="translate(910, 65)" onclick="selectNode('node_stream')">
+          <rect class="node-card" width="220" height="75" rx="8" fill="#13233a" stroke="#38bdf8" stroke-width="1.5" />
+          <text x="14" y="24" fill="#38bdf8" font-size="12" font-weight="700">UI · 生命周期与事件消费</text>
+          <text x="14" y="44" fill="#f8fafc" font-size="11" font-weight="600">增量游标事件消费</text>
+          <text x="14" y="60" fill="#94a3b8" font-size="10">Api.rwppPpoEvents / 优雅中止</text>
         </g>
 
-        <!-- Node 4.3 -->
-        <g transform="translate(600, 698)" class="node-box">
-          <rect width="250" height="65" rx="8" fill="url(#node-amber)" stroke="#f59e0b" stroke-width="1" />
-          <text x="15" y="24" fill="#fef3c7" font-size="13" font-weight="600">⚔️ AI 激进化唤醒 (--unlock-ai)</text>
-          <text x="15" y="42" fill="#94a3b8" font-size="11">● Unit.aiLimitedUse = false</text>
-          <text x="15" y="55" fill="#94a3b8" font-size="11">● AI.aggressiveMode = true 主动进攻</text>
+        <!-- NODE 4: FastAPI Gateway -->
+        <g id="node_fastapi" class="svg-node" transform="translate(50, 220)" onclick="selectNode('node_fastapi')">
+          <rect class="node-card" width="220" height="70" rx="8" fill="#20153d" stroke="#a855f7" stroke-width="1.5" />
+          <text x="14" y="22" fill="#c084fc" font-size="12" font-weight="700">网关 · FastAPI (:8100/:8000)</text>
+          <text x="14" y="42" fill="#f8fafc" font-size="11" font-weight="600">跨容器反向代理</text>
+          <text x="14" y="58" fill="#94a3b8" font-size="10">/api/rwpp 路由中继 &amp; 错误处理</text>
         </g>
 
-        <!-- Node 4.4 -->
-        <g transform="translate(870, 698)" class="node-box">
-          <rect width="265" height="65" rx="8" fill="url(#node-amber)" stroke="#f59e0b" stroke-width="1" />
-          <text x="15" y="24" fill="#fef3c7" font-size="13" font-weight="600">⏱️ 微步同步控制 (Pacing Guard)</text>
-          <text x="15" y="42" fill="#94a3b8" font-size="11">● 保护 frame_ms >= 1ms 物理步进</text>
-          <text x="15" y="55" fill="#94a3b8" font-size="11">● 高性能 JSON-Line Socket 通信</text>
-        </g>
-      </g>
-
-      <!-- 连接线: Layer 4 -> Layer 5 -->
-      <path d="M 600 780 L 600 810" stroke="#d97706" stroke-width="2" marker-end="url(#arrow-down)" />
-      <text x="615" y="799" fill="#fbbf24" font-size="11">字节码注入 / 游戏循环驱动</text>
-
-      <!-- ============================================================== -->
-      <!-- LAYER 5: 底层游戏仿真引擎层 -->
-      <!-- ============================================================== -->
-      <g id="layer5" class="layer-card">
-        <rect x="40" y="815" width="1120" height="120" rx="12" fill="url(#bg-grad-layer5)" stroke="#e11d48" stroke-width="1.5" filter="url(#box-shadow)" />
-        <text x="60" y="842" fill="#fb7185" font-size="15" font-weight="700" letter-spacing="1">5. 原生仿真基座与地图体系 (Rusted Warfare Engine 1.15)</text>
-        <text x="60" y="860" fill="#94a3b8" font-size="11">铁锈战争 PC 原生无头独立服务端、180° 中心旋转对称竞技场地图与真实物理弹道碰撞</text>
-
-        <!-- Node 5.1 -->
-        <g transform="translate(60, 870)" class="node-box">
-          <rect width="250" height="50" rx="8" fill="url(#node-rose)" stroke="#f43f5e" stroke-width="1" />
-          <text x="15" y="20" fill="#ffe4e6" font-size="13" font-weight="600">🎮 RWPP 独立无头服务器</text>
-          <text x="15" y="38" fill="#94a3b8" font-size="11">● rwpp-server.bat --no-console</text>
+        <!-- NODE 5: Daemon Service -->
+        <g id="node_daemon" class="svg-node" transform="translate(370, 220)" onclick="selectNode('node_daemon')">
+          <rect class="node-card" width="220" height="70" rx="8" fill="#20153d" stroke="#a855f7" stroke-width="1.5" />
+          <text x="14" y="22" fill="#c084fc" font-size="12" font-weight="700">服务 · 实机调度器 (:8300)</text>
+          <text x="14" y="42" fill="#f8fafc" font-size="11" font-weight="600">rwpp_real_service.py</text>
+          <text x="14" y="58" fill="#94a3b8" font-size="10">动态端口分配池 (5000-5999)</text>
         </g>
 
-        <!-- Node 5.2 -->
-        <g transform="translate(330, 870)" class="node-box">
-          <rect width="250" height="50" rx="8" fill="url(#node-rose)" stroke="#f43f5e" stroke-width="1" />
-          <text x="15" y="20" fill="#ffe4e6" font-size="13" font-weight="600">🗺️ 180° 对称竞技场地图</text>
-          <text x="15" y="38" fill="#94a3b8" font-size="11">● IronZero5 ~ 25 (52% 复杂掩体)</text>
+        <!-- NODE 6: Process Supervisor -->
+        <g id="node_proc" class="svg-node" transform="translate(690, 220)" onclick="selectNode('node_proc')">
+          <rect class="node-card" width="220" height="70" rx="8" fill="#20153d" stroke="#a855f7" stroke-width="1.5" />
+          <text x="14" y="22" fill="#c084fc" font-size="12" font-weight="700">治理 · 进程生命周期监管</text>
+          <text x="14" y="42" fill="#f8fafc" font-size="11" font-weight="600">ACTIVE_PROCESSES 锁</text>
+          <text x="14" y="58" fill="#94a3b8" font-size="10">Stop 请求拦截 / 级联清理孤儿</text>
         </g>
 
-        <!-- Node 5.3 -->
-        <g transform="translate(600, 870)" class="node-box">
-          <rect width="250" height="50" rx="8" fill="url(#node-rose)" stroke="#f43f5e" stroke-width="1" />
-          <text x="15" y="20" fill="#ffe4e6" font-size="13" font-weight="600">💥 真实微观物理与弹道模拟</text>
-          <text x="15" y="38" fill="#94a3b8" font-size="11">● A* 寻路 / 碰撞体 / 射程与转角</text>
+        <!-- NODE 7: Event Bus -->
+        <g id="node_bus" class="svg-node" transform="translate(910, 220)" onclick="selectNode('node_bus')">
+          <rect class="node-card" width="220" height="70" rx="8" fill="#20153d" stroke="#a855f7" stroke-width="1.5" />
+          <text x="14" y="22" fill="#c084fc" font-size="12" font-weight="700">中继 · 事件持久化总线</text>
+          <text x="14" y="42" fill="#f8fafc" font-size="11" font-weight="600">live.jsonl 增量总线</text>
+          <text x="14" y="58" fill="#94a3b8" font-size="10">无状态游标同步 (after=seq)</text>
         </g>
 
-        <!-- Node 5.4 -->
-        <g transform="translate(870, 870)" class="node-box">
-          <rect width="265" height="50" rx="8" fill="url(#node-rose)" stroke="#f43f5e" stroke-width="1" />
-          <text x="15" y="20" fill="#ffe4e6" font-size="13" font-weight="600">🤖 原生 Medium AI 对手</text>
-          <text x="15" y="38" fill="#94a3b8" font-size="11">● 真实战术对抗演练基准</text>
+        <!-- NODE 8: VecRwppEnv -->
+        <g id="node_vec" class="svg-node" transform="translate(50, 410)" onclick="selectNode('node_vec')">
+          <rect class="node-card" width="210" height="135" rx="8" fill="#0d2e1d" stroke="#22c55e" stroke-width="1.5" />
+          <text x="14" y="24" fill="#4ade80" font-size="12" font-weight="700">并发 · 并行环境包装器</text>
+          <text x="14" y="44" fill="#f8fafc" font-size="11" font-weight="600">VecRwppEnv</text>
+          <text x="14" y="65" fill="#94a3b8" font-size="10">● ThreadPool 多环境并发</text>
+          <text x="14" y="82" fill="#94a3b8" font-size="10">● 并发收集 Rollout Steps (64)</text>
+          <text x="14" y="99" fill="#94a3b8" font-size="10">● 独立端口并行隔离对战</text>
+          <text x="14" y="116" fill="#86efac" font-size="10">输出: StepBatch 状态张量</text>
         </g>
-      </g>
 
-      <!-- 双向流转注释 -->
-      <!-- 右侧向上状态流 -->
-      <path d="M 1150 860 C 1170 860, 1170 100, 1150 100" fill="none" stroke="#22c55e" stroke-width="2" stroke-dasharray="6,4" marker-end="url(#arrow-up-metric)" />
-      <text x="1155" y="480" fill="#86efac" font-size="11" transform="rotate(90 1155 480)">实时状态/回报/评估胜率回传</text>
+        <!-- NODE 9: PPO Trainer -->
+        <g id="node_ppo" class="svg-node" transform="translate(370, 390)" onclick="selectNode('node_ppo')">
+          <rect class="node-card" width="220" height="155" rx="8" fill="#0d2e1d" stroke="#22c55e" stroke-width="1.5" />
+          <text x="14" y="24" fill="#4ade80" font-size="12" font-weight="700">学习 · PPO 算法优化器</text>
+          <text x="14" y="44" fill="#f8fafc" font-size="11" font-weight="600">PPOTrainer (ppo.py)</text>
+          <text x="14" y="65" fill="#94a3b8" font-size="10">● GAE 广义优势估计 (λ=0.95)</text>
+          <text x="14" y="82" fill="#94a3b8" font-size="10">● 裁剪比率 clip_ratio=0.2</text>
+          <text x="14" y="99" fill="#94a3b8" font-size="10">● 价值网络回归 (MSE Loss)</text>
+          <text x="14" y="116" fill="#94a3b8" font-size="10">● 势函数塑形 + 战损奖励</text>
+          <text x="14" y="133" fill="#86efac" font-size="10">权重输出: checkpoint_best.pt</text>
+        </g>
 
-    </svg>
+        <!-- NODE 10: Model Network & Masking -->
+        <g id="node_net" class="svg-node" transform="translate(690, 390)" onclick="selectNode('node_net')">
+          <rect class="node-card" width="250" height="155" rx="8" fill="#0d2e1d" stroke="#22c55e" stroke-width="1.5" />
+          <text x="14" y="24" fill="#4ade80" font-size="12" font-weight="700">模型 · 分层策略动作网络</text>
+          <text x="14" y="44" fill="#f8fafc" font-size="11" font-weight="600">MaskedActorCritic</text>
+          <text x="14" y="65" fill="#94a3b8" font-size="10">● 输入: 668~768维 实体与地形特征</text>
+          <text x="14" y="82" fill="#94a3b8" font-size="10">● 动作头: [Kind:5, Grp:4, X:8, Y:8, Tar]</text>
+          <text x="14" y="99" fill="#94a3b8" font-size="10">● 动作掩码: 非法射程/冷却动作阻断</text>
+          <text x="14" y="116" fill="#94a3b8" font-size="10">● 策略头分类交叉熵 + 价值评估头</text>
+          <text x="14" y="133" fill="#86efac" font-size="10">决策延迟: 单步推断 &lt; 2.5ms</text>
+        </g>
+
+        <!-- NODE 11: Evaluator -->
+        <g id="node_eval" class="svg-node" transform="translate(980, 390)" onclick="selectNode('node_eval')">
+          <rect class="node-card" width="180" height="70" rx="8" fill="#0d2e1d" stroke="#22c55e" stroke-width="1.5" />
+          <text x="14" y="22" fill="#4ade80" font-size="12" font-weight="700">评测 · 确定性实战评估</text>
+          <text x="14" y="40" fill="#f8fafc" font-size="11" font-weight="600">Wilson 95% 置信评测</text>
+          <text x="14" y="56" fill="#94a3b8" font-size="10">周期=20轮 | 贪婪零探索评测</text>
+        </g>
+
+        <!-- NODE 12: Weight Slicer & Warmstart -->
+        <g id="node_slicer" class="svg-node" transform="translate(1180, 390)" onclick="selectNode('node_slicer')">
+          <rect class="node-card" width="210" height="155" rx="8" fill="#0d2e1d" stroke="#22c55e" stroke-width="1.5" />
+          <text x="14" y="24" fill="#4ade80" font-size="12" font-weight="700">弹性 · 权重切片加载器</text>
+          <text x="14" y="44" fill="#f8fafc" font-size="11" font-weight="600">_load_compatible_weights</text>
+          <text x="14" y="65" fill="#94a3b8" font-size="10">● 解决坦克数量变化张量不匹配</text>
+          <text x="14" y="82" fill="#94a3b8" font-size="10">● 消除 Exit Code 1 闪退崩溃</text>
+          <text x="14" y="99" fill="#94a3b8" font-size="10">● BC Warmstart 专属预热库 (5~25)</text>
+          <text x="14" y="116" fill="#94a3b8" font-size="10">● 破除动作空间"探索荒漠"</text>
+          <text x="14" y="133" fill="#86efac" font-size="10">实战胜率稳超 75% 关键保障</text>
+        </g>
+
+        <!-- NODE 13: RwppDuelEnv -->
+        <g id="node_duel" class="svg-node" transform="translate(50, 645)" onclick="selectNode('node_duel')">
+          <rect class="node-card" width="220" height="80" rx="8" fill="#301f09" stroke="#f59e0b" stroke-width="1.5" />
+          <text x="14" y="22" fill="#fde68a" font-size="12" font-weight="700">接口 · Gym 规范适配器</text>
+          <text x="14" y="42" fill="#f8fafc" font-size="11" font-weight="600">RwppDuelEnv (rwpp_env.py)</text>
+          <text x="14" y="58" fill="#94a3b8" font-size="10">动作解码 / 状态解码 / 超时点数决胜</text>
+          <text x="14" y="72" fill="#fde68a" font-size="10">API: reset() / step(action)</text>
+        </g>
+
+        <!-- NODE 14: Socket IPC -->
+        <g id="node_sock" class="svg-node" transform="translate(370, 645)" onclick="selectNode('node_sock')">
+          <rect class="node-card" width="220" height="80" rx="8" fill="#301f09" stroke="#f59e0b" stroke-width="1.5" />
+          <text x="14" y="22" fill="#fde68a" font-size="12" font-weight="700">管道 · 本地套接字通信</text>
+          <text x="14" y="42" fill="#f8fafc" font-size="11" font-weight="600">Localhost Socket IPC</text>
+          <text x="14" y="58" fill="#94a3b8" font-size="10">JSON-Line 双向流协议</text>
+          <text x="14" y="72" fill="#fde68a" font-size="10">吞吐量: &gt; 500 decisions/sec</text>
+        </g>
+
+        <!-- NODE 15: Java Agent & Hooks -->
+        <g id="node_java" class="svg-node" transform="translate(690, 645)" onclick="selectNode('node_java')">
+          <rect class="node-card" width="310" height="85" rx="8" fill="#301f09" stroke="#f59e0b" stroke-width="1.5" />
+          <text x="14" y="22" fill="#fde68a" font-size="12" font-weight="700">桥接 · Java 25 字节码切入核心</text>
+          <text x="14" y="42" fill="#f8fafc" font-size="11" font-weight="600">ironzero.IronZeroBridge</text>
+          <text x="14" y="60" fill="#94a3b8" font-size="10">● --win-mode annihilation (清除虚假败北)</text>
+          <text x="14" y="74" fill="#94a3b8" font-size="10">● --unlock-ai (解锁地图单位主动进攻)</text>
+        </g>
+
+        <!-- NODE 16: Pacing Guard -->
+        <g id="node_pacing" class="svg-node" transform="translate(1080, 645)" onclick="selectNode('node_pacing')">
+          <rect class="node-card" width="220" height="80" rx="8" fill="#301f09" stroke="#f59e0b" stroke-width="1.5" />
+          <text x="14" y="22" fill="#fde68a" font-size="12" font-weight="700">节拍 · 物理积分防崩溃保护</text>
+          <text x="14" y="42" fill="#f8fafc" font-size="11" font-weight="600">Pacing Guard (frame_ms)</text>
+          <text x="14" y="58" fill="#94a3b8" font-size="10">强制约束 frame_ms &gt;= 1ms</text>
+          <text x="14" y="72" fill="#fde68a" font-size="10">规避引擎 updateFrame delta 计算错误</text>
+        </g>
+
+        <!-- NODE 17: RWPP Headless Server -->
+        <g id="node_rwpp" class="svg-node" transform="translate(690, 815)" onclick="selectNode('node_rwpp')">
+          <rect class="node-card" width="250" height="65" rx="8" fill="#3d141e" stroke="#f43f5e" stroke-width="1.5" />
+          <text x="14" y="22" fill="#fecdd3" font-size="12" font-weight="700">引擎 · 独立无头服务端</text>
+          <text x="14" y="42" fill="#f8fafc" font-size="11" font-weight="600">rwpp-server.bat --no-console</text>
+          <text x="14" y="56" fill="#94a3b8" font-size="10">脱离 GUI 渲染 · 极速离线对战计算</text>
+        </g>
+
+        <!-- NODE 18: Map Loader & Terrain -->
+        <g id="node_map" class="svg-node" transform="translate(370, 815)" onclick="selectNode('node_map')">
+          <rect class="node-card" width="220" height="65" rx="8" fill="#3d141e" stroke="#f43f5e" stroke-width="1.5" />
+          <text x="14" y="22" fill="#fecdd3" font-size="12" font-weight="700">地图 · 对称竞技场与地形</text>
+          <text x="14" y="42" fill="#f8fafc" font-size="11" font-weight="600">IronZero5 ~ 25.tmx</text>
+          <text x="14" y="56" fill="#94a3b8" font-size="10">180° 对称 · 52% 掩体 · 光栅化地形</text>
+        </g>
+
+        <!-- NODE 19: Native AI Opponent -->
+        <g id="node_ai" class="svg-node" transform="translate(1080, 815)" onclick="selectNode('node_ai')">
+          <rect class="node-card" width="220" height="65" rx="8" fill="#3d141e" stroke="#f43f5e" stroke-width="1.5" />
+          <text x="14" y="22" fill="#fecdd3" font-size="12" font-weight="700">对手 · 铁锈战争内置 AI</text>
+          <text x="14" y="42" fill="#f8fafc" font-size="11" font-weight="600">AI - Medium (Aggressive)</text>
+          <text x="14" y="56" fill="#94a3b8" font-size="10">实战集火攻击 · 评测对战基准</text>
+        </g>
+      </svg>
+
+      <!-- 画布控制浮动条 -->
+      <div class="canvas-overlay-controls">
+        <button class="control-btn" onclick="zoomIn()">放大 (+)</button>
+        <button class="control-btn" onclick="zoomOut()">缩小 (-)</button>
+        <button class="control-btn" onclick="resetZoom()">自适应还原</button>
+      </div>
+
+      <!-- 折叠时的展开触发标签 -->
+      <button class="drawer-tab-btn" id="drawerTabBtn" onclick="toggleDrawer(true)">
+        <span>详</span><span>细</span><span>规</span><span>格</span>
+      </button>
+    </div>
+
+    <!-- 右侧二级展开详情抽屉 -->
+    <div class="detail-drawer" id="detailDrawer">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <h2 id="dTitle">点击节点查看二级技术规格</h2>
+          <span class="subsystem-tag" id="dTag" style="background:#1e293b; color:#94a3b8;">未选择模块</span>
+        </div>
+        <button class="drawer-close-btn" onclick="toggleDrawer(false)">&times;</button>
+      </div>
+
+      <div class="drawer-body" id="dBody">
+        <div style="color: #64748b; text-align: center; margin-top: 80px;">
+          <p style="font-size: 32px; margin-bottom: 12px;">🔍</p>
+          <p>请点击左侧架构图中的任意组件节点，<br/>即可在此展开查看详细的输入/输出数据结构、实现机制与代码调用关系。</p>
+        </div>
+      </div>
+    </div>
+
   </div>
 
-  <footer>
-    IronZero Project · Rusted Warfare Headless Reinforcement Learning Closed-Loop Platform · 2026
-  </footer>
+  <!-- 节点字典与交互脚本 -->
+  <script>
+    // 节点二级详细技术字典
+    const NODE_DETAILS = {
+      node_dash: {
+        title: "实时看板大屏与图表 (Canvas KPI)",
+        subsystem: "表现层 · Web Frontend",
+        tagColor: "#38bdf8",
+        file: "web/frontend/app.js (Line 6580-6670)",
+        role: "可视化呈现训练过程的核心指标与确定性实战评估曲线。",
+        inputs: "通过 API 轮询获取的 live.jsonl 增量更新包与评估包 (Eval Payload)",
+        outputs: "HTML5 Canvas 渲染的高清折线图 (Win Rate %, Return, Loss, Entropy) 及 KPI 卡片",
+        mechanism: [
+          "严格区分训练更新步 (Update) 与独立确定性评估 (Eval)，避免将带噪声采样的训练状态误当作胜率。",
+          "集成 Wilson 95% 置信区间动态误差棒渲染。",
+          "支持毫秒级图表平滑重绘，无第三方庞大图表库依赖。"
+        ]
+      },
+      node_config: {
+        title: "对抗参数动态配置与同步器",
+        subsystem: "表现层 · Web Frontend",
+        tagColor: "#38bdf8",
+        file: "web/frontend/app.js & web/frontend/index.html",
+        role: "动态管理双方对战坦克数量、竞技场地图绑定与预热策略模式。",
+        inputs: "用户交互输入 (5v5 ~ 25v25、IronZero5 ~ IronZero25、BC Warmstart 选项)",
+        outputs: "格式化的 JSON 请求体提交至 POST /api/rwpp/ppo",
+        mechanism: [
+          "智能联动选择：修改坦克数量自动匹配对应尺寸的对称竞技场地图。",
+          "自动关联最佳 BC 行为克隆预热检查点 (bc_ironzero{N})，防止因探索荒漠导致初期胜率为 0。",
+          "支持一键切换 Scratch (从零训练) 或 Warmstart (热启动迁移)。"
+        ]
+      },
+      node_stream: {
+        title: "生命周期与增量事件消费器",
+        subsystem: "表现层 · Web Frontend",
+        tagColor: "#38bdf8",
+        file: "web/frontend/app.js (fePollPpo & stopFePpoPolling)",
+        role: "维护与后台训练任务的长轮询事件流通信，并处理用户一键中止请求。",
+        inputs: "GET /api/rwpp/ppo/{job_id}/events?after={cursor}",
+        outputs: "调度事件分发 (start, update, eval, strategy, done)；发送 Stop 停机指令",
+        mechanism: [
+          "基于游标 (cursor/seq) 的增量拉取机制，避免轮询传输海量重复数据。",
+          "断网自动重试与退避算法，当检测到任务异常退出时即刻弹出 Toast 报警并停止轮询。",
+          "点击'停止训练'即刻调用后端 Stop 接口并级联结束前端轮询定时器。"
+        ]
+      },
+      node_fastapi: {
+        title: "FastAPI 统一反向代理网关",
+        subsystem: "网关调度层 · Backend Gateway",
+        tagColor: "#c084fc",
+        file: "web/backend/app.py",
+        role: "对外提供标准的 RESTful OpenAPI 接口，统一调度宿主机实机服务。",
+        inputs: "前端 HTTP 请求 (POST /api/rwpp/ppo, POST /api/rwpp/jobs/{id}/stop)",
+        outputs: "标准化 JSON 响应，代理转发至宿主机实机守护服务 (:8300)",
+        mechanism: [
+          "双模式兼容寻址：Docker 部署模式下路由至 http://host.docker.internal:8300，宿主机直接运行时自动回退至 http://127.0.0.1:8300。",
+          "统一异常捕获与状态码规范化（404 任务不存在、409 任务冲突处理）。"
+        ]
+      },
+      node_daemon: {
+        title: "实机后台托管守护服务",
+        subsystem: "服务调度层 · Host Service",
+        tagColor: "#c084fc",
+        file: "scripts/rwpp_real_service.py (:8300)",
+        role: "常驻宿主机的多进程并发对战调度引擎与任务池控制器。",
+        inputs: "HTTP POST 启动参数 (units_per_team, map_name, updates, envs, rollout_steps)",
+        outputs: "派生底层 Python 训练子进程，分配专属 TCP 通信端口，写出 live.jsonl",
+        mechanism: [
+          "维护动态端口分配池 (5000 ~ 5999)，确保多个并行对战实例端口零冲突。",
+          "内置线程池与最大并发槽位限制 (max_parallel=4)，防止 CPU/GPU 负载击穿宿主机。",
+          "智能根据 units_per_team 动态解析并注入 runs/bc_ironzero{N}/checkpoint.pt 预热权重。"
+        ]
+      },
+      node_proc: {
+        title: "进程生命周期监管与安全熔断",
+        subsystem: "服务治理层 · Process Supervisor",
+        tagColor: "#c084fc",
+        file: "scripts/rwpp_real_service.py (ACTIVE_PROCESSES & stop_job)",
+        role: "全局跟踪每个训练/推理任务的 PID，执行可靠的级联终止与资源清理。",
+        inputs: "任务 ID、Stop 中止请求或任务自然结束信号",
+        outputs: "向对应进程树发送 SIGTERM/kill 信号，释放占用端口与显存",
+        mechanism: [
+          "登记表管理：记录 Python 训练进程 PID 与所有子进程句柄。",
+          "解决孤儿 Java 进程漏洞：确保在任务中断时，由 Java 运行的 Rusted Warfare 无头服务器一并被干净回收，防止端口被僵尸进程霸占。"
+        ]
+      },
+      node_bus: {
+        title: "持久化事件总线 (live.jsonl)",
+        subsystem: "服务中继层 · Event Bus",
+        tagColor: "#c084fc",
+        file: "runs/platform/rwpp-ppo-{id}/live.jsonl",
+        role: "作为训练引擎与外界通信的无锁、低开销流式持久化事件管道。",
+        inputs: "PPOTrainer._emit(kind, payload) 写入事件",
+        outputs: "按自增序列号 (seq) 顺序排列的结构化 JSON-Line 数据流",
+        mechanism: [
+          "单向追加写，进程间完全解耦，训练过程不会因前端刷新或断开而阻塞。",
+          "事件流包含完整的元数据：训练超参、每轮损失、策略意图、确定性评估战报。"
+        ]
+      },
+      node_vec: {
+        title: "并行环境向量化编排器 (VecRwppEnv)",
+        subsystem: "算法层 · RL Vectorization",
+        tagColor: "#4ade80",
+        file: "src/ironzero/training/vec_rwpp.py",
+        role: "实现多对战环境并行执行与批量经验数据同步组装。",
+        inputs: "策略网络给出的各环境动作数组 ActionBatch [num_envs, ...]",
+        outputs: "StepBatch: 批量观测 (Observations)、奖励 (Rewards)、截断标记 (Truncated/Terminated)",
+        mechanism: [
+          "采用 concurrent.futures.ThreadPoolExecutor 实现多游戏实例并行步进。",
+          "异步重置重启重叠 (Restart Overlap)：当某局提前结束，在后台并发启动新游戏进程，掩盖 JVM 启动冷延时。",
+          "内置 drain_completed() 收集已完成局的回报并结算统计指标。"
+        ]
+      },
+      node_ppo: {
+        title: "PPO 策略优化器与奖励工程",
+        subsystem: "算法核心 · Optimization",
+        tagColor: "#4ade80",
+        file: "src/ironzero/training/ppo.py & train_rwpp.py",
+        role: "基于近端策略优化算法 (PPO) 与 GAE 计算策略梯度更新网络权重。",
+        inputs: "Rollout 经验缓冲池 (Trajectories, Advantages, Returns)",
+        outputs: "优化后的神经网络参数，周期性写出 checkpoint_best.pt",
+        mechanism: [
+          "GAE 优势估计 (γ=0.99, λ=0.95)，裁剪比率 clip_ratio=0.2 保证更新平稳。",
+          "多维度势函数奖励塑造：战力势能差 (HP Potential)、交战拉扯距离 (Engagement)、杀敌奖励与战损惩罚。",
+          "周期触发评估与自动持久化历史最优模型。"
+        ]
+      },
+      node_net: {
+        title: "分层动作网络与动态掩码器",
+        subsystem: "模型架构 · MaskedActorCritic",
+        tagColor: "#4ade80",
+        file: "src/ironzero/training/rwpp_ppo.py & observations.py",
+        role: "对战况实体与地形进行特征提取，分层输出决策动作并阻断非法行为。",
+        inputs: "668 ~ 768 维观测向量 (己方/敌方实体矩阵 + 4通道高精地形栅格)",
+        outputs: "分层离散动作头 [Kind:5, Group:4, X:8, Y:8, Target:N+1]",
+        mechanism: [
+          "共享主干特征抽取 (Shared Trunk MLP) + 独立策略头与价值评估头。",
+          "动作掩码 (Action Masking)：计算单位武器射程、冷却装填与视野合法性，将非法动作 logits 置为 -1e9，消除模型在无效动作上的无效探索。"
+        ]
+      },
+      node_eval: {
+        title: "确定性实战评测器 (Deterministic Evaluator)",
+        subsystem: "评估与基准 · Evaluation",
+        tagColor: "#4ade80",
+        file: "src/ironzero/training/evaluate_rwpp.py",
+        role: "周期性脱离探索噪声，以最强贪婪策略实战对抗内置 AI 检验真水平。",
+        inputs: "当前策略权重 policy.eval(), 确定性开关 deterministic=True",
+        outputs: "多局实战战报：胜利数、失败数、超时数、Wilson 95% 置信区间",
+        mechanism: [
+          "独立环境执行完整对决，关闭动作随机采样（Argmax 决策）。",
+          "在 IronZero20/25 上实测已稳定达到 75% ~ 100% 胜率，全歼敌军存活。"
+        ]
+      },
+      node_slicer: {
+        title: "弹性权重切片加载器与 BC 预热库",
+        subsystem: "迁移与预热 · Transfer Engine",
+        tagColor: "#4ade80",
+        file: "src/ironzero/training/train_rwpp.py (_load_compatible_weights)",
+        role: "解决单位数量变更造成的权重形状不匹配闪退，并提供热启动基石。",
+        inputs: "不同坦克数量下训练的预训练权重字典 state_dict",
+        outputs: "与当前网络输入维度与目标槽位完全吻合的载入权重",
+        mechanism: [
+          "智能张量切片：对 trunk.0.weight 与 heads.4 进行维度裁剪或零填充，消除 Exit Code 1 闪退崩溃。",
+          "全量预制 BC Warmstart 专家库 (5v5、10v10、15v15、20v20、25v25)，以质心突进与风筝拉扯启发式策略彻底解决冷启动探索荒漠。"
+        ]
+      },
+      node_duel: {
+        title: "Gym 规范实机环境适配器",
+        subsystem: "环境抽象 · RwppDuelEnv",
+        tagColor: "#f59e0b",
+        file: "src/ironzero/rwpp_env.py",
+        role: "将底层原始 Socket 报文封装为标准 Gym Env 交互协议。",
+        inputs: "网络给出的动作向量 action [5]",
+        outputs: "obs, reward, terminated, truncated, info",
+        mechanism: [
+          "动作解码 (decode_action)：将离散网格坐标与目标索引转为铁锈战争原生微操指令。",
+          "终局判定仲裁：融合 Java 桥上报的歼灭结果与超时点数决胜，杜绝优势局被错判为 0 胜超时。"
+        ]
+      },
+      node_sock: {
+        title: "本地套接字 IPC 通信管道",
+        subsystem: "通信中枢 · Socket IPC",
+        tagColor: "#f59e0b",
+        file: "src/ironzero/rwpp_env.py (_socket & _reader)",
+        role: "提供 Python 与 Java 之间高吞吐、低延时的双向数据交互信道。",
+        inputs: "JSON 格式的 step / action 报文",
+        outputs: "JSON-Line 格式的 observation / done 报文",
+        mechanism: [
+          "基于本地回环 TCP 端口通信，避开命名管道在沙盒环境中的限制。",
+          "流式带界定符协议 (\n 分割)，吞吐能力达 500+ decisions/秒。"
+        ]
+      },
+      node_java: {
+        title: "Java 25 字节码注入核心 Agent",
+        subsystem: "桥接层 · Java Bridge",
+        tagColor: "#f59e0b",
+        file: "src/ironzero_bridge/java/ironzero/IronZeroBridge.java",
+        role: "随引擎启动自挂载，拦截原生主循环并重载胜负和 AI 行为。",
+        inputs: "铁锈战争 RWGameEngine.updateFrameInternal 帧调用",
+        outputs: "提取双方单位血量、坐标、冷却状态并发送 Observation 报文",
+        mechanism: [
+          "【--win-mode annihilation】：原生逻辑无建造厂即判负，桥接层每帧调用 clearNativeDefeatFlags() 清除败北标志，依据单位总数统计真正全歼。",
+          "【--unlock-ai】：将地图放置单位的 aiLimitedUse 置为 false 并开启 aggressiveMode，唤醒电脑主动进攻。"
+        ]
+      },
+      node_pacing: {
+        title: "物理积分防崩溃保护器 (Pacing Guard)",
+        subsystem: "节拍控制 · Pacing Controller",
+        tagColor: "#f59e0b",
+        file: "src/ironzero/rwpp_env.py (effective_frame_ms)",
+        role: "控制实机对战步进节拍，防止物理积分器崩溃。",
+        inputs: "请求参数 frame_ms",
+        outputs: "受保护的有效墙钟帧延时 (Clamped frameMs >= 1ms)",
+        mechanism: [
+          "铁锈战争物理引擎采用 updateFrameInternal(1.0f, frameMs) 进行欧拉步进积分。",
+          "若设置为 0ms 会导致游戏引擎物理 delta 为 0 甚至除零崩溃，强制 clamp 至 1ms 既保持千倍真实加速又绝对稳定。"
+        ]
+      },
+      node_rwpp: {
+        title: "铁锈战争独立无头服务器",
+        subsystem: "游戏原生引擎 · Headless Server",
+        tagColor: "#f43f5e",
+        file: "C:\\IronZero\\rwpp-runtime-1.15\\rwpp-server.bat",
+        role: "脱离 Direct3D/OpenGL 渲染开销的高性能独立对战运算服务器。",
+        inputs: "启动参数: --no-console --bridge-port P --map M --frame-ms 1",
+        outputs: "高频率运行的物理寻路、碰撞检测与火力伤害结算",
+        mechanism: [
+          "部署于纯 ASCII 路径下（规避 Java 25 RWML ASM 中文路径挂载失败 bug）。",
+          "单对决实例内存占用仅 ~180MB，支持高密度多实例并行采样。"
+        ]
+      },
+      node_map: {
+        title: "对称竞技场地图与地形光栅化",
+        subsystem: "地图体系 · Maps & Terrain",
+        tagColor: "#f43f5e",
+        file: "configs/maps/IronZero5..25.tmx & .terrain.json",
+        role: "提供公平公正、掩体丰富的对战地形。",
+        inputs: "make_ironzero_map.py 自动生成算法",
+        outputs: "TMX 瓦片地图 + 4通道静态地形通道文件",
+        mechanism: [
+          "180° 中心旋转完全对称，双方小坦克出生点位与掩体距离绝对公平。",
+          "52.82% 复杂掩体遮挡率，考验强化学习利用地形掩护射击与拉扯战术。"
+        ]
+      },
+      node_ai: {
+        title: "铁锈战争内置原生 AI 对手",
+        subsystem: "原生对手 · Medium AI",
+        tagColor: "#f43f5e",
+        file: "RWGameEngine AI Unit Group Engine",
+        role: "作为强化学习实机对抗的基准演练对手。",
+        inputs: "解锁后的地图放置敌方小坦克编队",
+        outputs: "原生战术寻路推进、自动集火攻击与多编队协同",
+        mechanism: [
+          "在解锁后以极高攻击欲望向玩家坦克群发起集火协同进攻，检验强化学习微操水平。"
+        ]
+      }
+    };
 
+    // 交互逻辑
+    let currentFlow = "all";
+    let selectedNodeId = null;
+
+    function selectNode(nodeId) {
+      selectedNodeId = nodeId;
+      const data = NODE_DETAILS[nodeId];
+      if (!data) return;
+
+      // 更新 SVG 节点高亮
+      document.querySelectorAll(".svg-node").forEach(el => {
+        el.classList.remove("selected");
+      });
+      const nodeEl = document.getElementById(nodeId);
+      if (nodeEl) nodeEl.classList.add("selected");
+
+      // 展开抽屉
+      toggleDrawer(true);
+
+      // 填充二级技术规格
+      document.getElementById("dTitle").textContent = data.title;
+      const tagEl = document.getElementById("dTag");
+      tagEl.textContent = data.subsystem;
+      tagEl.style.background = data.tagColor + "22";
+      tagEl.style.color = data.tagColor;
+
+      const bodyEl = document.getElementById("dBody");
+      bodyEl.innerHTML = `
+        <div class="detail-section">
+          <h3>📌 架构职责与定位</h3>
+          <p>${data.role}</p>
+          <div style="margin-top: 8px;">
+            <span style="color:#64748b; font-size:11px;">核心源文件：</span><br/>
+            <span class="code-badge">${data.file}</span>
+          </div>
+        </div>
+
+        <div class="detail-section">
+          <h3>🔄 输入与输出技术契约 (I/O Schema)</h3>
+          <div class="schema-kv">
+            <span class="key">Input:</span>
+            <span class="val">${data.inputs}</span>
+          </div>
+          <div class="schema-kv">
+            <span class="key">Output:</span>
+            <span class="val">${data.outputs}</span>
+          </div>
+        </div>
+
+        <div class="detail-section">
+          <h3>⚙️ 核心实现机制与关键技术</h3>
+          <ul class="feature-list">
+            ${data.mechanism.map(item => `<li>${item}</li>`).join("")}
+          </ul>
+        </div>
+      `;
+    }
+
+    function toggleDrawer(open) {
+      const drawer = document.getElementById("detailDrawer");
+      const tabBtn = document.getElementById("drawerTabBtn");
+      if (open) {
+        drawer.classList.remove("collapsed");
+        tabBtn.style.display = "none";
+      } else {
+        drawer.classList.add("collapsed");
+        tabBtn.style.display = "flex";
+      }
+    }
+
+    // 流向过滤高亮
+    document.querySelectorAll(".filter-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        currentFlow = btn.getAttribute("data-flow");
+        applyFlowFilter(currentFlow);
+      });
+    });
+
+    function applyFlowFilter(flow) {
+      const edges = document.querySelectorAll(".edge-line");
+      const nodes = document.querySelectorAll(".svg-node");
+
+      if (flow === "all") {
+        edges.forEach(e => { e.classList.remove("dimmed", "active"); });
+        nodes.forEach(n => { n.classList.remove("dimmed"); });
+        return;
+      }
+
+      edges.forEach(e => {
+        if (e.classList.contains("flow-" + flow)) {
+          e.classList.add("active");
+          e.classList.remove("dimmed");
+        } else {
+          e.classList.remove("active");
+          e.classList.add("dimmed");
+        }
+      });
+    }
+
+    // 画布缩放/平移逻辑
+    let zoomLevel = 1.0;
+    const svgEl = document.getElementById("archSvg");
+
+    function zoomIn() {
+      zoomLevel = Math.min(2.5, zoomLevel + 0.2);
+      svgEl.style.transform = `scale(${zoomLevel})`;
+      svgEl.style.transformOrigin = "center center";
+    }
+
+    function zoomOut() {
+      zoomLevel = Math.max(0.6, zoomLevel - 0.2);
+      svgEl.style.transform = `scale(${zoomLevel})`;
+      svgEl.style.transformOrigin = "center center";
+    }
+
+    function resetZoom() {
+      zoomLevel = 1.0;
+      svgEl.style.transform = "scale(1.0)";
+    }
+
+    // 默认高亮并展开 PPO 算法优化器节点
+    window.addEventListener("DOMContentLoaded", () => {
+      selectNode("node_ppo");
+    });
+  </script>
 </body>
 </html>
