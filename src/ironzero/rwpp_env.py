@@ -739,19 +739,20 @@ class RwppDuelEnv:
         )
         if truncated:
             own_frac, enemy_frac = hp_fractions(self.state, self.own_max_ref, self.enemy_max_ref)
-            # In arena annihilation battles that reach the tick limit, decide by
+            # In annihilation battles or micro duels that reach the tick limit, decide by
             # army survival / HP advantage rather than writing off clear-cut wins as
             # 0-win timeouts (matches standard RTS tournament rules).
-            is_arena = (
+            is_micro_battle = (
                 self.game.win_mode == "annihilation"
                 or "ironzero" in str(self.game.map_relative).lower()
                 or "ironzero" in str(self.game.map_name).lower()
+                or self.micro.units_per_team > 0
             )
-            if is_arena and not disconnected:
-                if own_alive > enemy_alive and own_frac >= enemy_frac + 0.10:
+            if is_micro_battle and not disconnected:
+                if (own_alive > enemy_alive and own_frac >= enemy_frac + 0.08) or (enemy_alive == 0 and own_alive > 0):
                     self.last_result = "victory"
                     components["terminal"] = float(self.micro.win_reward) * 0.8
-                elif enemy_alive > own_alive and enemy_frac >= own_frac + 0.10:
+                elif (enemy_alive > own_alive and enemy_frac >= own_frac + 0.08) or (own_alive == 0 and enemy_alive > 0):
                     self.last_result = "defeat"
                     components["terminal"] = float(self.micro.loss_reward) * 0.8
                 else:

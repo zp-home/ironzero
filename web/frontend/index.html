@@ -164,11 +164,18 @@
                 </div>
               </section>
 
-              <section class="card replay-card">
-                <header class="card-head">
-                  <h2>回放库 <span class="demo-chip" hidden>演示数据</span></h2>
-                  <div class="head-actions">
+              <section class="card replay-card collapsed" id="replay-card">
+                <header class="card-head" id="replay-card-head">
+                  <h2>
+                    回放库
                     <span class="chip" id="replay-count">0</span>
+                    <span class="demo-chip" hidden>演示数据</span>
+                  </h2>
+                  <div class="head-actions">
+                    <button class="btn btn-sm btn-ghost" type="button" id="replay-toggle-btn"
+                            title="展开或收起回放列表">
+                      <span id="replay-toggle-icon">▶</span> <span id="replay-toggle-text">展开</span>
+                    </button>
                     <button class="btn btn-sm btn-ghost" type="button" id="replay-refresh">刷新</button>
                     <button class="btn btn-sm btn-rwpp" type="button" id="rwpp-record-btn"
                             title="在宿主机启动真实 Rusted Warfare 1.15 无头对局并录制（约 40–60s）">
@@ -176,18 +183,37 @@
                     </button>
                   </div>
                 </header>
-                <div class="replay-table-wrap">
-                  <table class="replay-table">
-                    <thead>
-                      <tr>
-                        <th>名称</th><th>Checkpoint</th><th>对手</th><th>模拟</th><th>结果</th>
-                        <th>回报</th><th>局数</th><th>帧数</th><th>时间</th><th>操作</th>
-                      </tr>
-                    </thead>
-                    <tbody id="replay-body">
-                      <tr><td colspan="10" class="empty">尚未加载回放</td></tr>
-                    </tbody>
-                  </table>
+                <div class="replay-content" id="replay-content">
+                  <div class="replay-table-wrap">
+                    <table class="replay-table">
+                      <thead>
+                        <tr>
+                          <th>名称</th><th>Checkpoint</th><th>对手</th><th>模拟</th><th>结果</th>
+                          <th>回报</th><th>局数</th><th>帧数</th><th>时间</th><th>操作</th>
+                        </tr>
+                      </thead>
+                      <tbody id="replay-body">
+                        <tr><td colspan="10" class="empty">尚未加载回放</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div class="replay-pagination" id="replay-pagination">
+                    <div class="pagination-info" id="replay-page-info">第 1 / 1 页 · 共 0 条</div>
+                    <div class="pagination-actions">
+                      <label class="page-size-label">
+                        <span>每页</span>
+                        <select id="replay-page-size">
+                          <option value="6">6 条</option>
+                          <option value="8" selected>8 条</option>
+                          <option value="15">15 条</option>
+                          <option value="30">30 条</option>
+                        </select>
+                      </label>
+                      <button class="btn btn-sm btn-ghost" type="button" id="replay-prev-btn" disabled>上一页</button>
+                      <span class="pagination-current-page" id="replay-current-page">1</span>
+                      <button class="btn btn-sm btn-ghost" type="button" id="replay-next-btn" disabled>下一页</button>
+                    </div>
+                  </div>
                 </div>
               </section>
             </div>
@@ -436,12 +462,12 @@
             <div class="kpi-card accent-blue">
               <div class="kpi-label">最新 return</div>
               <div class="kpi-value"><b id="fe-ppo-kpi-return">0.00</b></div>
-              <div class="kpi-foot">latest_update.mean_return</div>
+              <div class="kpi-foot" id="fe-ppo-kpi-return-foot">latest_update.mean_return</div>
             </div>
             <div class="kpi-card accent-green">
               <div class="kpi-label">实战评估胜率</div>
               <div class="kpi-value"><b id="fe-ppo-kpi-win">0.0</b><span class="kpi-unit">%</span></div>
-              <div class="kpi-foot">真机盲测评估胜率</div>
+              <div class="kpi-foot" id="fe-ppo-kpi-win-foot">真机盲测评估胜率</div>
             </div>
             <div class="kpi-card">
               <div class="kpi-label">最新 entropy</div>
@@ -457,15 +483,23 @@
 
           <section class="dash-charts ppo-charts" data-train-mode="ppo" hidden>
             <div class="chart-card">
-              <header><span>Return</span><span class="chart-legend">mean_return / update</span></header>
+              <header><span>对战得分 / Return 趋势</span><span class="chart-legend"><i class="dot cyan"></i>训练得分 <i class="dot green"></i>实战盲测</span></header>
               <div class="chart-box"><canvas id="fe-ppo-chart-return"></canvas></div>
             </div>
             <div class="chart-card">
-              <header><span>实机评估胜率</span><span class="chart-legend">评估局胜率 / eval</span></header>
+              <header><span>实战盲测与训练胜率</span><span class="chart-legend"><i class="dot green"></i>盲测胜率 <i class="dot cyan"></i>训练胜率</span></header>
               <div class="chart-box"><canvas id="fe-ppo-chart-win"></canvas></div>
             </div>
             <div class="chart-card">
-              <header><span>Entropy / Policy Loss</span><span class="chart-legend"><i class="dot own"></i>entropy <i class="dot enemy"></i>policy_loss</span></header>
+              <header><span>双方剩余血量比（战力走势）</span><span class="chart-legend"><i class="dot own"></i>我方HP% <i class="dot enemy"></i>敌方HP%</span></header>
+              <div class="chart-box"><canvas id="fe-ppo-chart-hp"></canvas></div>
+            </div>
+            <div class="chart-card">
+              <header><span>得分构成分解（Reward Breakdown）</span><span class="chart-legend"><i class="dot green"></i>击杀得分 <i class="dot cyan"></i>推进交战 <i class="dot enemy"></i>战损扣分</span></header>
+              <div class="chart-box"><canvas id="fe-ppo-chart-reward"></canvas></div>
+            </div>
+            <div class="chart-card">
+              <header><span>策略探索与损失</span><span class="chart-legend"><i class="dot cyan"></i>entropy <i class="dot amber"></i>policy_loss</span></header>
               <div class="chart-box"><canvas id="fe-ppo-chart-entropy"></canvas></div>
             </div>
             <div class="chart-card">
@@ -605,8 +639,9 @@
                   <label class="field">
                     <span>评估间隔 eval_every</span>
                     <select id="fe-ppo-eval-every">
-                      <option value="10">每 10 轮</option>
-                      <option value="20" selected>每 20 轮</option>
+                      <option value="5">每 5 轮（推荐 · 快速验证胜率）</option>
+                      <option value="10" selected>每 10 轮</option>
+                      <option value="20">每 20 轮</option>
                       <option value="0">仅最后评估</option>
                     </select>
                   </label>

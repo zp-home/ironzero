@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections import deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -109,6 +110,7 @@ class PPOTrainer:
         self.best_score: tuple[float, float] | None = None
         self.best_update: int | None = None
         self._current_update: int = 0
+        self._recent_episodes: deque[dict[str, Any]] = deque(maxlen=20)
 
     # ------------------------------------------------------------------
     # Live event stream (dashboard)
@@ -345,26 +347,68 @@ class PPOTrainer:
                 self._last_strategy_payload = self._collected_strategy
                 self._emit("strategy", dict(self._collected_strategy))
             completed = self.vec.drain_completed()
+            for episode in completed:
+                self._recent_episodes.append(episode)
             returns = [episode["return"] for episode in completed]
             results = [episode.get("result") for episode in completed]
             components: dict[str, list[float]] = {}
             for episode in completed:
                 for key, value in (episode.get("components") or {}).items():
                     components.setdefault(key, []).append(float(value))
+
+            recent_returns = [ep["return"] for ep in self._recent_episodes]
+            recent_results = [ep.get("result") for ep in self._recent_episodes]
+            rolling_return = float(np.mean(recent_returns)) if recent_returns else None
+            rolling_win_rate = (
+                sum(1 for r in recent_results if r == "victory") / len(recent_results)
+                if recent_results
+                else None
+            )
+
+            # If current update completed episodes, use their exact mean;
+            # otherwise smoothly retain the rolling average of recent completed games,
+            # avoiding steep drops to 0.0 when no episode ended in this short rollout.
+            mean_return = (
+                float(np.mean(returns))
+                if returns
+                else (rolling_return if rolling_return is not None else 0.0)
+            )
+            win_rate = (
+                sum(1 for r in results if r == "victory") / len(results)
+                if results
+                else (rolling_win_rate if rolling_win_rate is not None else 0.0)
+            )
+            loss_rate = (
+                sum(1 for r in results if r == "defeat") / len(results)
+                if results
+                else (
+                    sum(1 for r in recent_results if r == "defeat") / len(recent_results)
+                    if recent_results
+                    else 0.0
+                )
+            )
+            timeout_rate = (
+                sum(1 for r in results if r == "timeout") / len(results)
+                if results
+                else (
+                    sum(1 for r in recent_results if r == "timeout") / len(recent_results)
+                    if recent_results
+                    else 0.0
+                )
+            )
+
             record = {
                 "update": update,
                 **update_stats,
                 "episodes": len(completed),
-                "mean_return": float(np.mean(returns)) if returns else 0.0,
-                "win_rate": (
-                    sum(1 for r in results if r == "victory") / len(results) if results else 0.0
-                ),
-                "loss_rate": (
-                    sum(1 for r in results if r == "defeat") / len(results) if results else 0.0
-                ),
-                "timeout_rate": (
-                    sum(1 for r in results if r == "timeout") / len(results) if results else 0.0
-                ),
+                "total_episodes": len(self._recent_episodes),
+                "has_completed": bool(self._recent_episodes),
+                "mean_return": mean_return,
+                "rolling_return": rolling_return if rolling_return is not None else 0.0,
+                "win_rate": win_rate,
+                "rolling_win_rate": rolling_win_rate if rolling_win_rate is not None else 0.0,
+                "loss_rate": loss_rate,
+                "timeout_rate": timeout_rate,
                 "reward_components": {
                     key: float(np.mean(values)) for key, values in components.items()
                 },
@@ -373,12 +417,17 @@ class PPOTrainer:
             metrics["updates"].append(record)
             self._emit("update", record)
             if update % cfg.log_every == 0 or update == 1:
+                eps_label = (
+                    f"{record['episodes']}"
+                    if not self._recent_episodes
+                    else f"{record['episodes']} (tot={len(self._recent_episodes)})"
+                )
                 print(
-                    "[train] update {update:03d} eps={episodes} win={win_rate:.2f} loss={loss_rate:.2f} "
+                    "[train] update {update:03d} eps={eps_label} win={win_rate:.2f} loss={loss_rate:.2f} "
                     "timeout={timeout_rate:.2f} return={mean_return:+.3f} "
                     "pi={policy_loss:.3f} v={value_loss:.3f} H={entropy:.3f} t={elapsed_s}s".format(
                         update=update,
-                        episodes=record["episodes"],
+                        eps_label=eps_label,
                         mean_return=record["mean_return"],
                         win_rate=record["win_rate"],
                         loss_rate=record["loss_rate"],

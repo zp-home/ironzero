@@ -277,6 +277,8 @@ public final class IronZeroBridge implements ServerExtension {
                 + ",\"controlled_team\":0,\"visibility_revision\":" + engine.simulationTick
                 + ",\"observation_schema_version\":\"1\","
                 + "\"global_state\":{\"unit_count\":" + alive + ",\"building_count\":" + buildings + ","
+                + "\"funds\":" + fmt(player != null ? player.credits : 0.0) + ","
+                + "\"income\":0.0,"
                 + "\"army_value\":0.0,\"visible_enemy_value\":0.0,\"kills\":0,\"losses\":0,"
                 + "\"own_alive\":" + ownAlive + ",\"enemy_alive\":" + enemyAlive + ","
                 + "\"own_hp\":" + fmt(ownHp) + ",\"enemy_hp\":" + fmt(enemyHp) + ","

@@ -619,8 +619,18 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
         self.end_headers()
         self.wfile.write(body)
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
+        self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path.startswith("/health"):
@@ -772,7 +782,6 @@ class Handler(BaseHTTPRequestHandler):
             bool(payload.get("arena"))
             or "ironzero" in map_path.lower()
             or "ironzero" in map_name.lower()
-            or (units_per_team is not None)
         )
         max_entities = payload.get("max_entities")
         target_slots = payload.get("target_slots")
@@ -803,6 +812,15 @@ class Handler(BaseHTTPRequestHandler):
                 terrain = str(REPO_ROOT / "configs" / "maps" / "IronZero25.terrain.json")
             win_mode = win_mode or "annihilation"
             unlock_ai = True
+        else:
+            if units_per_team is not None:
+                units_per_team = max(1, min(25, int(units_per_team)))
+            if not terrain:
+                candidate_terrain = REPO_ROOT / "configs" / "maps" / f"{Path(map_name).stem}.terrain.json"
+                if candidate_terrain.is_file():
+                    terrain = str(candidate_terrain)
+                else:
+                    terrain = ""
 
         init_checkpoint = payload.get("init_checkpoint")
         init_mode = payload.get("init_mode")

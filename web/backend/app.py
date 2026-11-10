@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -46,6 +47,13 @@ RWPP_SERVICE = os.environ.get("IRONZERO_RWPP_SERVICE", "http://127.0.0.1:8300")
 RUNS_ROOT.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="IronZero Platform", version=APP_VERSION)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 _jobs: dict[str, dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
 
@@ -604,8 +612,19 @@ def _replay_index(root: Path) -> list[dict[str, Any]]:
 
 
 @app.get("/api/replays")
-def list_replays() -> list[dict[str, Any]]:
-    return _replay_index(RUNS_ROOT)
+def list_replays(
+    limit: int = Query(default=0, ge=0, le=1000),
+    offset: int = Query(default=0, ge=0),
+) -> Any:
+    items = _replay_index(RUNS_ROOT)
+    if limit > 0:
+        return {
+            "total": len(items),
+            "offset": offset,
+            "limit": limit,
+            "items": items[offset : offset + limit],
+        }
+    return items
 
 
 @app.get("/api/replays/{replay_id:path}")
