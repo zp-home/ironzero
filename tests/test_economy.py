@@ -188,6 +188,25 @@ class EconomySystemTests(unittest.TestCase):
         self.assertIsInstance(parsed.actions[2], ProduceUnitAction)
         self.assertIsInstance(parsed.actions[3], UpgradeBuildingAction)
 
+    def test_economic_rewards_and_breakdown(self) -> None:
+        # 1. 建造矿井应产生经济奖励
+        obs = self.engine.step_decision([{"kind": "build_extractor", "slot_id": 0}])
+        self.assertIn("reward_components", obs)
+        comps = obs["reward_components"]
+        self.assertIn("economy", comps)
+        self.assertGreater(comps["economy"], 0.0)
+
+        # 2. 建造工厂应产生工厂建造奖励
+        obs = self.engine.step_decision([{
+            "kind": "build_structure",
+            "structure_type": "land_factory",
+            "x": 200.0,
+            "y": 200.0,
+        }])
+        comps = obs["reward_components"]
+        self.assertIn("factories", comps)
+        self.assertGreater(comps["factories"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -197,6 +197,17 @@ class MicroDuelEngine:
             "kills": {team: 0 for team in range(cfg.teams)},
             "losses": {team: 0 for team in range(cfg.teams)},
         }
+        self.economic_events = {
+            team: {
+                "extractor_built": 0,
+                "extractor_upgraded": 0,
+                "factory_built": 0,
+                "unit_produced": 0,
+                "building_destroyed": 0,
+            }
+            for team in range(cfg.teams)
+        }
+        self.latest_reward_components = {}
         per_team = cfg.units_per_team
         if self.terrain is not None:
             self._spawn_terrain_units()
@@ -355,6 +366,8 @@ class MicroDuelEngine:
             slot.building_entity_id = new_id
             slot.owner_team = team
             slot.extractor_level = 1
+            if hasattr(self, "economic_events"):
+                self.economic_events[team]["extractor_built"] += 1
             return None
 
         if kind == "build_structure":
@@ -385,6 +398,8 @@ class MicroDuelEngine:
                 build_progress=1.0,
             )
             self.units.append(building)
+            if hasattr(self, "economic_events"):
+                self.economic_events[team]["factory_built"] += 1
             return None
 
         if kind == "produce_unit":
@@ -423,6 +438,8 @@ class MicroDuelEngine:
                 for slot in self.resource_slots:
                     if slot.building_entity_id == building.entity_id:
                         slot.extractor_level = 2
+                if hasattr(self, "economic_events"):
+                    self.economic_events[team]["extractor_upgraded"] += 1
                 return None
             return ACTION_MASKED
 
@@ -520,6 +537,7 @@ class MicroDuelEngine:
         state.update(
             {
                 "reward": self._pending_reward,
+                "reward_components": dict(getattr(self, "latest_reward_components", {})),
                 "terminated": self.done and self.result in {"victory", "defeat"},
                 "truncated": self.done and self.result == "timeout",
                 "result": self.result,
@@ -565,6 +583,8 @@ class MicroDuelEngine:
                                 entity_type_id=TANK_TYPE_ID,
                             )
                             self.units.append(new_unit)
+                            if hasattr(self, "economic_events"):
+                                self.economic_events[unit.team]["unit_produced"] += 1
 
         for unit in self.alive_units():
             if unit.cooldown > 0:
@@ -859,6 +879,8 @@ class MicroDuelEngine:
             target.hp = 0.0
             self.stats["kills"][source.team] += 1
             self.stats["losses"][target.team] += 1
+            if getattr(target, "is_building", False) and hasattr(self, "economic_events"):
+                self.economic_events[target.team]["building_destroyed"] += 1
             self.events.append(
                 {
                     "type": "kill",
@@ -1062,14 +1084,60 @@ class MicroDuelEngine:
     def _reward_after_window(self) -> float:
         cfg = self.config
         phi = self._potential()
-        reward = cfg.potential_coef * (phi - self._phi_prev)
+        potential_diff = cfg.potential_coef * (phi - self._phi_prev)
         self._phi_prev = phi
+
+        reward = potential_diff
+        ev = self.economic_events.get(0, {}) if hasattr(self, "economic_events") else {}
+        econ_reward = 0.0
+        factories_reward = 0.0
+        prod_reward = 0.0
+        building_loss_penalty = 0.0
+
+        if cfg.enable_economy:
+            econ_reward = (
+                getattr(cfg, "extractor_reward", 0.5) * ev.get("extractor_built", 0)
+                + getattr(cfg, "extractor_t2_reward", 0.8) * ev.get("extractor_upgraded", 0)
+            )
+            factories_reward = getattr(cfg, "factory_reward", 0.6) * ev.get("factory_built", 0)
+            prod_reward = getattr(cfg, "production_reward", 0.4) * ev.get("unit_produced", 0)
+            building_loss_penalty = getattr(cfg, "building_loss_penalty", 1.0) * ev.get("building_destroyed", 0)
+            reward += (econ_reward + factories_reward + prod_reward - building_loss_penalty)
+
+            # Idle funds penalty
+            funds = self.funds.get(0, 0.0)
+            if funds > 1500.0:
+                reward -= getattr(cfg, "idle_funds_penalty_coef", 0.0001) * (funds - 1500.0)
+
+        terminal_reward = 0.0
         if self.done:
             if self.result == "victory":
-                reward += cfg.win_reward
+                terminal_reward = cfg.win_reward
+                reward += terminal_reward
             elif self.result == "defeat":
-                reward += cfg.loss_reward
-        return reward
+                terminal_reward = cfg.loss_reward
+                reward += terminal_reward
+
+        self.latest_reward_components = {
+            "potential": float(potential_diff),
+            "economy": float(econ_reward),
+            "factories": float(factories_reward),
+            "production": float(prod_reward),
+            "building_loss": float(-building_loss_penalty),
+            "terminal": float(terminal_reward),
+        }
+
+        if hasattr(self, "economic_events"):
+            for team in range(cfg.teams):
+                self.economic_events[team] = {
+                    "extractor_built": 0,
+                    "extractor_upgraded": 0,
+                    "factory_built": 0,
+                    "unit_produced": 0,
+                    "building_destroyed": 0,
+                }
+
+        return float(reward)
 
     def snapshot(self) -> tuple[Any, ...]:
         """Deterministic fingerprint used by replay/regression tests."""

@@ -110,6 +110,7 @@ class VecMacroMicroEnv:
                     "decisions": int(self.episode_lengths[index]),
                     "result": info.get("result"),
                     "eval": info.get("eval"),
+                    "components": dict(info.get("reward_components") or {}),
                 }
                 self.completed_episodes.append(info["episode"])
                 obs, reset_info = env.reset()

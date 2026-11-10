@@ -64,6 +64,8 @@ class MacroMicroPipelineTests(unittest.TestCase):
             self.assertEqual(summary["episodes"], 2)
             self.assertIn("mean_return", summary)
             self.assertIn("mean_decisions", summary)
+            self.assertIn("macro_stats", summary)
+            self.assertIn("extractors_built", summary["macro_stats"])
 
 
 if __name__ == "__main__":

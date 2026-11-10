@@ -61,16 +61,23 @@ def relative_for(map_id: str) -> str:
         raise MapError(f"invalid map id: {map_id}") from exc
 
 
-def list_maps() -> list[dict[str, Any]]:
+_map_list_memory_cache: list[dict[str, Any]] | None = None
+
+
+def list_maps(force: bool = False) -> list[dict[str, Any]]:
+    """Enumerate all valid TMX maps in the asset cache, sorted by path."""
+    global _map_list_memory_cache
+    if _map_list_memory_cache is not None and not force:
+        return _map_list_memory_cache
+
     maps_root = ASSETS_ROOT / "maps"
     if not maps_root.is_dir():
         return []
     items: list[dict[str, Any]] = []
     for path in sorted(maps_root.rglob("*.tmx")):
         relative = path.relative_to(ASSETS_ROOT).as_posix()
-        try:
-            header = _read_map_header(path)
-        except MapError:
+        info = _inspect_map_file(path)
+        if info is None:
             continue
         name = path.stem
         players = 0
@@ -88,43 +95,48 @@ def list_maps() -> list[dict[str, Any]]:
                 "name": name,
                 "relative": relative,
                 "folder": path.relative_to(maps_root).parent.as_posix(),
-                "width_tiles": header["width_tiles"],
-                "height_tiles": header["height_tiles"],
-                "tile_width": header["tile_width"],
-                "tile_height": header["tile_height"],
-                "width_px": header["width_tiles"] * header["tile_width"],
-                "height_px": header["height_tiles"] * header["tile_height"],
+                "width_tiles": info["width_tiles"],
+                "height_tiles": info["height_tiles"],
+                "tile_width": info["tile_width"],
+                "tile_height": info["tile_height"],
+                "width_px": info["width_tiles"] * info["tile_width"],
+                "height_px": info["height_tiles"] * info["tile_height"],
                 "players": players,
-                "broken": _has_missing_tilesets(path),
+                "broken": info["broken"],
             }
         )
+    _map_list_memory_cache = items
     return items
 
 
-def _has_missing_tilesets(path: Path) -> bool:
-    """Cheap check: external .tsx references that do not exist in the cache."""
-
+def _inspect_map_file(path: Path) -> dict[str, Any] | None:
+    """Read map header and check for missing external tilesets in a single XML pass."""
     try:
         root = ET.parse(path).getroot()
-    except ET.ParseError:
-        return True
+    except (ET.ParseError, OSError):
+        return None
+    if root.tag != "map":
+        return None
+    broken = False
     for element in root.findall("tileset"):
         source = element.get("source")
         if source and not (ASSETS_ROOT / "tilesets" / source).is_file():
-            return True
-    return False
-
-
-def _read_map_header(path: Path) -> dict[str, int]:
-    root = ET.parse(path).getroot()
-    if root.tag != "map":
-        raise MapError(f"not a map: {path}")
+            broken = True
+            break
     return {
         "width_tiles": int(root.get("width", "0")),
         "height_tiles": int(root.get("height", "0")),
         "tile_width": int(root.get("tilewidth", "20")),
         "tile_height": int(root.get("tileheight", "20")),
+        "broken": broken,
     }
+
+
+def _read_map_header(path: Path) -> dict[str, int]:
+    info = _inspect_map_file(path)
+    if info is None:
+        raise MapError(f"not a map: {path}")
+    return info
 
 
 # ----------------------------------------------------------------------
@@ -381,18 +393,18 @@ def unit_sprites() -> dict[str, str]:
         return {}
     sprites: dict[str, str] = {}
     
-    # 常用实体映射
+    # 优先使用游戏原版实体贴图
     mapping = {
         "tank": "units/tanks/tank.png",
         "tank_turret": "units/tanks/tank_turret.png",
-        "builder": "units/combat_engineer/base.png",
+        "command_center": "units/original/base.png" if (ASSETS_ROOT / "units/original/base.png").is_file() else "units/outpost/outpost.png",
+        "builder": "units/original/builder.png" if (ASSETS_ROOT / "units/original/builder.png").is_file() else "units/combat_engineer/base.png",
+        "factory": "units/original/land_factory.png" if (ASSETS_ROOT / "units/original/land_factory.png").is_file() else "units/mech_factory/mechFactoryTop.png",
+        "extractor": "units/original/extractor.png" if (ASSETS_ROOT / "units/original/extractor.png").is_file() else "units/extractor/extractor.png",
+        "turret_base": "units/original/turret_base.png" if (ASSETS_ROOT / "units/original/turret_base.png").is_file() else "units/turrets/turret_base.png",
+        "turret_top": "units/original/turret_top.png" if (ASSETS_ROOT / "units/original/turret_top.png").is_file() else "units/turrets/turret_top.png",
         "combat_engineer": "units/combat_engineer/base.png",
-        "extractor": "units/extractor/extractor.png",
-        "factory": "units/mech_factory/mechFactoryTop.png",
         "mech_factory": "units/mech_factory/mechFactoryTop.png",
-        "turret_base": "units/turrets/turret_base.png",
-        "turret_top": "units/turrets/turret_top.png",
-        "command_center": "units/outpost/outpost.png",
         "outpost": "units/outpost/outpost.png",
     }
     for key, rel_path in mapping.items():

@@ -86,6 +86,14 @@ class MicroDuelConfig:
     tank_cost: float = 250.0
     resource_slots_count: int = 4
 
+    # Economic reward & penalty weights
+    extractor_reward: float = 0.5
+    extractor_t2_reward: float = 0.8
+    factory_reward: float = 0.6
+    production_reward: float = 0.4
+    building_loss_penalty: float = 1.0
+    idle_funds_penalty_coef: float = 0.0001
+
     # Episode control
     opponent: str = "scripted"  # scripted | idle | random
 

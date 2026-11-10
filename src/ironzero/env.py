@@ -137,6 +137,7 @@ class MicroDuelEnv:
             "masks": self.masks,
             "raw_state": self.state,
             "eval": self._adapter_eval(),
+            "reward_components": result.get("reward_components") or {},
         }
         return obs, reward, terminated, truncated, info
 

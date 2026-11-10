@@ -55,6 +55,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="real-game evaluation episodes per eval (sequential fresh games; keep <= 8)")
     parser.add_argument("--save-best", action=argparse.BooleanOptionalAction, default=True,
                         help="write checkpoint_best.pt whenever the eval win rate improves")
+    parser.add_argument("--async-eval", action=argparse.BooleanOptionalAction, default=True,
+                        help="run evaluation in a non-blocking background thread without pausing training")
     parser.add_argument("--port-base", type=int, default=5140, help="first bridge port for training envs")
     parser.add_argument("--eval-port-base", type=int, default=5200)
     parser.add_argument("--map", default="maps/challenge/Artillery.tmx")
@@ -132,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
         eval_every=args.eval_every,
         eval_episodes=args.eval_episodes,
         save_best=bool(args.save_best),
+        async_eval=bool(args.async_eval),
         out_dir=args.out,
     )
     out_dir = Path(args.out)

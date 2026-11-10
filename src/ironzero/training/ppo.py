@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import inspect
 import json
+import threading
 import time
 from collections import deque
 from dataclasses import asdict, dataclass, field
@@ -42,6 +44,7 @@ class PPOConfig:
     # (win rate first, mean return second). ``checkpoint.pt`` stays the final
     # update so both "latest" and "best" are always available.
     save_best: bool = True
+    async_eval: bool = True
     opponent: str = "scripted"
     out_dir: str = "runs/micro_duel"
     log_every: int = 5
@@ -111,6 +114,9 @@ class PPOTrainer:
         self.best_update: int | None = None
         self._current_update: int = 0
         self._recent_episodes: deque[dict[str, Any]] = deque(maxlen=20)
+        self._eval_thread: threading.Thread | None = None
+        self._eval_lock = threading.Lock()
+        self._in_flight_eval_update: int | None = None
 
     # ------------------------------------------------------------------
     # Live event stream (dashboard)
@@ -124,6 +130,11 @@ class PPOTrainer:
         self._live_handle.flush()
 
     def close(self) -> None:
+        if self._eval_thread is not None and self._eval_thread.is_alive():
+            try:
+                self._eval_thread.join(timeout=3.0)
+            except Exception:
+                pass
         if self._live_handle is not None:
             self._live_handle.close()
             self._live_handle = None
@@ -140,12 +151,16 @@ class PPOTrainer:
             opponent=self.config.opponent,
         )
 
-    def evaluate(self, update: int) -> dict[str, Any]:
+    def evaluate(self, update: int, policy: MaskedActorCritic | None = None) -> dict[str, Any]:
         self._current_update = int(update)
+        pol = policy if policy is not None else self.policy
         if self._eval_fn is not None:
+            sig = inspect.signature(self._eval_fn)
+            if "policy" in sig.parameters or len(sig.parameters) >= 2:
+                return self._eval_fn(self, policy=pol)
             return self._eval_fn(self)
         return evaluate_policy(
-            self.policy,
+            pol,
             episodes=self.config.eval_episodes,
             config=self.micro,
             opponent=self.config.opponent,
@@ -439,21 +454,91 @@ class PPOTrainer:
                     )
                 )
             if update % cfg.eval_every == 0 or update == cfg.total_updates:
-                evaluation = self.evaluate(update)
-                evaluations = {"update": update, **evaluation}
-                best = self.maybe_save_best(out_dir, update, evaluation, metrics)
+                if cfg.async_eval and update < cfg.total_updates:
+                    if self._eval_thread is not None and self._eval_thread.is_alive():
+                        print(
+                            f"[eval ] update {update:03d} skipped: update {self._in_flight_eval_update} is still evaluating in background"
+                        )
+                    else:
+                        weights = {k: v.cpu().clone() for k, v in self.policy.state_dict().items()}
+                        self._in_flight_eval_update = update
+
+                        def _eval_worker(upd: int, state_dict: dict[str, torch.Tensor]) -> None:
+                            try:
+                                eval_policy = MaskedActorCritic(
+                                    self.micro.flat_obs_dim,
+                                    nvec=self.micro.action_nvec,
+                                    hidden=self.config.hidden,
+                                ).to(self.device)
+                                eval_policy.load_state_dict(state_dict)
+                                eval_policy.eval()
+
+                                evaluation = self.evaluate(upd, policy=eval_policy)
+                                evaluations = {"update": upd, **evaluation}
+                                with self._eval_lock:
+                                    best = self.maybe_save_best(out_dir, upd, evaluation, metrics)
+                                    evaluations["is_best"] = bool(best)
+                                    metrics["evaluations"].append(evaluations)
+                                    self._emit("eval", evaluations)
+                                    self.save(out_dir, upd, metrics)
+                                if evaluation:
+                                    display = {k: v for k, v in evaluation.items() if k != "update"}
+                                    print(
+                                        f"[eval ] (async) update {upd:03d} win={evaluation.get('win_rate', 0.0):.2f} "
+                                        f"loss={evaluation.get('loss_rate', 0.0):.2f} timeout={evaluation.get('timeout_rate', 0.0):.2f} "
+                                        f"return={evaluation.get('mean_return', 0.0):+.3f} own_hp={evaluation.get('mean_own_hp_frac', 0.0):.2f}"
+                                    )
+                            except Exception as exc:
+                                print(f"[eval ] async evaluation for update {upd} failed: {exc}")
+                            finally:
+                                with self._eval_lock:
+                                    if self._in_flight_eval_update == upd:
+                                        self._in_flight_eval_update = None
+
+                        self._eval_thread = threading.Thread(
+                            target=_eval_worker, args=(update, weights), daemon=True
+                        )
+                        self._eval_thread.start()
+                else:
+                    evaluation = self.evaluate(update)
+                    evaluations = {"update": update, **evaluation}
+                    with self._eval_lock:
+                        best = self.maybe_save_best(out_dir, update, evaluation, metrics)
+                        evaluations["is_best"] = bool(best)
+                        metrics["evaluations"].append(evaluations)
+                        self._emit("eval", evaluations)
+                        if evaluation:
+                            display = {key: value for key, value in evaluation.items() if key != "update"}
+                            print(
+                                "[eval ] update {update:03d} win={win_rate:.2f} loss={loss_rate:.2f} "
+                                "timeout={timeout_rate:.2f} return={mean_return:+.3f} own_hp={mean_own_hp_frac:.2f}".format(
+                                    update=update, **display
+                                )
+                            )
+                        self.save(out_dir, update, metrics)
+        if self._eval_thread is not None and self._eval_thread.is_alive():
+            print(f"[train] waiting for in-flight background evaluation (update {self._in_flight_eval_update}) to finish...")
+            self._eval_thread.join()
+
+        has_final = any(ev.get("update") == cfg.total_updates for ev in metrics.get("evaluations", []))
+        if not has_final and (cfg.eval_every > 0 or cfg.total_updates > 0):
+            try:
+                evaluation = self.evaluate(cfg.total_updates)
+                evaluations = {"update": cfg.total_updates, **evaluation}
+                best = self.maybe_save_best(out_dir, cfg.total_updates, evaluation, metrics)
                 evaluations["is_best"] = bool(best)
                 metrics["evaluations"].append(evaluations)
                 self._emit("eval", evaluations)
                 if evaluation:
                     display = {key: value for key, value in evaluation.items() if key != "update"}
                     print(
-                        "[eval ] update {update:03d} win={win_rate:.2f} loss={loss_rate:.2f} "
+                        "[eval ] final update {update:03d} win={win_rate:.2f} loss={loss_rate:.2f} "
                         "timeout={timeout_rate:.2f} return={mean_return:+.3f} own_hp={mean_own_hp_frac:.2f}".format(
-                            update=update, **display
+                            update=cfg.total_updates, **display
                         )
                     )
-                self.save(out_dir, update, metrics)
+            except Exception as exc:
+                print(f"[eval ] final evaluation failed safely: {exc}")
         final_eval = metrics["evaluations"][-1] if metrics["evaluations"] else None
         metrics["final_eval"] = final_eval
         metrics["best_eval"] = self.best_eval

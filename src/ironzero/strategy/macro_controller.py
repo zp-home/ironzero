@@ -34,6 +34,23 @@ class MacroController:
         self.factory_cost = factory_cost
         self.tank_cost = tank_cost
         self.max_factories = max_factories
+        self.stats = {
+            "extractors_built": 0,
+            "extractors_upgraded": 0,
+            "factories_built": 0,
+            "units_queued": 0,
+        }
+
+    def reset_stats(self) -> None:
+        self.stats = {
+            "extractors_built": 0,
+            "extractors_upgraded": 0,
+            "factories_built": 0,
+            "units_queued": 0,
+        }
+
+    def get_stats(self) -> dict[str, int]:
+        return dict(self.stats)
 
     def plan_macro_actions(self, observation: Mapping[str, Any]) -> list[dict[str, Any]]:
         """Generate macro actions (build, upgrade, produce) from current state."""
@@ -55,6 +72,7 @@ class MacroController:
                 "slot_id": int(target_slot["slot_id"]),
             })
             funds -= self.extractor_cost
+            self.stats["extractors_built"] += 1
 
         # 2. 统计现有工厂数量，若未达上限且资金充足则建造陆军工厂
         factories = [
@@ -72,6 +90,7 @@ class MacroController:
                 "y": base_y,
             })
             funds -= self.factory_cost
+            self.stats["factories_built"] += 1
 
         # 3. 如果已有工厂，保持工厂排队生产坦克
         for factory in factories:
@@ -83,6 +102,7 @@ class MacroController:
                     "unit_type": "tank",
                 })
                 funds -= self.tank_cost
+                self.stats["units_queued"] += 1
 
         # 4. 若资金依然富余，将现有 T1 提取器升级为 T2
         if funds >= self.extractor_upgrade_cost:
@@ -98,5 +118,6 @@ class MacroController:
                     "building_entity_id": t1_extractors[0].get("entity_id"),
                 })
                 funds -= self.extractor_upgrade_cost
+                self.stats["extractors_upgraded"] += 1
 
         return actions

@@ -24,6 +24,7 @@ services:
       IRONZERO_GAME_ASSETS: /app/game_cache
       IRONZERO_RWPP_SERVICE: http://host.docker.internal:8300
       PYTHONUNBUFFERED: "1"
+      TZ: "Asia/Shanghai"
     volumes:
       - ../runs:/app/runs
       # Live frontend mount: edit web/frontend/* and refresh the browser without rebuilding.

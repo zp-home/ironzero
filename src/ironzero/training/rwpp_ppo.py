@@ -63,10 +63,11 @@ class RwppPPOTrainer(PPOTrainer):
 
         return {}
 
-    def _real_eval(self, trainer: PPOTrainer) -> dict[str, Any]:
+    def _real_eval(self, trainer: PPOTrainer, policy: Any | None = None) -> dict[str, Any]:
         out_dir = Path(self.config.out_dir)
+        pol = policy if policy is not None else trainer.policy
         return evaluate_rwpp_policy(
-            trainer.policy,
+            pol,
             game=self.game,
             episodes=self.config.eval_episodes,
             micro_config=self.micro,

@@ -46,6 +46,7 @@ def evaluate_macro_micro_policy(
     own_hp: list[float] = []
     enemy_hp: list[float] = []
     decisions: list[int] = []
+    macro_stats_list: list[dict[str, int]] = []
 
     for episode in range(episodes):
         env = MicroDuelEnv(config=cfg, opponent=opponent, seed=seed + episode, episode_prefix="macro_eval")
@@ -84,9 +85,15 @@ def evaluate_macro_micro_policy(
         own_hp.append(float(evaluation.get("own_hp_frac", 0.0)))
         enemy_hp.append(float(evaluation.get("enemy_hp_frac", 0.0)))
         decisions.append(steps)
+        macro_stats_list.append(macro.get_stats())
         env.close()
 
     summary = summarize(results, returns, own_hp, enemy_hp, decisions)
+    if macro_stats_list:
+        summary["macro_stats"] = {
+            key: float(np.mean([s.get(key, 0) for s in macro_stats_list]))
+            for key in ("extractors_built", "extractors_upgraded", "factories_built", "units_queued")
+        }
     return summary
 
 
