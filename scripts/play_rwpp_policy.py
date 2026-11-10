@@ -197,7 +197,11 @@ def main(argv: list[str] | None = None) -> int:
         obs, info = env.reset()
         own_ref = float(getattr(env, "own_max_ref", 0.0)) or None
         enemy_ref = float(getattr(env, "enemy_max_ref", 0.0)) or None
-        deadline = time.time() + args.timeout
+        effective_timeout = max(
+            float(args.timeout),
+            round(int(args.ticks) * (max(0, int(args.frame_ms)) + 6.0) / 1000.0 + 120.0, 1),
+        )
+        deadline = time.time() + effective_timeout
         while time.time() < deadline:
             frame = state_to_frame(
                 env.state,

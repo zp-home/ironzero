@@ -14,6 +14,7 @@ local subprocesses, and all artifacts live under ``IRONZERO_RUNS``.
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import subprocess
@@ -35,6 +36,7 @@ from pydantic import BaseModel, Field
 from . import maps as gamemaps
 
 APP_VERSION = "0.1.0"
+BEIJING_TZ = datetime.timezone(datetime.timedelta(hours=8))
 REPO_ROOT = Path(os.environ.get("IRONZERO_REPO_ROOT", Path(__file__).resolve().parents[2])).resolve()
 RUNS_ROOT = Path(os.environ.get("IRONZERO_RUNS", REPO_ROOT / "runs" / "platform")).resolve()
 CHECKPOINT_ROOTS = [
@@ -89,7 +91,7 @@ class InferRequest(BaseModel):
 
 
 class RwppRecordRequest(BaseModel):
-    ticks: int = Field(default=3600, ge=120, le=20000)
+    ticks: int = Field(default=3600, ge=120, le=216000)
     policy: str = Field(default="scripted", pattern="^(scripted|none|model|ppo)$")
     checkpoint: str | None = Field(default=None, max_length=512)
     # 2 ms/tick is ~8x real time; the policy only decides every 10 ticks, so the
@@ -110,7 +112,7 @@ class RwppPpoRequest(BaseModel):
     updates: int = Field(default=4, ge=1, le=500)
     envs: int = Field(default=2, ge=1, le=8)
     rollout_steps: int = Field(default=20, ge=1, le=512)
-    episode_ticks: int = Field(default=3600, ge=120, le=20000)
+    episode_ticks: int = Field(default=3600, ge=120, le=216000)
     device: str = Field(default="auto", pattern="^(auto|cpu|cuda)$")
     map_name: str = Field(default="Artillery", max_length=128)
     map_path: str = Field(default="maps/challenge/Artillery.tmx", max_length=256)
@@ -130,11 +132,11 @@ class RwppPpoRequest(BaseModel):
 # Helpers
 # ----------------------------------------------------------------------
 def _now() -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _new_job_dir(kind: str) -> tuple[str, Path]:
-    job_id = f"{kind}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    job_id = f"{kind}-{datetime.datetime.now(BEIJING_TZ).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     job_dir = RUNS_ROOT / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
     return job_id, job_dir
@@ -290,38 +292,70 @@ def _resolve_inside(root: Path, relative: str) -> Path:
     return candidate
 
 
-def _find_checkpoints(limit: int = 40) -> list[dict[str, Any]]:
+def _find_checkpoints(limit: int = 60) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
     seen: set[Path] = set()
     for root in CHECKPOINT_ROOTS:
         if not root.is_dir():
             continue
-        for path in root.rglob("checkpoint.pt"):
-            resolved = path.resolve()
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            try:
-                stat = resolved.stat()
-            except OSError:
-                continue
-            eval_info = None
-            summary_path = resolved.parent / "summary.json"
-            if summary_path.is_file():
+        for pattern in ("checkpoint.pt", "checkpoint_best.pt", "checkpoint_latest.pt"):
+            for path in root.rglob(pattern):
+                resolved = path.resolve()
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
                 try:
-                    eval_info = json.loads(summary_path.read_text(encoding="utf-8")).get("final_eval")
-                except json.JSONDecodeError:
-                    eval_info = None
-            found.append(
-                {
-                    "name": f"{resolved.parent.name}/checkpoint.pt",
-                    "path": str(resolved),
-                    "update": (eval_info or {}).get("update"),
-                    "eval": eval_info,
-                    "mtime": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
-                    "size_mb": round(stat.st_size / 1024 / 1024, 2),
-                }
-            )
+                    stat = resolved.stat()
+                except OSError:
+                    continue
+                eval_info = None
+                map_name = ""
+                for summary_name in ("eval_report.json", "rwpp_summary.json", "summary.json", "metrics.json"):
+                    summary_path = resolved.parent / summary_name
+                    if summary_path.is_file():
+                        try:
+                            data = json.loads(summary_path.read_text(encoding="utf-8"))
+                            eval_info = data.get("final_eval") or data.get("best_eval") or (data if "win_rate" in data else None)
+                            if not map_name:
+                                map_name = data.get("map") or (data.get("game") or {}).get("map") or ""
+                            if eval_info:
+                                break
+                        except (json.JSONDecodeError, OSError):
+                            continue
+                if not map_name:
+                    live_path = resolved.parent / "live.jsonl"
+                    if live_path.is_file():
+                        try:
+                            with live_path.open("r", encoding="utf-8") as f:
+                                first_line = f.readline()
+                                if first_line:
+                                    payload = json.loads(first_line).get("payload", {})
+                                    map_name = (payload.get("config") or {}).get("map_name") or ""
+                        except Exception:
+                            pass
+                if not map_name:
+                    pname = resolved.parent.name.lower()
+                    if "ironzero25" in pname:
+                        map_name = "IronZero25"
+                    elif "ironzero10" in pname:
+                        map_name = "IronZero10"
+                    elif "ironzero5" in pname:
+                        map_name = "IronZero5"
+                    elif "ironzero15" in pname:
+                        map_name = "IronZero15"
+                    elif "ironzero20" in pname:
+                        map_name = "IronZero20"
+                found.append(
+                    {
+                        "name": f"{resolved.parent.name}/{resolved.name}",
+                        "map": map_name,
+                        "path": str(resolved),
+                        "update": (eval_info or {}).get("update"),
+                        "eval": eval_info,
+                        "mtime": datetime.datetime.fromtimestamp(stat.st_mtime, BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                        "size_mb": round(stat.st_size / 1024 / 1024, 2),
+                    }
+                )
     found.sort(key=lambda item: item["mtime"], reverse=True)
     return found[:limit]
 
@@ -600,7 +634,7 @@ def _replay_index(root: Path) -> list[dict[str, Any]]:
                 "return": meta.get("return"),
                 "episodes": meta.get("episodes") or len(payload.get("episodes", [])),
                 "frames": len(payload.get("frames", [])),
-                "created_at": meta.get("created_at"),
+                "created_at": meta.get("created_at") or datetime.datetime.fromtimestamp(path.stat().st_mtime, BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S"),
                 "mode": meta.get("mode"),
                 "sim_mode": meta.get("sim_mode", "arena"),
                 "map_id": map_meta.get("id"),

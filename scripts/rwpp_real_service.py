@@ -855,8 +855,8 @@ class Handler(BaseHTTPRequestHandler):
         if not 1 <= rollout_steps <= 512:
             self._send({"error": "rollout_steps must be 1..512"}, 400)
             return
-        if not 120 <= episode_ticks <= 20000:
-            self._send({"error": "episode_ticks must be 120..20000"}, 400)
+        if not 120 <= episode_ticks <= 216000:
+            self._send({"error": "episode_ticks must be 120..216000"}, 400)
             return
         if device not in {"auto", "cpu", "cuda"}:
             self._send({"error": "device must be auto/cpu/cuda"}, 400)
@@ -965,8 +965,8 @@ class Handler(BaseHTTPRequestHandler):
         if not 1 <= concurrency <= MAX_PARALLEL:
             self._send({"error": f"concurrency must be 1..{MAX_PARALLEL}"}, 400)
             return
-        if not 120 <= ticks <= 20000:
-            self._send({"error": "ticks out of range"}, 400)
+        if not 120 <= ticks <= 216000:
+            self._send({"error": "ticks must be 120..216000"}, 400)
             return
         if policy in ("model", "ppo") and not checkpoint:
             self._send({"error": "policy=model requires checkpoint"}, 400)

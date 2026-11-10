@@ -164,7 +164,11 @@ def main(argv: list[str] | None = None) -> int:
         stream = stream_path.open("w", encoding="utf-8")
         stream.write(json.dumps({"type": "start", "job": job_dir.name}) + "\n")
         stream.flush()
-    deadline = time.time() + args.timeout
+    effective_timeout = max(
+        float(args.timeout),
+        round(int(args.ticks) * (max(0, int(args.frame_ms)) + 6.0) / 1000.0 + 120.0, 1),
+    )
+    deadline = time.time() + effective_timeout
     sock = None
     try:
         while time.time() < deadline:

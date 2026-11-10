@@ -241,13 +241,18 @@
                     </select>
                   </label>
                   <label class="field field-wide" id="fe-checkpoint-field" hidden>
-                    <span>Checkpoint（模型推理）</span>
+                    <span style="display:flex; justify-content:space-between; align-items:center;">
+                      <span>Checkpoint（模型推理）</span>
+                      <button class="btn btn-xs btn-ghost" type="button" id="fe-checkpoint-refresh"
+                              title="重新扫描并刷新 Checkpoint 列表"
+                              style="font-size:10.5px; padding:1px 6px; border-radius:4px;">刷新模型</button>
+                    </span>
                     <select id="fe-checkpoint-select"><option value="">加载中…</option></select>
                   </label>
                   <div class="hint-line subtle field-wide" id="fe-model-note" hidden>模型推理会加载所选 PPO checkpoint 在真机里对战；没有 checkpoint 时先到「实机训练」页跑一次 PPO。</div>
                   <label class="field">
-                    <span>每局 tick（60 ≈ 1s）</span>
-                    <input id="fe-ticks" type="number" min="120" max="20000" step="60" value="3600" />
+                    <span>每局 tick（60≈1s · 216000≈1h）</span>
+                    <input id="fe-ticks" type="number" min="120" max="216000" step="60" value="3600" />
                   </label>
                   <label class="field">
                     <span>并发实例</span>
@@ -263,7 +268,7 @@
                 <div class="hint-line" id="fe-infer-status">空闲：选择地图、时长与并发后开始</div>
                 <div class="hint-line subtle">每个并发实例是一个独立无头游戏进程，各自串行推进 tick；并发 = 多开进程。服务端槽位见 KPI 卡。</div>
                 <div class="hint-line subtle">当前推理 = 脚本 AI 规则（非模型）；模型推理在「实机训练」页 PPO 训练后接入。</div>
-                <div class="hint-line subtle">选择「PPO 模型」时会加载 checkpoint 在真机推理；frame_ms 只影响墙钟速度（模型推理建议真实速度 16ms），每局仿真时长由「每局 tick」决定（60 tick ≈ 1 秒；3600 tick ≈ 60 秒，引擎判出胜负会提前结束）。</div>
+                <div class="hint-line subtle">选择「PPO 模型」时会加载 checkpoint 在真机推理；frame_ms 只影响墙钟速度（模型推理建议真实速度 16ms），每局仿真时长由「每局 tick」决定（60 tick ≈ 1 秒；3600 tick ≈ 1 分钟；216000 tick ≈ 1 小时，引擎判出胜负会提前结束）。</div>
                 <div class="hint-line subtle">视觉迷雾仅影响观看渲染；训练侧「观测迷雾 260px」可在实机训练页 PPO 表单里调整。</div>
               </section>
 
@@ -417,8 +422,8 @@
                     <input id="fe-train-episodes" type="number" min="1" max="50" step="1" value="3" />
                   </label>
                   <label class="field">
-                    <span>每局 ticks</span>
-                    <input id="fe-train-ticks" type="number" min="120" max="20000" step="60" value="1200" />
+                    <span>每局 ticks（60≈1s · 216000≈1h）</span>
+                    <input id="fe-train-ticks" type="number" min="120" max="216000" step="60" value="1200" />
                   </label>
                   <label class="field field-wide">
                     <span>并发线程</span>
@@ -583,6 +588,7 @@
                     <span>双方坦克数量（每方 1–25 辆）</span>
                     <input id="fe-ppo-units" type="number" min="1" max="25" step="1" value="25" />
                   </label>
+                  <div class="hint-line subtle field-wide" id="fe-ppo-map-hint"></div>
 
                   <!-- 基础策略与初始化权重 -->
                   <label class="field field-wide">
@@ -613,8 +619,8 @@
                     <input id="fe-ppo-rollout" type="number" min="1" max="512" step="1" value="64" />
                   </label>
                   <label class="field">
-                    <span>每局 tick</span>
-                    <input id="fe-ppo-ticks" type="number" min="120" max="20000" step="60" value="4800" />
+                    <span>每局 tick（60≈1s · 216000≈1h）</span>
+                    <input id="fe-ppo-ticks" type="number" min="120" max="216000" step="60" value="4800" />
                   </label>
                   <label class="field field-wide">
                     <span>仿真速度 frame_ms</span>
