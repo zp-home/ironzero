@@ -33,6 +33,51 @@
           },
           "title": "Position Mask",
           "type": "array"
+        },
+        "build_mask": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "boolean"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Build Mask"
+        },
+        "produce_mask": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "boolean"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Produce Mask"
+        },
+        "slot_mask": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "boolean"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Slot Mask"
         }
       },
       "required": [
@@ -48,6 +93,7 @@
       "additionalProperties": false,
       "properties": {
         "unit_group": {
+          "default": 0,
           "maximum": 64,
           "minimum": 0,
           "title": "Unit Group",
@@ -56,6 +102,9 @@
         "kind": {
           "const": "attack_move",
           "default": "attack_move",
+          "enum": [
+            "attack_move"
+          ],
           "title": "Kind",
           "type": "string"
         },
@@ -69,7 +118,6 @@
         }
       },
       "required": [
-        "unit_group",
         "x",
         "y"
       ],
@@ -80,6 +128,7 @@
       "additionalProperties": false,
       "properties": {
         "unit_group": {
+          "default": 0,
           "maximum": 64,
           "minimum": 0,
           "title": "Unit Group",
@@ -88,6 +137,9 @@
         "kind": {
           "const": "attack_target",
           "default": "attack_target",
+          "enum": [
+            "attack_target"
+          ],
           "title": "Kind",
           "type": "string"
         },
@@ -98,10 +150,108 @@
         }
       },
       "required": [
-        "unit_group",
         "target_entity_id"
       ],
       "title": "AttackTargetAction",
+      "type": "object"
+    },
+    "BuildExtractorAction": {
+      "additionalProperties": false,
+      "properties": {
+        "unit_group": {
+          "default": 0,
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Unit Group",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "build_extractor",
+          "default": "build_extractor",
+          "enum": [
+            "build_extractor"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "slot_id": {
+          "minimum": 0,
+          "title": "Slot Id",
+          "type": "integer"
+        },
+        "builder_entity_id": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Builder Entity Id"
+        }
+      },
+      "required": [
+        "slot_id"
+      ],
+      "title": "BuildExtractorAction",
+      "type": "object"
+    },
+    "BuildStructureAction": {
+      "additionalProperties": false,
+      "properties": {
+        "unit_group": {
+          "default": 0,
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Unit Group",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "build_structure",
+          "default": "build_structure",
+          "enum": [
+            "build_structure"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "structure_type": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Structure Type",
+          "type": "string"
+        },
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        },
+        "builder_entity_id": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Builder Entity Id"
+        }
+      },
+      "required": [
+        "structure_type",
+        "x",
+        "y"
+      ],
+      "title": "BuildStructureAction",
       "type": "object"
     },
     "DoneMessage": {
@@ -110,6 +260,9 @@
         "protocol": {
           "const": "ironzero/1",
           "default": "ironzero/1",
+          "enum": [
+            "ironzero/1"
+          ],
           "title": "Protocol",
           "type": "string"
         },
@@ -146,6 +299,9 @@
         "type": {
           "const": "done",
           "default": "done",
+          "enum": [
+            "done"
+          ],
           "title": "Type",
           "type": "string"
         },
@@ -168,7 +324,6 @@
           "type": "boolean"
         },
         "info": {
-          "additionalProperties": true,
           "title": "Info",
           "type": "object"
         }
@@ -423,6 +578,9 @@
         "protocol": {
           "const": "ironzero/1",
           "default": "ironzero/1",
+          "enum": [
+            "ironzero/1"
+          ],
           "title": "Protocol",
           "type": "string"
         },
@@ -474,6 +632,9 @@
         "type": {
           "const": "error",
           "default": "error",
+          "enum": [
+            "error"
+          ],
           "title": "Type",
           "type": "string"
         },
@@ -492,7 +653,6 @@
           "type": "boolean"
         },
         "details": {
-          "additionalProperties": true,
           "title": "Details",
           "type": "object"
         }
@@ -654,6 +814,9 @@
         "protocol": {
           "const": "ironzero/1",
           "default": "ironzero/1",
+          "enum": [
+            "ironzero/1"
+          ],
           "title": "Protocol",
           "type": "string"
         },
@@ -705,11 +868,18 @@
         "type": {
           "const": "heartbeat",
           "default": "heartbeat",
+          "enum": [
+            "heartbeat"
+          ],
           "title": "Type",
           "type": "string"
         },
         "status": {
-          "$ref": "#/$defs/HeartbeatStatus",
+          "allOf": [
+            {
+              "$ref": "#/$defs/HeartbeatStatus"
+            }
+          ],
           "default": "running"
         },
         "last_tick": {
@@ -747,6 +917,9 @@
         "protocol": {
           "const": "ironzero/1",
           "default": "ironzero/1",
+          "enum": [
+            "ironzero/1"
+          ],
           "title": "Protocol",
           "type": "string"
         },
@@ -798,6 +971,9 @@
         "type": {
           "const": "hello",
           "default": "hello",
+          "enum": [
+            "hello"
+          ],
           "title": "Type",
           "type": "string"
         },
@@ -833,6 +1009,7 @@
       "additionalProperties": false,
       "properties": {
         "unit_group": {
+          "default": 0,
           "maximum": 64,
           "minimum": 0,
           "title": "Unit Group",
@@ -841,13 +1018,13 @@
         "kind": {
           "const": "hold",
           "default": "hold",
+          "enum": [
+            "hold"
+          ],
           "title": "Kind",
           "type": "string"
         }
       },
-      "required": [
-        "unit_group"
-      ],
       "title": "HoldAction",
       "type": "object"
     },
@@ -855,6 +1032,7 @@
       "additionalProperties": false,
       "properties": {
         "unit_group": {
+          "default": 0,
           "maximum": 64,
           "minimum": 0,
           "title": "Unit Group",
@@ -863,6 +1041,9 @@
         "kind": {
           "const": "move_group",
           "default": "move_group",
+          "enum": [
+            "move_group"
+          ],
           "title": "Kind",
           "type": "string"
         },
@@ -876,7 +1057,6 @@
         }
       },
       "required": [
-        "unit_group",
         "x",
         "y"
       ],
@@ -889,6 +1069,9 @@
         "protocol": {
           "const": "ironzero/1",
           "default": "ironzero/1",
+          "enum": [
+            "ironzero/1"
+          ],
           "title": "Protocol",
           "type": "string"
         },
@@ -925,6 +1108,9 @@
         "type": {
           "const": "obs",
           "default": "obs",
+          "enum": [
+            "obs"
+          ],
           "title": "Type",
           "type": "string"
         },
@@ -935,7 +1121,7 @@
           "type": "string"
         },
         "game_time": {
-          "minimum": 0,
+          "minimum": 0.0,
           "title": "Game Time",
           "type": "number"
         },
@@ -992,6 +1178,13 @@
           "title": "Local Maps",
           "type": "object"
         },
+        "resource_slots": {
+          "items": {
+            "$ref": "#/$defs/ResourceSlot"
+          },
+          "title": "Resource Slots",
+          "type": "array"
+        },
         "masks": {
           "$ref": "#/$defs/ActionMasks"
         },
@@ -1009,8 +1202,7 @@
               "type": "null"
             }
           ],
-          "default": null,
-          "title": "Result"
+          "default": null
         },
         "terminated": {
           "default": false,
@@ -1023,7 +1215,6 @@
           "type": "boolean"
         },
         "info": {
-          "additionalProperties": true,
           "title": "Info",
           "type": "object"
         }
@@ -1043,12 +1234,60 @@
       "title": "ObservationMessage",
       "type": "object"
     },
+    "ProduceUnitAction": {
+      "additionalProperties": false,
+      "properties": {
+        "unit_group": {
+          "default": 0,
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Unit Group",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "produce_unit",
+          "default": "produce_unit",
+          "enum": [
+            "produce_unit"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "unit_type": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Unit Type",
+          "type": "string"
+        },
+        "factory_entity_id": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Factory Entity Id"
+        }
+      },
+      "required": [
+        "unit_type"
+      ],
+      "title": "ProduceUnitAction",
+      "type": "object"
+    },
     "ReceiptMessage": {
       "additionalProperties": false,
       "properties": {
         "protocol": {
           "const": "ironzero/1",
           "default": "ironzero/1",
+          "enum": [
+            "ironzero/1"
+          ],
           "title": "Protocol",
           "type": "string"
         },
@@ -1085,6 +1324,9 @@
         "type": {
           "const": "receipt",
           "default": "receipt",
+          "enum": [
+            "receipt"
+          ],
           "title": "Type",
           "type": "string"
         },
@@ -1133,12 +1375,59 @@
       "title": "ReceiptMessage",
       "type": "object"
     },
+    "RepairTargetAction": {
+      "additionalProperties": false,
+      "properties": {
+        "unit_group": {
+          "default": 0,
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Unit Group",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "repair_target",
+          "default": "repair_target",
+          "enum": [
+            "repair_target"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "target_entity_id": {
+          "minimum": 0,
+          "title": "Target Entity Id",
+          "type": "integer"
+        },
+        "builder_entity_id": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Builder Entity Id"
+        }
+      },
+      "required": [
+        "target_entity_id"
+      ],
+      "title": "RepairTargetAction",
+      "type": "object"
+    },
     "ResetRequest": {
       "additionalProperties": false,
       "properties": {
         "protocol": {
           "const": "ironzero/1",
           "default": "ironzero/1",
+          "enum": [
+            "ironzero/1"
+          ],
           "title": "Protocol",
           "type": "string"
         },
@@ -1183,6 +1472,9 @@
         "type": {
           "const": "reset",
           "default": "reset",
+          "enum": [
+            "reset"
+          ],
           "title": "Type",
           "type": "string"
         },
@@ -1204,7 +1496,6 @@
           "type": "string"
         },
         "options": {
-          "additionalProperties": true,
           "title": "Options",
           "type": "object"
         }
@@ -1219,12 +1510,78 @@
       "title": "ResetRequest",
       "type": "object"
     },
+    "ResourceSlot": {
+      "additionalProperties": true,
+      "properties": {
+        "slot_id": {
+          "minimum": 0,
+          "title": "Slot Id",
+          "type": "integer"
+        },
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        },
+        "occupied": {
+          "default": false,
+          "title": "Occupied",
+          "type": "boolean"
+        },
+        "building_entity_id": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Building Entity Id"
+        },
+        "owner_team": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Owner Team"
+        },
+        "extractor_level": {
+          "default": 0,
+          "maximum": 3,
+          "minimum": 0,
+          "title": "Extractor Level",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "slot_id",
+        "x",
+        "y"
+      ],
+      "title": "ResourceSlot",
+      "type": "object"
+    },
     "ShutdownMessage": {
       "additionalProperties": false,
       "properties": {
         "protocol": {
           "const": "ironzero/1",
           "default": "ironzero/1",
+          "enum": [
+            "ironzero/1"
+          ],
           "title": "Protocol",
           "type": "string"
         },
@@ -1276,6 +1633,9 @@
         "type": {
           "const": "shutdown",
           "default": "shutdown",
+          "enum": [
+            "shutdown"
+          ],
           "title": "Type",
           "type": "string"
         },
@@ -1312,6 +1672,9 @@
         "protocol": {
           "const": "ironzero/1",
           "default": "ironzero/1",
+          "enum": [
+            "ironzero/1"
+          ],
           "title": "Protocol",
           "type": "string"
         },
@@ -1348,6 +1711,9 @@
         "type": {
           "const": "step",
           "default": "step",
+          "enum": [
+            "step"
+          ],
           "title": "Type",
           "type": "string"
         },
@@ -1363,9 +1729,14 @@
               "mapping": {
                 "attack_move": "#/$defs/AttackMoveAction",
                 "attack_target": "#/$defs/AttackTargetAction",
+                "build_extractor": "#/$defs/BuildExtractorAction",
+                "build_structure": "#/$defs/BuildStructureAction",
                 "hold": "#/$defs/HoldAction",
                 "move_group": "#/$defs/MoveGroupAction",
-                "stop": "#/$defs/StopAction"
+                "produce_unit": "#/$defs/ProduceUnitAction",
+                "repair_target": "#/$defs/RepairTargetAction",
+                "stop": "#/$defs/StopAction",
+                "upgrade_building": "#/$defs/UpgradeBuildingAction"
               },
               "propertyName": "kind"
             },
@@ -1384,6 +1755,21 @@
               },
               {
                 "$ref": "#/$defs/HoldAction"
+              },
+              {
+                "$ref": "#/$defs/BuildExtractorAction"
+              },
+              {
+                "$ref": "#/$defs/BuildStructureAction"
+              },
+              {
+                "$ref": "#/$defs/ProduceUnitAction"
+              },
+              {
+                "$ref": "#/$defs/UpgradeBuildingAction"
+              },
+              {
+                "$ref": "#/$defs/RepairTargetAction"
               }
             ]
           },
@@ -1407,6 +1793,7 @@
       "additionalProperties": false,
       "properties": {
         "unit_group": {
+          "default": 0,
           "maximum": 64,
           "minimum": 0,
           "title": "Unit Group",
@@ -1415,14 +1802,45 @@
         "kind": {
           "const": "stop",
           "default": "stop",
+          "enum": [
+            "stop"
+          ],
           "title": "Kind",
           "type": "string"
         }
       },
-      "required": [
-        "unit_group"
-      ],
       "title": "StopAction",
+      "type": "object"
+    },
+    "UpgradeBuildingAction": {
+      "additionalProperties": false,
+      "properties": {
+        "unit_group": {
+          "default": 0,
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Unit Group",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "upgrade_building",
+          "default": "upgrade_building",
+          "enum": [
+            "upgrade_building"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "building_entity_id": {
+          "minimum": 0,
+          "title": "Building Entity Id",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "building_entity_id"
+      ],
+      "title": "UpgradeBuildingAction",
       "type": "object"
     }
   },

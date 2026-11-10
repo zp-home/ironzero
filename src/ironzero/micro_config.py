@@ -73,6 +73,19 @@ class MicroDuelConfig:
     win_reward: float = 1.0
     loss_reward: float = -1.0
 
+    # Economy and Macro extension
+    enable_economy: bool = False
+    starting_funds: float = 1000.0
+    base_income_per_second: float = 1.0
+    extractor_income_per_second: float = 8.0
+    extractor_t2_income_per_second: float = 18.0
+    extractor_cost: float = 700.0
+    extractor_upgrade_cost: float = 1200.0
+    factory_cost: float = 800.0
+    turret_cost: float = 500.0
+    tank_cost: float = 250.0
+    resource_slots_count: int = 4
+
     # Episode control
     opponent: str = "scripted"  # scripted | idle | random
 

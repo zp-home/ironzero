@@ -5,6 +5,7 @@ from .evaluate import evaluate_policy, evaluate_random, sample_masked_action, su
 from .policy import MaskedActorCritic, masks_to_tensors
 from .ppo import PPOConfig, PPOTrainer, Rollout, load_policy
 from .vec_env import VecMicroEnv
+from .vec_macro_micro import VecMacroMicroEnv
 
 __all__ = [
     "MaskedActorCritic",
@@ -14,6 +15,7 @@ __all__ = [
     "Rollout",
     "load_policy",
     "VecMicroEnv",
+    "VecMacroMicroEnv",
     "evaluate_policy",
     "evaluate_random",
     "sample_masked_action",

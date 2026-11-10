@@ -30,6 +30,11 @@ class ActionKind(StrEnum):
     ATTACK_TARGET = "attack_target"
     STOP = "stop"
     HOLD = "hold"
+    BUILD_EXTRACTOR = "build_extractor"
+    BUILD_STRUCTURE = "build_structure"
+    PRODUCE_UNIT = "produce_unit"
+    UPGRADE_BUILDING = "upgrade_building"
+    REPAIR_TARGET = "repair_target"
 
 
 class ErrorCode(StrEnum):
@@ -82,7 +87,7 @@ class _ActionBase(BaseModel):
         allow_inf_nan=False,
     )
 
-    unit_group: int = Field(ge=0, le=64)
+    unit_group: int = Field(default=0, ge=0, le=64)
 
 
 class MoveGroupAction(_ActionBase):
@@ -110,6 +115,37 @@ class HoldAction(_ActionBase):
     kind: Literal[ActionKind.HOLD] = ActionKind.HOLD
 
 
+class BuildExtractorAction(_ActionBase):
+    kind: Literal[ActionKind.BUILD_EXTRACTOR] = ActionKind.BUILD_EXTRACTOR
+    slot_id: int = Field(ge=0)
+    builder_entity_id: int | None = Field(default=None, ge=0)
+
+
+class BuildStructureAction(_ActionBase):
+    kind: Literal[ActionKind.BUILD_STRUCTURE] = ActionKind.BUILD_STRUCTURE
+    structure_type: str = Field(min_length=1, max_length=64)
+    x: float
+    y: float
+    builder_entity_id: int | None = Field(default=None, ge=0)
+
+
+class ProduceUnitAction(_ActionBase):
+    kind: Literal[ActionKind.PRODUCE_UNIT] = ActionKind.PRODUCE_UNIT
+    unit_type: str = Field(min_length=1, max_length=64)
+    factory_entity_id: int | None = Field(default=None, ge=0)
+
+
+class UpgradeBuildingAction(_ActionBase):
+    kind: Literal[ActionKind.UPGRADE_BUILDING] = ActionKind.UPGRADE_BUILDING
+    building_entity_id: int = Field(ge=0)
+
+
+class RepairTargetAction(_ActionBase):
+    kind: Literal[ActionKind.REPAIR_TARGET] = ActionKind.REPAIR_TARGET
+    target_entity_id: int = Field(ge=0)
+    builder_entity_id: int | None = Field(default=None, ge=0)
+
+
 Action: TypeAlias = Annotated[
     Union[
         MoveGroupAction,
@@ -117,9 +153,26 @@ Action: TypeAlias = Annotated[
         AttackTargetAction,
         StopAction,
         HoldAction,
+        BuildExtractorAction,
+        BuildStructureAction,
+        ProduceUnitAction,
+        UpgradeBuildingAction,
+        RepairTargetAction,
     ],
     Field(discriminator="kind"),
 ]
+
+
+class ResourceSlot(BaseModel):
+    model_config = ConfigDict(extra="allow", allow_inf_nan=False)
+
+    slot_id: int = Field(ge=0)
+    x: float
+    y: float
+    occupied: bool = False
+    building_entity_id: int | None = Field(default=None, ge=0)
+    owner_team: int | None = Field(default=None, ge=0)
+    extractor_level: int = Field(default=0, ge=0, le=3)
 
 
 class ActionMasks(BaseModel):
@@ -129,6 +182,9 @@ class ActionMasks(BaseModel):
     unit_group_mask: list[bool]
     target_mask: list[bool]
     position_mask: list[list[bool]]
+    build_mask: list[bool] | None = None
+    produce_mask: list[bool] | None = None
+    slot_mask: list[bool] | None = None
 
 
 class GlobalState(BaseModel):
@@ -211,6 +267,7 @@ class ObservationMessage(MessageBase):
     visible_enemy_entities: list[Entity] = Field(default_factory=list)
     remembered_enemies: list[Entity] = Field(default_factory=list)
     local_maps: dict[str, list[list[float]]] = Field(default_factory=dict)
+    resource_slots: list[ResourceSlot] = Field(default_factory=list)
     masks: ActionMasks
     reward: float = 0.0
     # Native game-over signal: null while the battle is running, set on the

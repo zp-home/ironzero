@@ -54,8 +54,10 @@ from .rule_strategy import (
     DEFAULT_MAP_WIDTH,
     RuleStrategy,
 )
+from .macro_controller import MacroController
 
 __all__ = [
+    "MacroController",
     "DEFAULT_ATTACK_RADIUS",
     "DEFAULT_BASE_URL",
     "DEFAULT_MAP_HEIGHT",

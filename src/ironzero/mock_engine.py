@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Sequence
 
 from .micro_config import DEFAULT_CONFIG, MicroDuelConfig
@@ -37,9 +37,18 @@ ACTION_KINDS: tuple[str, ...] = (
     "attack_target",
     "stop",
     "hold",
+    "build_extractor",
+    "build_structure",
+    "produce_unit",
+    "upgrade_building",
+    "repair_target",
 )
 
 TANK_TYPE_ID = 1
+BUILDER_TYPE_ID = 2
+EXTRACTOR_TYPE_ID = 10
+LAND_FACTORY_TYPE_ID = 11
+TURRET_TYPE_ID = 12
 
 # Terrain mode (real map) tuning. Arena mode never touches these values: with
 # ``terrain=None`` the engine keeps the exact original code path and numbers.
@@ -54,8 +63,20 @@ UNKNOWN_UNIT = "UNKNOWN_UNIT"
 UNIT_NOT_OWNED = "UNIT_NOT_OWNED"
 TARGET_NOT_VISIBLE = "TARGET_NOT_VISIBLE"
 POSITION_BLOCKED = "POSITION_BLOCKED"
+INSUFFICIENT_FUNDS = "INSUFFICIENT_FUNDS"
 ACTION_MASKED = "ACTION_MASKED"
 INVALID_MESSAGE = "INVALID_MESSAGE"
+
+
+@dataclass(slots=True)
+class MockResourceSlot:
+    slot_id: int
+    x: float
+    y: float
+    occupied: bool = False
+    building_entity_id: int | None = None
+    owner_team: int | None = None
+    extractor_level: int = 0
 
 
 @dataclass(slots=True)
@@ -73,6 +94,12 @@ class Unit:
     target_id: int | None = None
     cooldown: int = 0
     alive: bool = True
+    is_building: bool = False
+    entity_type_id: int = TANK_TYPE_ID
+    build_progress: float = 1.0
+    extractor_level: int = 0
+    production_queue: list[str] = field(default_factory=list)
+    production_timer: int = 0
     # Terrain-mode only state (ignored in arena mode).
     path: list[tuple[float, float]] | None = None
     path_index: int = 0
@@ -150,6 +177,20 @@ class MicroDuelEngine:
         self.result = None
         self.events = []
         self.units = []
+        self.funds = {
+            team: float(cfg.starting_funds if cfg.enable_economy else 0.0)
+            for team in range(cfg.teams)
+        }
+        self.resource_slots = []
+        if cfg.enable_economy:
+            cx, cy = cfg.map_width / 2.0, cfg.map_height / 2.0
+            margin = cfg.spawn_margin
+            self.resource_slots = [
+                MockResourceSlot(slot_id=0, x=margin * 0.8, y=cy, occupied=False),
+                MockResourceSlot(slot_id=1, x=cfg.map_width - margin * 0.8, y=cy, occupied=False),
+                MockResourceSlot(slot_id=2, x=cx, y=max(50.0, cy - 200.0), occupied=False),
+                MockResourceSlot(slot_id=3, x=cx, y=min(cfg.map_height - 50.0, cy + 200.0), occupied=False),
+            ]
         self.stats = {
             "damage_dealt": {team: 0.0 for team in range(cfg.teams)},
             "damage_taken": {team: 0.0 for team in range(cfg.teams)},
@@ -284,6 +325,115 @@ class MicroDuelEngine:
         kind = action.get("kind")
         if kind not in ACTION_KINDS:
             return INVALID_MESSAGE
+
+        if kind == "build_extractor":
+            slot_id = action.get("slot_id")
+            if not isinstance(slot_id, int) or not (0 <= slot_id < len(self.resource_slots)):
+                return INVALID_MESSAGE
+            slot = self.resource_slots[slot_id]
+            if slot.occupied:
+                return ACTION_MASKED
+            if self.funds.get(team, 0.0) < self.config.extractor_cost:
+                return INSUFFICIENT_FUNDS
+            self.funds[team] -= self.config.extractor_cost
+            new_id = max((u.entity_id for u in self.units), default=0) + 1
+            extractor = Unit(
+                entity_id=new_id,
+                team=team,
+                group=0,
+                x=slot.x,
+                y=slot.y,
+                max_hp=600.0,
+                hp=600.0,
+                is_building=True,
+                entity_type_id=EXTRACTOR_TYPE_ID,
+                build_progress=1.0,
+                extractor_level=1,
+            )
+            self.units.append(extractor)
+            slot.occupied = True
+            slot.building_entity_id = new_id
+            slot.owner_team = team
+            slot.extractor_level = 1
+            return None
+
+        if kind == "build_structure":
+            stype = action.get("structure_type", "land_factory")
+            cost = self.config.factory_cost if stype == "land_factory" else self.config.turret_cost
+            if self.funds.get(team, 0.0) < cost:
+                return INSUFFICIENT_FUNDS
+            x = float(action.get("x", math.nan))
+            y = float(action.get("y", math.nan))
+            if not (math.isfinite(x) and math.isfinite(y)):
+                return INVALID_MESSAGE
+            if not (0.0 <= x <= self.config.map_width and 0.0 <= y <= self.config.map_height):
+                return POSITION_BLOCKED
+            self.funds[team] -= cost
+            new_id = max((u.entity_id for u in self.units), default=0) + 1
+            type_id = LAND_FACTORY_TYPE_ID if stype == "land_factory" else TURRET_TYPE_ID
+            hp = 1200.0 if stype == "land_factory" else 450.0
+            building = Unit(
+                entity_id=new_id,
+                team=team,
+                group=0,
+                x=x,
+                y=y,
+                max_hp=hp,
+                hp=hp,
+                is_building=True,
+                entity_type_id=type_id,
+                build_progress=1.0,
+            )
+            self.units.append(building)
+            return None
+
+        if kind == "produce_unit":
+            unit_type = action.get("unit_type", "tank")
+            cost = self.config.tank_cost
+            if self.funds.get(team, 0.0) < cost:
+                return INSUFFICIENT_FUNDS
+            factory_id = action.get("factory_entity_id")
+            factory: Unit | None = None
+            if factory_id is not None:
+                u = self.unit_by_id(factory_id)
+                if u is not None and u.alive and u.team == team and u.entity_type_id == LAND_FACTORY_TYPE_ID:
+                    factory = u
+            if factory is None:
+                for u in self.alive_units(team):
+                    if u.is_building and u.entity_type_id == LAND_FACTORY_TYPE_ID:
+                        factory = u
+                        break
+            if factory is None:
+                return ACTION_MASKED
+            self.funds[team] -= cost
+            factory.production_queue.append(unit_type)
+            return None
+
+        if kind == "upgrade_building":
+            building_id = action.get("building_entity_id")
+            building = self.unit_by_id(building_id) if isinstance(building_id, int) else None
+            if building is None or not building.alive or building.team != team or not building.is_building:
+                return INVALID_MESSAGE
+            if building.entity_type_id == EXTRACTOR_TYPE_ID and building.extractor_level == 1:
+                cost = self.config.extractor_upgrade_cost
+                if self.funds.get(team, 0.0) < cost:
+                    return INSUFFICIENT_FUNDS
+                self.funds[team] -= cost
+                building.extractor_level = 2
+                for slot in self.resource_slots:
+                    if slot.building_entity_id == building.entity_id:
+                        slot.extractor_level = 2
+                return None
+            return ACTION_MASKED
+
+        if kind == "repair_target":
+            target_id = action.get("target_entity_id")
+            target = self.unit_by_id(target_id) if isinstance(target_id, int) else None
+            if target is None or not target.alive or target.team != team:
+                return INVALID_MESSAGE
+            target.hp = min(target.max_hp, target.hp + 50.0)
+            return None
+
         group = action.get("unit_group")
         if not isinstance(group, int) or not 0 <= group < self.config.groups:
             return UNKNOWN_UNIT
@@ -383,6 +533,39 @@ class MicroDuelEngine:
     def _tick(self) -> None:
         cfg = self.config
         self.tick += 1
+        if cfg.enable_economy:
+            for team in range(cfg.teams):
+                self.funds[team] += cfg.base_income_per_second / cfg.tick_rate
+            for unit in list(self.units):
+                if not unit.alive or not unit.is_building:
+                    continue
+                if unit.entity_type_id == EXTRACTOR_TYPE_ID and unit.build_progress >= 1.0:
+                    inc = (
+                        cfg.extractor_income_per_second
+                        if unit.extractor_level <= 1
+                        else cfg.extractor_t2_income_per_second
+                    )
+                    self.funds[unit.team] += inc / cfg.tick_rate
+                elif unit.entity_type_id == LAND_FACTORY_TYPE_ID and unit.build_progress >= 1.0:
+                    if unit.production_queue:
+                        unit.production_timer += 1
+                        if unit.production_timer >= 60:
+                            unit.production_timer = 0
+                            unit.production_queue.pop(0)
+                            new_id = max((u.entity_id for u in self.units), default=0) + 1
+                            offset_x = 35.0 if unit.team == 0 else -35.0
+                            new_unit = Unit(
+                                entity_id=new_id,
+                                team=unit.team,
+                                group=0,
+                                x=unit.x + offset_x,
+                                y=unit.y,
+                                max_hp=cfg.unit_hp,
+                                hp=cfg.unit_hp,
+                                entity_type_id=TANK_TYPE_ID,
+                            )
+                            self.units.append(new_unit)
+
         for unit in self.alive_units():
             if unit.cooldown > 0:
                 unit.cooldown -= 1
@@ -398,6 +581,8 @@ class MicroDuelEngine:
         self._check_done()
 
     def _select_target(self, unit: Unit) -> Unit | None:
+        if unit.is_building and unit.entity_type_id in {EXTRACTOR_TYPE_ID, LAND_FACTORY_TYPE_ID}:
+            return None
         if unit.order == 1:  # plain move never auto-engages
             return None
         if unit.order == 3 and unit.target_id is not None:
@@ -426,6 +611,8 @@ class MicroDuelEngine:
         return any(self._distance(observer, target) <= radius for observer in self.alive_units(team))
 
     def _move(self, unit: Unit) -> None:
+        if unit.is_building:
+            return
         if self.terrain is not None:
             self._move_terrain(unit)
             return
@@ -784,6 +971,19 @@ class MicroDuelEngine:
     # ------------------------------------------------------------------
     # Observation payload (shape-compatible with ironzero/1 messages)
     # ------------------------------------------------------------------
+    def _calculate_income(self, team: int) -> float:
+        if not self.config.enable_economy:
+            return 0.0
+        income = self.config.base_income_per_second
+        for u in self.alive_units(team):
+            if u.is_building and u.entity_type_id == EXTRACTOR_TYPE_ID and u.build_progress >= 1.0:
+                income += (
+                    self.config.extractor_income_per_second
+                    if u.extractor_level <= 1
+                    else self.config.extractor_t2_income_per_second
+                )
+        return income
+
     def observation(self, team: int = 0) -> dict[str, Any]:
         cfg = self.config
         own = self.alive_units(team)
@@ -792,6 +992,7 @@ class MicroDuelEngine:
             enemies = [unit for unit in enemies if self._visible_to(unit, team)]
         own_hp = sum(u.hp for u in own)
         enemy_hp = sum(u.hp for u in enemies)
+        own_buildings = [u for u in own if u.is_building]
         return {
             "tick": self.tick,
             "game_time": self.tick / cfg.tick_rate,
@@ -799,19 +1000,31 @@ class MicroDuelEngine:
             "fog": cfg.vision_radius > 0.0,
             "vision_radius": cfg.vision_radius,
             "global_state": {
-                "unit_count": len(own),
-                "building_count": 0,
+                "unit_count": len([u for u in own if not u.is_building]),
+                "building_count": len(own_buildings),
                 "army_value": round(own_hp, 3),
                 "visible_enemy_value": round(enemy_hp, 3),
                 "kills": self.stats["kills"][team],
                 "losses": self.stats["losses"][team],
-                "income": 0.0,
-                "funds": 0.0,
+                "income": round(self._calculate_income(team), 3),
+                "funds": round(self.funds.get(team, 0.0), 3),
             },
             "own_entities": [self._entity_payload(u) for u in own],
             "visible_enemy_entities": [self._entity_payload(u) for u in enemies],
             "remembered_enemies": [],
             "local_maps": {},
+            "resource_slots": [
+                {
+                    "slot_id": s.slot_id,
+                    "x": s.x,
+                    "y": s.y,
+                    "occupied": s.occupied,
+                    "building_entity_id": s.building_entity_id,
+                    "owner_team": s.owner_team,
+                    "extractor_level": s.extractor_level,
+                }
+                for s in self.resource_slots
+            ],
             "target_ids": [u.entity_id for u in enemies],
             "tick_interval": cfg.decision_interval,
         }
@@ -819,19 +1032,21 @@ class MicroDuelEngine:
     def _entity_payload(self, unit: Unit) -> dict[str, Any]:
         return {
             "entity_id": unit.entity_id,
-            "entity_type_id": TANK_TYPE_ID,
+            "entity_type_id": unit.entity_type_id,
             "team_id": unit.team,
             "x": round(unit.x, 4),
             "y": round(unit.y, 4),
             "hp": round(unit.hp, 4),
             "max_hp": unit.max_hp,
-            "is_building": False,
+            "is_building": unit.is_building,
             "is_visible": True,
             "is_alive": unit.alive,
             "order_type": ORDER_NAMES[unit.order],
             "attack_target_id": unit.target_id,
             "group_id": unit.group,
             "cooldown_frac": round(unit.cooldown / self.config.attack_cooldown_ticks, 4),
+            "build_progress": unit.build_progress,
+            "production_queue_length": len(unit.production_queue) if unit.is_building else 0,
         }
 
     # ------------------------------------------------------------------
