@@ -376,13 +376,36 @@ def blocked_mask(payload: dict[str, Any]) -> list[int]:
 
 
 def unit_sprites() -> dict[str, str]:
-    folder = ASSETS_ROOT / "units" / "tanks"
-    if not folder.is_dir():
+    units_dir = ASSETS_ROOT / "units"
+    if not units_dir.is_dir():
         return {}
-    return {
-        path.stem: f"units/tanks/{path.name}"
-        for path in sorted(folder.glob("*.png"))
+    sprites: dict[str, str] = {}
+    
+    # 常用实体映射
+    mapping = {
+        "tank": "units/tanks/tank.png",
+        "tank_turret": "units/tanks/tank_turret.png",
+        "builder": "units/combat_engineer/base.png",
+        "combat_engineer": "units/combat_engineer/base.png",
+        "extractor": "units/extractor/extractor.png",
+        "factory": "units/mech_factory/mechFactoryTop.png",
+        "mech_factory": "units/mech_factory/mechFactoryTop.png",
+        "turret_base": "units/turrets/turret_base.png",
+        "turret_top": "units/turrets/turret_top.png",
+        "command_center": "units/outpost/outpost.png",
+        "outpost": "units/outpost/outpost.png",
     }
+    for key, rel_path in mapping.items():
+        if (ASSETS_ROOT / rel_path).is_file():
+            sprites[key] = rel_path
+
+    # 同时保留原有的 tanks/*.png 映射
+    tank_folder = units_dir / "tanks"
+    if tank_folder.is_dir():
+        for path in sorted(tank_folder.glob("*.png")):
+            sprites.setdefault(path.stem, f"units/tanks/{path.name}")
+
+    return sprites
 
 
 def _png_size(path: Path) -> tuple[int, int]:

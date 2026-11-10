@@ -33,7 +33,13 @@ function apiBase() {
   const explicit = typeof window.IRONZERO_API_BASE === 'string' && window.IRONZERO_API_BASE
     ? window.IRONZERO_API_BASE
     : API_URL_OVERRIDE;
-  return String(explicit || API_DEFAULT_BASE).replace(/\/+$/, '');
+  if (explicit) return String(explicit).replace(/\/+$/, '');
+  if (typeof window !== 'undefined' && window.location) {
+    if (window.location.protocol === 'file:' || (window.location.port && window.location.port !== '8000')) {
+      return 'http://127.0.0.1:8000';
+    }
+  }
+  return String(API_DEFAULT_BASE).replace(/\/+$/, '');
 }
 
 async function api(path, options) {
@@ -379,6 +385,8 @@ function cacheEls() {
     'infer-form', 'ckpt-select', 'infer-sim', 'episodes-input', 'infer-opponent', 'infer-seed', 'infer-mode', 'infer-btn', 'infer-hint',
     'score-own', 'score-enemy', 'hp-own', 'hp-own-val', 'hp-enemy', 'hp-enemy-val',
     'sb-ckpt', 'sb-opponent', 'sb-episode', 'sb-frames', 'event-feed',
+    'replay-card', 'replay-card-head', 'replay-toggle-btn', 'replay-toggle-icon', 'replay-toggle-text',
+    'replay-content', 'replay-pagination', 'replay-page-info', 'replay-page-size', 'replay-prev-btn', 'replay-next-btn', 'replay-current-page',
     'replay-count', 'replay-refresh', 'replay-body', 'toast-host',
     'rwpp-status', 'rwpp-status-text', 'rwpp-record-btn',
     'rwpp-status-train', 'rwpp-status-train-text',
@@ -396,8 +404,8 @@ function cacheEls() {
     'fe-train-chart-duration', 'fe-train-chart-frames', 'fe-train-chart-ticks',
     'fe-train-mode-note',
     'fe-ppo-kpi-progress', 'fe-ppo-kpi-progress-total', 'fe-ppo-kpi-seconds', 'fe-ppo-kpi-avg',
-    'fe-ppo-kpi-dps', 'fe-ppo-kpi-return', 'fe-ppo-kpi-win', 'fe-ppo-kpi-entropy', 'fe-ppo-kpi-device',
-    'fe-ppo-chart-return', 'fe-ppo-chart-win', 'fe-ppo-chart-entropy', 'fe-ppo-chart-duration',
+    'fe-ppo-kpi-dps', 'fe-ppo-kpi-return', 'fe-ppo-kpi-return-foot', 'fe-ppo-kpi-win', 'fe-ppo-kpi-win-foot', 'fe-ppo-kpi-entropy', 'fe-ppo-kpi-device',
+    'fe-ppo-chart-return', 'fe-ppo-chart-win', 'fe-ppo-chart-hp', 'fe-ppo-chart-reward', 'fe-ppo-chart-entropy', 'fe-ppo-chart-duration',
     'fe-ppo-status', 'fe-ppo-progress', 'fe-ppo-progress-label', 'fe-ppo-current', 'fe-ppo-seconds',
     'fe-ppo-eval-hint', 'fe-ppo-summary-card', 'fe-ppo-summary', 'fe-ppo-summary-badge',
     'fe-ppo-checkpoint', 'fe-ppo-checkpoint-path', 'fe-ppo-log', 'fe-ppo-log-status',
@@ -491,6 +499,7 @@ const state = {
   dirtyCharts: true,
   checkpoints: [],
   replays: [],
+  replayPagination: { page: 1, pageSize: 8, collapsed: true },
   maps: { ready: false, available: false, error: null, list: [], units: {}, attempts: 0 },
   sandbox: createSandboxState(),
   mainBusy: false,
@@ -1319,15 +1328,19 @@ function updateKpis() {
       : (state.evalCount ? '评估 ' + state.evalCount + ' 次' : '等待首个 update');
   }
 
-  const winValue = lastEval && numOrNull(lastEval.win_rate) !== null ? lastEval.win_rate : numOrNull(latest.win_rate);
+  const winValue = lastEval && numOrNull(lastEval.win_rate) !== null
+    ? lastEval.win_rate
+    : (numOrNull(latest.rolling_win_rate) !== null ? latest.rolling_win_rate : numOrNull(latest.win_rate));
   els.kpiWin.textContent = winValue === null || winValue === undefined ? '—' : fmtPct(winValue);
   if (els.kpiWinFoot) {
     els.kpiWinFoot.textContent = lastEval
       ? '评估 ' + state.evalCount + ' 次 · 每 ' + (numOrNull(config.eval_every) === null ? '—' : config.eval_every) + ' upd'
-      : '尚无评估数据';
+      : (numOrNull(latest.rolling_win_rate) !== null ? '训练最近完成局胜率' : '尚无评估数据');
   }
 
-  const returnValue = lastEval && numOrNull(lastEval.mean_return) !== null ? lastEval.mean_return : numOrNull(latest.mean_return);
+  const returnValue = lastEval && numOrNull(lastEval.mean_return) !== null
+    ? lastEval.mean_return
+    : (numOrNull(latest.rolling_return) !== null ? latest.rolling_return : numOrNull(latest.mean_return));
   els.kpiReturn.textContent = returnValue === null || returnValue === undefined ? '—' : fmtNum(returnValue, 3);
   if (els.kpiReturnFoot) {
     els.kpiReturnFoot.textContent = numOrNull(latest.policy_loss) === null
@@ -1980,13 +1993,56 @@ async function loadCheckpoints() {
   }
 }
 
+function updateReplayCollapseUi() {
+  const p = state.replayPagination;
+  if (els.replayCard) {
+    els.replayCard.classList.toggle('collapsed', !!p.collapsed);
+  }
+  if (els.replayToggleIcon) {
+    els.replayToggleIcon.textContent = p.collapsed ? '▶' : '▼';
+  }
+  if (els.replayToggleText) {
+    els.replayToggleText.textContent = p.collapsed ? '展开' : '收起';
+  }
+}
+
+function toggleReplayCollapse() {
+  state.replayPagination.collapsed = !state.replayPagination.collapsed;
+  updateReplayCollapseUi();
+}
+
 function renderReplays() {
+  updateReplayCollapseUi();
   const body = els.replayBody;
   if (!body) return;
   body.innerHTML = '';
-  const items = state.replays || [];
-  if (els.replayCount) els.replayCount.textContent = String(items.length);
-  if (!items.length) {
+  const allItems = state.replays || [];
+  const total = allItems.length;
+  if (els.replayCount) els.replayCount.textContent = String(total);
+
+  const p = state.replayPagination;
+  const pageSize = Math.max(1, p.pageSize || 8);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  if (p.page > totalPages) p.page = totalPages;
+  if (p.page < 1) p.page = 1;
+
+  if (els.replayPageInfo) {
+    els.replayPageInfo.textContent = '第 ' + p.page + ' / ' + totalPages + ' 页 · 共 ' + total + ' 条';
+  }
+  if (els.replayCurrentPage) {
+    els.replayCurrentPage.textContent = String(p.page);
+  }
+  if (els.replayPrevBtn) {
+    els.replayPrevBtn.disabled = (p.page <= 1);
+  }
+  if (els.replayNextBtn) {
+    els.replayNextBtn.disabled = (p.page >= totalPages);
+  }
+  if (els.replayPageSize && String(els.replayPageSize.value) !== String(pageSize)) {
+    els.replayPageSize.value = String(pageSize);
+  }
+
+  if (!total) {
     const row = document.createElement('tr');
     const cell = document.createElement('td');
     cell.colSpan = 10;
@@ -1996,6 +2052,10 @@ function renderReplays() {
     body.appendChild(row);
     return;
   }
+
+  const startIdx = (p.page - 1) * pageSize;
+  const items = allItems.slice(startIdx, startIdx + pageSize);
+
   for (const item of items) {
     const row = document.createElement('tr');
     row.className = 'data-row';
@@ -2144,12 +2204,19 @@ function renderRwppStatus() {
 async function refreshRwppStatus(force) {
   const rwpp = state.rwpp;
   if (rwpp.checking) return;
-  if (!force && rwpp.checked && Date.now() - rwpp.statusAt < RWPP_STATUS_TTL_MS) return;
+  const effectiveTtl = rwpp.available ? RWPP_STATUS_TTL_MS : 3000;
+  if (!force && rwpp.checked && Date.now() - rwpp.statusAt < effectiveTtl) return;
   if (state.mode === 'demo') {
-    rwpp.checked = true;
-    rwpp.available = false;
-    renderRwppStatus();
-    return;
+    try {
+      const ok = await checkHealth();
+      if (ok) exitDemo();
+    } catch (_) {}
+    if (state.mode === 'demo') {
+      rwpp.checked = true;
+      rwpp.available = false;
+      renderRwppStatus();
+      return;
+    }
   }
   rwpp.checking = true;
   try {
@@ -2914,7 +2981,18 @@ const UNIT_TILE_HEIGHT = 30;
 const TURRET_TILE_WIDTH = 10;
 const TURRET_TILE_HEIGHT = 40;
 
-const spriteCache = { tank: null, turret: null, pending: null, failed: false };
+const spriteCache = {
+  tank: null,
+  turret: null,
+  builder: null,
+  extractor: null,
+  factory: null,
+  turret_base: null,
+  turret_top: null,
+  command_center: null,
+  pending: null,
+  failed: false,
+};
 const unitAngleCache = new Map();
 const terrainCache = new Map();
 
@@ -2932,20 +3010,27 @@ async function ensureUnitSprites() {
   if (spriteCache.pending) return spriteCache.pending;
   spriteCache.pending = (async () => {
     const units = state.maps.units || {};
-    const tankRel = units.tank || 'units/tanks/tank.png';
-    const turretRel = units.tank_turret || 'units/tanks/tank_turret.png';
-    try {
-      const loaded = await Promise.all([loadImage(Api.assetUrl(tankRel)), loadImage(Api.assetUrl(turretRel))]);
-      spriteCache.tank = loaded[0];
-      spriteCache.turret = loaded[1];
-      spriteCache.failed = false;
-      return true;
-    } catch (error) {
-      spriteCache.failed = true;
-      return false;
-    } finally {
-      spriteCache.pending = null;
-    }
+    const entries = [
+      ['tank', units.tank || 'units/tanks/tank.png'],
+      ['turret', units.tank_turret || 'units/tanks/tank_turret.png'],
+      ['builder', units.builder || 'units/combat_engineer/base.png'],
+      ['extractor', units.extractor || 'units/extractor/extractor.png'],
+      ['factory', units.factory || 'units/mech_factory/mechFactoryTop.png'],
+      ['turret_base', units.turret_base || 'units/turrets/turret_base.png'],
+      ['turret_top', units.turret_top || 'units/turrets/turret_top.png'],
+      ['command_center', units.command_center || 'units/outpost/outpost.png'],
+    ];
+    await Promise.all(
+      entries.map(async ([key, rel]) => {
+        try {
+          spriteCache[key] = await loadImage(Api.assetUrl(rel));
+        } catch (err) {
+          // 单个贴图缺失不打断流程
+        }
+      })
+    );
+    spriteCache.failed = !spriteCache.tank;
+    return true;
   })();
   return spriteCache.pending;
 }
@@ -3599,15 +3684,38 @@ function updateUnitAngles(frame, previousFrame) {
 function drawSandboxSpriteUnit(ctx, unit, x, y, selected, leader, time, options) {
   const own = unit.team === 'own';
   const color = own ? SANDBOX_COLORS.own : SANDBOX_COLORS.enemy;
-  const size = Math.max(8, num(options && options.size, 30));
-  const bodyWidth = size * (UNIT_TILE_WIDTH / UNIT_TILE_HEIGHT);
+  const baseSize = Math.max(8, num(options && options.size, 30));
   const hpFraction = clamp(unit.hp / Math.max(1, unit.maxHp), 0, 1);
   const angles = unitAngleCache.get(unit.id) || { heading: -Math.PI / 2, turret: -Math.PI / 2 };
 
-  // 阵营色环（脚下）
+  // 实体类别推断
+  const unitType = String(unit.unit_type || '').toLowerCase();
+  const maxHp = num(unit.maxHp || unit.max_hp, 0);
+  const isBuilding = !!(unit.is_building || unit.entity_type_id === 2 || unitType === 'building' || unitType === 'command_center' || unitType === 'factory' || unitType === 'extractor' || unitType === 'turret');
+  const isBuilder = !!(unit.is_builder || unitType === 'builder' || unitType === 'combat_engineer');
+  const isFactory = !!(unit.is_factory || unitType === 'factory' || unitType === 'mech_factory');
+  const isExtractor = !!(unitType === 'extractor');
+  const isCommandCenter = !!(unitType === 'command_center' || (isBuilding && maxHp >= 2500.0));
+  const isTurret = !!(unitType === 'turret' || (isBuilding && !isCommandCenter && !isFactory && !isExtractor && maxHp <= 1000.0 && maxHp > 0));
+
+  // 差异化尺寸
+  let size = baseSize;
+  if (isCommandCenter) size = baseSize * 2.2;
+  else if (isFactory) size = baseSize * 1.8;
+  else if (isExtractor) size = baseSize * 1.35;
+  else if (isBuilding) size = baseSize * 1.5;
+  else if (isBuilder) size = baseSize * 0.95;
+
+  // 阵营底盘指示（建筑用圆角矩形，移动单位用椭圆）
   ctx.save();
   ctx.beginPath();
-  ctx.ellipse(x, y + size * 0.2, size * 0.42, size * 0.26, 0, 0, Math.PI * 2);
+  if (isBuilding) {
+    const bw = size * 0.85;
+    const bh = size * 0.85;
+    ctx.rect(x - bw / 2, y - bh / 2, bw, bh);
+  } else {
+    ctx.ellipse(x, y + size * 0.2, size * 0.42, size * 0.26, 0, 0, Math.PI * 2);
+  }
   ctx.strokeStyle = own ? 'rgba(63, 169, 255, 0.9)' : 'rgba(255, 90, 90, 0.9)';
   ctx.lineWidth = Math.max(1, size * 0.055);
   ctx.shadowColor = color;
@@ -3632,7 +3740,47 @@ function drawSandboxSpriteUnit(ctx, unit, x, y, selected, leader, time, options)
     ctx.restore();
   }
 
-  if (spriteCache.tank) {
+  // --- 分类绘制贴图 ---
+  let rendered = false;
+
+  if (isCommandCenter && spriteCache.command_center) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.drawImage(spriteCache.command_center, -size / 2, -size / 2, size, size);
+    ctx.restore();
+    rendered = true;
+  } else if (isFactory && spriteCache.factory) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.drawImage(spriteCache.factory, -size / 2, -size / 2, size, size);
+    ctx.restore();
+    rendered = true;
+  } else if (isExtractor && spriteCache.extractor) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.drawImage(spriteCache.extractor, -size / 2, -size / 2, size, size);
+    ctx.restore();
+    rendered = true;
+  } else if (isTurret && spriteCache.turret_base) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.drawImage(spriteCache.turret_base, -size * 0.45, -size * 0.45, size * 0.9, size * 0.9);
+    if (spriteCache.turret_top) {
+      ctx.rotate(angles.turret + Math.PI / 2);
+      ctx.drawImage(spriteCache.turret_top, -size * 0.35, -size * 0.35, size * 0.7, size * 0.7);
+    }
+    ctx.restore();
+    rendered = true;
+  } else if (isBuilder && spriteCache.builder) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angles.heading + Math.PI / 2);
+    ctx.drawImage(spriteCache.builder, -size * 0.45, -size * 0.45, size * 0.9, size * 0.9);
+    ctx.restore();
+    rendered = true;
+  } else if (!isBuilding && spriteCache.tank) {
+    // 默认战斗坦克
+    const bodyWidth = size * (UNIT_TILE_WIDTH / UNIT_TILE_HEIGHT);
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(angles.heading + Math.PI / 2);
@@ -3651,15 +3799,48 @@ function drawSandboxSpriteUnit(ctx, unit, x, y, selected, leader, time, options)
       );
       ctx.restore();
     }
-  } else {
+    rendered = true;
+  }
+
+  // 保底矢量绘制（没有对应贴图时，用外观几何明确区分，绝不全画成坦克）
+  if (!rendered) {
     ctx.save();
-    ctx.beginPath();
-    ctx.arc(x, y, size * 0.32, 0, Math.PI * 2);
-    ctx.fillStyle = own ? '#2f6fbf' : '#b5303c';
-    ctx.fill();
-    ctx.lineWidth = 1.4;
-    ctx.strokeStyle = color;
-    ctx.stroke();
+    if (isBuilding) {
+      ctx.beginPath();
+      ctx.rect(x - size * 0.4, y - size * 0.4, size * 0.8, size * 0.8);
+      ctx.fillStyle = own ? '#1b4b8a' : '#8a1b24';
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = color;
+      ctx.stroke();
+      // 内部科技标示
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+      ctx.fillRect(x - size * 0.2, y - size * 0.2, size * 0.4, size * 0.4);
+    } else if (isBuilder) {
+      // 建造者：六边形工程车
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const rad = (i * Math.PI) / 3;
+        const px = x + Math.cos(rad) * size * 0.38;
+        const py = y + Math.sin(rad) * size * 0.38;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fillStyle = own ? '#2f8fbf' : '#d97724';
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.arc(x, y, size * 0.32, 0, Math.PI * 2);
+      ctx.fillStyle = own ? '#2f6fbf' : '#b5303c';
+      ctx.fill();
+      ctx.lineWidth = 1.4;
+      ctx.strokeStyle = color;
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
@@ -3963,12 +4144,19 @@ function drawSandbox() {
     leaders.add(unit.id);
   }
   const time = performance.now() / 1000;
-  const spriteSize = sandbox.viewMode === 'full' ? 18 : 32;
+  // 铁锈战争真实世界尺寸：车身高 24px (30 * 0.8)，碰撞半径 11px
+  // 随相机缩放 cam.scale 保持 1:1 物理比例，远景全场时保留保底尺寸确保可见
+  const baseWorldSize = 24.0;
+  const realSpriteSize = baseWorldSize * cam.scale;
+  const minSpriteSize = sandbox.viewMode === 'full' ? 10 : 12;
+  const spriteSize = Math.max(minSpriteSize, realSpriteSize);
+  const baseRadius = 11.0;
+  const unitRadius = Math.max(3.5, baseRadius * cam.scale);
   for (const unit of sorted) {
     if (mapMode && spriteCache.tank) {
       drawSandboxSpriteUnit(ctx, unit, mapX(unit.x), mapY(unit.y), unit.id === sandbox.selectedId, leaders.has(unit.id), time, { size: spriteSize });
     } else {
-      drawSandboxUnit(ctx, unit, mapX, mapY, unit.id === sandbox.selectedId, leaders.has(unit.id), time);
+      drawSandboxUnit(ctx, unit, mapX, mapY, unit.id === sandbox.selectedId, leaders.has(unit.id), time, { radius: unitRadius });
     }
   }
 
@@ -4203,10 +4391,10 @@ function drawSandboxHud(ctx, sandbox, frame, width, height) {
   ctx.restore();
 }
 
-function drawSandboxUnit(ctx, unit, mapX, mapY, selected, leader, time) {
+function drawSandboxUnit(ctx, unit, mapX, mapY, selected, leader, time, options) {
   const x = mapX(unit.x);
   const y = mapY(unit.y);
-  const radius = 7.5;
+  const radius = Math.max(3.5, num(options && options.radius, 7.5));
   const own = unit.team === 'own';
   const color = own ? SANDBOX_COLORS.own : SANDBOX_COLORS.enemy;
   const hpFraction = clamp(unit.hp / Math.max(1, unit.maxHp), 0, 1);
@@ -4702,7 +4890,55 @@ function bindEvents() {
       refreshRwppStatus(true);
     });
   }
+  if (els.replayToggleBtn) {
+    els.replayToggleBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleReplayCollapse();
+    });
+  }
+  if (els.replayCardHead) {
+    els.replayCardHead.addEventListener('click', (e) => {
+      if (e.target.closest('button')) return;
+      toggleReplayCollapse();
+    });
+  }
+  if (els.replayPrevBtn) {
+    els.replayPrevBtn.addEventListener('click', () => {
+      if (state.replayPagination.page > 1) {
+        state.replayPagination.page -= 1;
+        renderReplays();
+      }
+    });
+  }
+  if (els.replayNextBtn) {
+    els.replayNextBtn.addEventListener('click', () => {
+      const totalPages = Math.ceil((state.replays || []).length / (state.replayPagination.pageSize || 8));
+      if (state.replayPagination.page < totalPages) {
+        state.replayPagination.page += 1;
+        renderReplays();
+      }
+    });
+  }
+  if (els.replayPageSize) {
+    els.replayPageSize.addEventListener('change', () => {
+      state.replayPagination.pageSize = Number(els.replayPageSize.value) || 8;
+      state.replayPagination.page = 1;
+      renderReplays();
+    });
+  }
   if (els.rwppRecordBtn) els.rwppRecordBtn.addEventListener('click', startRwppRecord);
+  document.querySelectorAll('.rwpp-status').forEach((badge) => {
+    badge.style.cursor = 'pointer';
+    badge.addEventListener('click', async () => {
+      toast('正在重新检测宿主机真机服务 (8300)…', 'info');
+      await refreshRwppStatus(true);
+      if (state.rwpp.available) {
+        toast('真机服务就绪 (8300) · 空闲槽位: ' + (state.rwpp.freeSlots ?? '—'), 'ok');
+      } else {
+        toast('真机服务未就绪：请在宿主机终端执行 python scripts/rwpp_real_service.py', 'error');
+      }
+    });
+  });
   if (els.feStartBtn) els.feStartBtn.addEventListener('click', feStartInfer);
   if (els.feTrainStart) els.feTrainStart.addEventListener('click', feStartTrain);
   if (els.feTrainStop) els.feTrainStop.addEventListener('click', feStopTrain);
@@ -6324,6 +6560,45 @@ function renderFeMapControls() {
     const fallbackName = allMaps.some((item) => item.name === previousName) ? previousName : (defaultItem ? defaultItem.name : '');
     els.feTrainMap.value = fallbackName;
   }
+  if (els.fePpoMap) {
+    const previousPpoMap = els.fePpoMap.value || 'IronZero25';
+    els.fePpoMap.innerHTML = '';
+
+    // Group 1: 纯坦克对称竞技场
+    const arenaGroup = document.createElement('optgroup');
+    arenaGroup.label = '对称竞技场（纯坦克训练 · 推荐）';
+    const arenas = [
+      { id: 'IronZero25', label: 'IronZero25（25v25 对称竞技场 · 纯坦克 · 推荐）' },
+      { id: 'IronZero20', label: 'IronZero20（20v20 对称竞技场 · 纯坦克）' },
+      { id: 'IronZero15', label: 'IronZero15（15v15 对称竞技场 · 纯坦克）' },
+      { id: 'IronZero10', label: 'IronZero10（10v10 对称竞技场 · 纯坦克 · 快速验证）' },
+      { id: 'IronZero5', label: 'IronZero5（5v5 对称竞技场 · 纯坦克 · 极速验证）' },
+    ];
+    for (const a of arenas) {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = a.label;
+      arenaGroup.appendChild(opt);
+    }
+    els.fePpoMap.appendChild(arenaGroup);
+
+    // Group 2: 原版实机地图（遭遇战 / 战役）
+    if (inferMaps.length > 0) {
+      const originalGroup = document.createElement('optgroup');
+      originalGroup.label = '原版实机地图（遭遇战 / 战役挑战）';
+      for (const item of inferMaps) {
+        if (item.name && item.name.toLowerCase().startsWith('ironzero')) continue;
+        const opt = document.createElement('option');
+        opt.value = item.name;
+        opt.textContent = item.name + (item.players ? ' · ' + item.players + 'P' : '') + (item.name === 'Artillery' ? '（22v25 带工厂建筑）' : '');
+        originalGroup.appendChild(opt);
+      }
+      els.fePpoMap.appendChild(originalGroup);
+    }
+
+    const hasPpoOption = [...els.fePpoMap.options].some((o) => o.value === previousPpoMap);
+    els.fePpoMap.value = hasPpoOption ? previousPpoMap : 'IronZero25';
+  }
   if (!state.fe.mapsReady && defaultItem) {
     state.fe.mapsReady = true;
     const sandbox = state.sandbox;
@@ -6573,30 +6848,102 @@ function feRenderPpoSummary() {
 function feDrawPpoCharts() {
   const ppo = state.fe.ppo;
   const updates = fePpoUpdateEvents();
-  const returns = updates.map((update) => ({ x: num(update.update, 0), y: num(update.mean_return, 0) }));
-  const returnRange = fePpoSeriesRange([returns]);
+  const evals = fePpoEvalEvents();
+
+  // 1. 对战得分趋势（训练得分 vs 实战盲测得分）
+  const trainReturns = updates.map((update) => {
+    const val = numOrNull(update.rolling_return) !== null
+      ? num(update.rolling_return, 0)
+      : num(update.mean_return, 0);
+    return { x: num(update.update, 0), y: val };
+  });
+  const evalReturns = evals
+    .filter((ev) => numOrNull(ev.mean_return) !== null)
+    .map((ev) => ({ x: num(ev.update, 0), y: num(ev.mean_return, 0) }));
+
+  const returnSeries = [{ label: '训练得分', color: DASH_COLORS.cyan, points: trainReturns }];
+  if (evalReturns.length) {
+    returnSeries.push({ label: '实战盲测', color: DASH_COLORS.green, points: evalReturns });
+  }
+  const returnRange = fePpoSeriesRange([trainReturns, evalReturns]);
   drawDashLine(els.fePpoChartReturn, {
-    series: [{ color: DASH_COLORS.cyan, points: returns }],
+    series: returnSeries,
     yMin: returnRange.yMin,
     yMax: returnRange.yMax,
-    yFormatter: (value) => value.toFixed(2),
+    yFormatter: (value) => (value >= 0 ? '+' : '') + value.toFixed(2),
     xFormatter: (value) => '#' + Math.round(value),
-    emptyText: '等待 update 事件…',
+    emptyText: '等待 update / eval 事件…',
   });
 
-  const evals = fePpoEvalEvents();
-  const wins = evals.length
-    ? evals.map((ev) => ({ x: num(ev.update, 0), y: num(ev.win_rate, 0) * 100 }))
-    : updates.filter((u) => u.episodes > 0).map((update) => ({ x: num(update.update, 0), y: num(update.win_rate, 0) * 100 }));
+  // 2. 实战盲测与训练胜率
+  const trainWins = updates
+    .filter((u) => num(u.episodes, 0) > 0 || num(u.total_episodes, 0) > 0 || !!u.has_completed)
+    .map((update) => ({
+      x: num(update.update, 0),
+      y: num(numOrNull(update.rolling_win_rate) !== null ? update.rolling_win_rate : update.win_rate, 0) * 100,
+    }));
+  const evalWins = evals.map((ev) => ({ x: num(ev.update, 0), y: num(ev.win_rate, 0) * 100 }));
+
+  const winSeries = [];
+  if (evalWins.length) {
+    winSeries.push({ label: '盲测胜率', color: DASH_COLORS.green, points: evalWins });
+  }
+  if (trainWins.length) {
+    winSeries.push({ label: '训练胜率', color: DASH_COLORS.cyan, points: trainWins });
+  }
   drawDashLine(els.fePpoChartWin, {
-    series: [{ color: DASH_COLORS.green, points: wins }],
+    series: winSeries.length ? winSeries : [{ color: DASH_COLORS.green, points: evalWins }],
     yMin: 0,
     yMax: 100,
     yFormatter: (value) => Math.round(value) + '%',
     xFormatter: (value) => '#' + Math.round(value),
-    emptyText: '等待评估事件…',
+    emptyText: '等待对战胜率数据…',
   });
 
+  // 3. 双方剩余血量比（战力走势）
+  const ownHp = evals
+    .filter((ev) => numOrNull(ev.mean_own_hp_frac) !== null)
+    .map((ev) => ({ x: num(ev.update, 0), y: num(ev.mean_own_hp_frac, 0) * 100 }));
+  const enemyHp = evals
+    .filter((ev) => numOrNull(ev.mean_enemy_hp_frac) !== null)
+    .map((ev) => ({ x: num(ev.update, 0), y: num(ev.mean_enemy_hp_frac, 0) * 100 }));
+  drawDashLine(els.fePpoChartHp, {
+    series: [
+      { label: '我方HP%', color: DASH_COLORS.own, points: ownHp },
+      { label: '敌方HP%', color: DASH_COLORS.enemy, points: enemyHp },
+    ],
+    yMin: 0,
+    yMax: 100,
+    yFormatter: (value) => Math.round(value) + '%',
+    xFormatter: (value) => '#' + Math.round(value),
+    emptyText: '等待评估对局产出战力血量比…',
+  });
+
+  // 4. 得分构成分解（Reward Breakdown）
+  const killsPoints = updates
+    .filter((u) => u.reward_components && numOrNull(u.reward_components.kills) !== null)
+    .map((u) => ({ x: num(u.update, 0), y: num(u.reward_components.kills, 0) }));
+  const engPoints = updates
+    .filter((u) => u.reward_components && numOrNull(u.reward_components.engagement) !== null)
+    .map((u) => ({ x: num(u.update, 0), y: num(u.reward_components.engagement, 0) }));
+  const lossPoints = updates
+    .filter((u) => u.reward_components && numOrNull(u.reward_components.losses) !== null)
+    .map((u) => ({ x: num(u.update, 0), y: num(u.reward_components.losses, 0) }));
+  const rewardRange = fePpoSeriesRange([killsPoints, engPoints, lossPoints]);
+  drawDashLine(els.fePpoChartReward, {
+    series: [
+      { label: '击杀得分', color: DASH_COLORS.green, points: killsPoints },
+      { label: '推进交火', color: DASH_COLORS.cyan, points: engPoints },
+      { label: '战损扣分', color: DASH_COLORS.enemy, points: lossPoints },
+    ],
+    yMin: rewardRange.yMin,
+    yMax: rewardRange.yMax,
+    yFormatter: (value) => (value >= 0 ? '+' : '') + value.toFixed(2),
+    xFormatter: (value) => '#' + Math.round(value),
+    emptyText: '等待奖励分项统计…',
+  });
+
+  // 5. 策略探索与损失
   const entropy = updates.map((update) => ({ x: num(update.update, 0), y: num(update.entropy, 0) }));
   const policyLoss = updates.map((update) => ({ x: num(update.update, 0), y: num(update.policy_loss, 0) }));
   const entropyRange = fePpoSeriesRange([entropy, policyLoss]);
@@ -6612,6 +6959,7 @@ function feDrawPpoCharts() {
     emptyText: '等待 update 事件…',
   });
 
+  // 6. 每轮耗时柱状图
   const durations = fePpoDurations(updates);
   drawDashBars(els.fePpoChartDuration, {
     bars: updates.map((update, index) => ({
@@ -6655,13 +7003,50 @@ function feRenderPpoKpis() {
   feSetText(els.fePpoKpiSeconds, Math.round(elapsed));
   feSetText(els.fePpoKpiAvg, avg.toFixed(1));
   feSetText(els.fePpoKpiDps, dps.toFixed(1));
-  feSetText(els.fePpoKpiReturn, num(latest.mean_return, 0).toFixed(2));
+  const anyCompleted = updates.some((u) => num(u.episodes, 0) > 0 || num(u.total_episodes, 0) > 0 || !!u.has_completed);
+  const bestReturn = numOrNull(latest.rolling_return) !== null
+    ? latest.rolling_return
+    : numOrNull(latest.mean_return);
+
+  if (bestReturn !== null && bestReturn !== undefined && (anyCompleted || bestReturn !== 0)) {
+    feSetText(els.fePpoKpiReturn, Number(bestReturn).toFixed(2));
+    if (els.fePpoKpiReturnFoot) {
+      els.fePpoKpiReturnFoot.textContent = num(latest.episodes, 0) > 0
+        ? '本轮结算 ' + latest.episodes + ' 局 · mean ' + Number(latest.mean_return).toFixed(2)
+        : (anyCompleted ? '最近结算滑动均值 (rolling)' : '对战采样进行中 · 待结算');
+    }
+  } else {
+    feSetText(els.fePpoKpiReturn, '0.00');
+    if (els.fePpoKpiReturnFoot) {
+      els.fePpoKpiReturnFoot.textContent = done > 0 ? '对战采样进行中 · 待结算' : 'latest_update.mean_return';
+    }
+  }
+
   const evalsList = fePpoEvalEvents();
   const lastEv = evalsList.length ? evalsList[evalsList.length - 1] : null;
-  const displayWinRate = lastEv && numOrNull(lastEv.win_rate) !== null
-    ? num(lastEv.win_rate, 0)
-    : (numOrNull(latest.win_rate) !== null ? num(latest.win_rate, 0) : 0);
-  feSetText(els.fePpoKpiWin, (displayWinRate * 100).toFixed(1));
+  let displayWinRate = null;
+  let winSource = '';
+  if (lastEv && numOrNull(lastEv.win_rate) !== null) {
+    displayWinRate = num(lastEv.win_rate, 0);
+    winSource = 'eval #' + num(lastEv.update, 0) + ' 盲测胜率';
+  } else if (anyCompleted) {
+    displayWinRate = numOrNull(latest.rolling_win_rate) !== null
+      ? num(latest.rolling_win_rate, 0)
+      : (numOrNull(latest.win_rate) !== null ? num(latest.win_rate, 0) : 0);
+    winSource = '训练采样胜率（最近完成局）';
+  }
+
+  if (displayWinRate !== null) {
+    feSetText(els.fePpoKpiWin, (displayWinRate * 100).toFixed(1));
+    if (els.fePpoKpiWinFoot) {
+      els.fePpoKpiWinFoot.textContent = winSource || '实战评估胜率';
+    }
+  } else {
+    feSetText(els.fePpoKpiWin, '0.0');
+    if (els.fePpoKpiWinFoot) {
+      els.fePpoKpiWinFoot.textContent = done > 0 ? '等待对局结束或首轮评估' : '真机盲测评估胜率';
+    }
+  }
   feSetText(els.fePpoKpiEntropy, num(latest.entropy, 0).toFixed(3));
   const deviceLabel = String(job.device || (els.fePpoDevice && els.fePpoDevice.value) || 'auto').toLowerCase();
   feSetText(els.fePpoKpiDevice, deviceLabel.toUpperCase());
@@ -6827,13 +7212,28 @@ async function feStartPpo() {
   let mapWidth = 2700.0;
   let mapHeight = 2500.0;
 
-  if (selectedMap === 'Artillery') {
-    ppoMapName = 'Artillery';
-    ppoMapPath = 'maps/challenge/Artillery.tmx';
-    unitsPerTeam = 22;
-  } else {
+  const originalMap = feMapList().find((m) => m.name === selectedMap || m.id === selectedMap);
+  const isIronZero = selectedMap.toLowerCase().startsWith('ironzero');
+
+  if (isIronZero) {
     ppoMapName = `IronZero${unitsPerTeam}`;
     ppoMapPath = `maps/ironzero/${ppoMapName}.tmx`;
+    mapWidth = 2700.0;
+    mapHeight = 2500.0;
+  } else if (originalMap) {
+    ppoMapName = originalMap.name;
+    ppoMapPath = originalMap.relative || '';
+    mapWidth = num(originalMap.width_px, 2700.0);
+    mapHeight = num(originalMap.height_px, 2500.0);
+    if (selectedMap === 'Artillery' && els.fePpoUnits && els.fePpoUnits.value === '25') {
+      unitsPerTeam = 22;
+    }
+  } else if (selectedMap === 'Artillery') {
+    ppoMapName = 'Artillery';
+    ppoMapPath = 'maps/challenge/Artillery.tmx';
+    mapWidth = 2700.0;
+    mapHeight = 2500.0;
+    unitsPerTeam = 22;
   }
 
   const initMode = (els.fePpoInitMode && els.fePpoInitMode.value) || 'warmstart';
@@ -7121,6 +7521,10 @@ function feSyncPpoConfigUi() {
     else if (mapChoice === 'IronZero10') els.fePpoUnits.value = '10';
     else if (mapChoice === 'IronZero5') els.fePpoUnits.value = '5';
     else if (mapChoice === 'Artillery') els.fePpoUnits.value = '22';
+    else {
+      // 原版地图默认 25 辆或保留当前设置
+      if (!els.fePpoUnits.value) els.fePpoUnits.value = '25';
+    }
   }
   const initMode = (els.fePpoInitMode && els.fePpoInitMode.value) || 'warmstart';
   if (els.fePpoCheckpointField) {

@@ -1,4 +1,4 @@
-﻿# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: Apache-2.0
 """Record a real Rusted Warfare 1.15 game (headless + RWPP bridge) as an IronZero replay.
 
 This is the "real game" capture path:
@@ -62,6 +62,20 @@ def obs_to_frame(message: dict, config: dict) -> dict:
         team = entity.get("team_id", -1)
         if team not in (0, 1):
             continue
+        is_building = bool(entity.get("is_building", False))
+        is_builder = bool(entity.get("is_builder", False))
+        is_factory = bool(entity.get("is_factory", False))
+        max_hp = float(entity.get("max_hp", 1.0))
+        unit_type = str(entity.get("unit_type") or "")
+        if not unit_type:
+            if is_builder:
+                unit_type = "builder"
+            elif is_factory:
+                unit_type = "factory"
+            elif is_building:
+                unit_type = "command_center" if max_hp >= 2500.0 else "building"
+            else:
+                unit_type = "tank"
         units.append(
             {
                 "id": entity.get("entity_id"),
@@ -70,9 +84,13 @@ def obs_to_frame(message: dict, config: dict) -> dict:
                 "x": entity.get("x", 0.0),
                 "y": entity.get("y", 0.0),
                 "hp": entity.get("hp", 0.0),
-                "max_hp": entity.get("max_hp", 1.0),
+                "max_hp": max_hp,
                 "order": "idle",
                 "target": None,
+                "is_building": is_building,
+                "is_builder": is_builder,
+                "is_factory": is_factory,
+                "unit_type": unit_type,
             }
         )
     own_hp = sum(u["hp"] for u in units if u["team"] == 0)
