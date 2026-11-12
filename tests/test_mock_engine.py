@@ -8,6 +8,7 @@ import unittest
 
 from ironzero.micro_config import MicroDuelConfig
 from ironzero.mock_engine import (
+    ACTION_KINDS,
     MicroDuelEngine,
     POSITION_BLOCKED,
     TARGET_NOT_VISIBLE,
@@ -140,7 +141,8 @@ class MicroDuelEngineTests(unittest.TestCase):
         engine.reset(seed=3)
         self.assertEqual(len(engine.units), 8)
         self.assertEqual(engine.config.action_nvec[1], 3)  # 2 groups + broadcast slot
-        self.assertEqual(engine.config.action_nvec[0], 5)
+        # The kind head always spans exactly the engine's action vocabulary.
+        self.assertEqual(engine.config.action_nvec[0], len(ACTION_KINDS))
 
 
 if __name__ == "__main__":  # pragma: no cover

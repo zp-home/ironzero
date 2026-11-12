@@ -60,8 +60,16 @@ class MicroDuelConfig:
     position_grid: int = 8
     map_channels: int = 3
     map_grid: int = 8
-    global_dim: int = 12
+    # Global feature block. The last three entries carry the economy state the
+    # policy needs to decide *whether* it can afford a build action:
+    #   [funds / funds_scale, income / income_scale, extractor_slots_owned]
+    # They are appended to the original 12 so the layout stays a superset.
+    global_dim: int = 15
     entity_features: int = 10
+    # Normalisation denominators for the economy features. Fixed constants (not
+    # derived from the scenario) so a checkpoint stays valid across maps.
+    funds_scale: float = 5000.0
+    income_scale: float = 40.0
     # Optional terrain passability layer. When set, ``map_channels`` should be 4
     # (three army channels + one static terrain channel) and the encoder reads
     # the blocked-tile grid from this JSON file (TerrainGrid ``map.json`` format).
@@ -74,7 +82,7 @@ class MicroDuelConfig:
     loss_reward: float = -1.0
 
     # Economy and Macro extension
-    enable_economy: bool = False
+    enable_economy: bool = True
     starting_funds: float = 1000.0
     base_income_per_second: float = 1.0
     extractor_income_per_second: float = 8.0
@@ -93,14 +101,27 @@ class MicroDuelConfig:
     production_reward: float = 0.4
     building_loss_penalty: float = 1.0
     idle_funds_penalty_coef: float = 0.0001
+    # Funds above this threshold are considered idle capital and are penalised.
+    # Derived from the scenario's own price list rather than a magic number so
+    # the penalty actually becomes reachable in short episodes.
+    idle_funds_threshold: float = 800.0
 
     # Episode control
     opponent: str = "scripted"  # scripted | idle | random
 
     @property
     def action_nvec(self) -> tuple[int, int, int, int, int]:
+        """Per-head action cardinalities, derived from the single source of truth.
+
+        The ``kind`` head must stay in lock-step with ``mock_engine.ACTION_KINDS``
+        (which defines the action id order) *and* with the Java bridge dispatch.
+        ``ACTION_KINDS`` is imported lazily to avoid a circular import.
+        """
+
+        from .mock_engine import ACTION_KINDS
+
         return (
-            5,  # kind: move, attack_move, attack_target, stop, hold
+            len(ACTION_KINDS),  # kind: index into ACTION_KINDS
             self.groups + 1,  # per-group control + one broadcast slot
             self.position_grid,
             self.position_grid,

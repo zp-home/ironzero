@@ -37,10 +37,17 @@ class ObservationTests(unittest.TestCase):
 
     def test_mask_shapes_and_minimum_validity(self) -> None:
         masks = build_masks(self.info["raw_state"])
-        self.assertEqual(masks["kind"].shape, (5,))
+        # The kind head spans every entry of ACTION_KINDS (10 today); the head
+        # *count* is still 5. Deriving keeps this test alive across contract bumps.
+        self.assertEqual(masks["kind"].shape, (DEFAULT_CONFIG.action_nvec[0],))
         self.assertEqual(masks["group"].shape, (DEFAULT_CONFIG.groups + 1,))
         self.assertEqual(masks["target"].shape, (DEFAULT_CONFIG.target_slots,))
-        self.assertTrue(masks["kind"].all())
+        # The five tactical orders are unconditional; the economy kinds are gated
+        # on an affordable builder, so the head is no longer all-True. The default
+        # mock army is tank-only, so exactly the tactical prefix is selectable.
+        self.assertTrue(masks["kind"][:5].all())
+        self.assertEqual(int(masks["kind"].sum()), 5)
+        self.assertFalse(masks["kind"][5:].any())
         self.assertTrue(masks["group"].any())
         self.assertTrue(masks["target"].any())
         flat = flat_mask_vector(masks)
@@ -53,7 +60,7 @@ class ObservationTests(unittest.TestCase):
         message = state_to_observation_message(
             self.info["raw_state"], episode_id="ep-1", decision_id="d-1"
         )
-        self.assertEqual(len(message.masks.action_mask), 5)
+        self.assertEqual(len(message.masks.action_mask), DEFAULT_CONFIG.action_nvec[0])
         self.assertEqual(len(message.masks.unit_group_mask), DEFAULT_CONFIG.groups + 1)
         self.assertEqual(len(message.masks.position_mask), DEFAULT_CONFIG.position_grid)
         self.assertEqual(message.tick, 0)
