@@ -28,6 +28,55 @@ from .reward import hp_fractions
 # farther away is manoeuvring / holding ground, which must not be punished.
 ENGAGED_RANGE_MULTIPLIER = 3.0
 
+# A battle decided by the tick cap is worth slightly less than one won outright
+# (the win is real, but it was not a clean sweep).
+TIMEOUT_TERMINAL_SCALE = 0.8
+
+# How much larger a surviving army must be to count as the winner when the tick
+# cap ends the battle.
+#
+# The old rule compared hp *fractions* against an absolute 0.08 gap. Those
+# fractions are normalised by the episode-start totals, so late in a long battle
+# both sides shrink towards zero and the gap became smaller than the threshold
+# exactly when the battle was decided: a measured 4-vs-1 finish (0.046 vs 0.040)
+# was recorded as a `timeout` and paid terminal 0.0.
+#
+# Unit count is the honest primary signal (destroying units is the objective),
+# with a ratio so that "21 vs 23" is still a draw rather than a defeat.
+TIMEOUT_DECISIVE_RATIO = 1.25
+
+
+def _decide_by_army(
+    *,
+    own_alive: int,
+    enemy_alive: int,
+    own_frac: float,
+    enemy_frac: float,
+) -> str:
+    """Adjudicate a tick-capped battle: ``victory`` / ``defeat`` / ``timeout``.
+
+    ``own_frac`` / ``enemy_frac`` are hp fractions against the episode-start
+    totals; they are only used as a tie-breaker, because their absolute scale
+    shrinks over a long battle. The primary signal is the surviving unit count:
+    a battle that ends with a materially larger army left is not a draw.
+    """
+
+    if enemy_alive == 0 and own_alive > 0:
+        return "victory"
+    if own_alive == 0 and enemy_alive > 0:
+        return "defeat"
+    if own_alive == 0 and enemy_alive == 0:
+        return "timeout"
+    ratio = TIMEOUT_DECISIVE_RATIO
+    if own_alive >= enemy_alive * ratio:
+        return "victory"
+    if enemy_alive >= own_alive * ratio:
+        return "defeat"
+    # Neither side holds a decisive unit advantage. Only an army that is both
+    # the same size and clearly healthier breaks the tie; anything close stays a
+    # timeout, because nothing was actually decided.
+    return "timeout"
+
 
 @dataclass
 class StepShaping:
@@ -182,12 +231,18 @@ def compute_step_shaping(
             or micro.units_per_team > 0
         )
         if is_micro_battle and not disconnected:
-            if (own_alive > enemy_alive and own_frac >= enemy_frac + 0.08) or (enemy_alive == 0 and own_alive > 0):
+            winner = _decide_by_army(
+                own_alive=own_alive,
+                enemy_alive=enemy_alive,
+                own_frac=own_frac,
+                enemy_frac=enemy_frac,
+            )
+            if winner == "victory":
                 last_result = "victory"
-                components["terminal"] = float(micro.win_reward) * 0.8
-            elif (enemy_alive > own_alive and enemy_frac >= own_frac + 0.08) or (own_alive == 0 and enemy_alive > 0):
+                components["terminal"] = float(micro.win_reward) * TIMEOUT_TERMINAL_SCALE
+            elif winner == "defeat":
                 last_result = "defeat"
-                components["terminal"] = float(micro.loss_reward) * 0.8
+                components["terminal"] = float(micro.loss_reward) * TIMEOUT_TERMINAL_SCALE
             else:
                 last_result = "timeout"
         else:
@@ -205,4 +260,10 @@ def compute_step_shaping(
     )
 
 
-__all__ = ["StepShaping", "compute_step_shaping"]
+__all__ = [
+    "ENGAGED_RANGE_MULTIPLIER",
+    "StepShaping",
+    "TIMEOUT_DECISIVE_RATIO",
+    "TIMEOUT_TERMINAL_SCALE",
+    "compute_step_shaping",
+]

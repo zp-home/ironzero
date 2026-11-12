@@ -428,8 +428,24 @@ class RwppBridgeLoopTests(unittest.TestCase):
             env.close()
 
     def test_env_treats_tick_cap_as_timeout(self) -> None:
+        """The tick cap truncates; it does not invent a winner.
+
+        The armies are deliberately balanced here: an unbalanced finish is
+        adjudicated as victory/defeat on purpose (see
+        ``test_timeout_adjudication``), so this test uses 2-vs-2 with equal hp to
+        isolate the truncation path.
+        """
+
         port = find_free_port()
-        bridge = FakeBridge(port, steps=2, result="timeout", done_without_obs=True)
+        bridge = FakeBridge(
+            port,
+            steps=2,
+            result="timeout",
+            done_without_obs=True,
+            own_hp=[210.0, 210.0],
+            enemy_hp=[210.0, 210.0],
+            enemy_step_hp=[210.0, 210.0],
+        )
         env = make_env(bridge, port)
         try:
             env.reset()
