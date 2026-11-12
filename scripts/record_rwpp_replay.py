@@ -53,6 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="wall-clock ms per simulated frame: 16 = real time, 0 = as fast as possible")
     parser.add_argument("--map-width", type=float, default=2600.0)
     parser.add_argument("--map-height", type=float, default=2600.0)
+    parser.add_argument("bridge_args", nargs="*", help="extra arguments passed to the bridge extension")
     return parser
 
 
@@ -145,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
             args.map,
             "--frame-ms",
             str(args.frame_ms),
+            *args.bridge_args,
         ],
         cwd=str(RUNTIME),
         env=env,

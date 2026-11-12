@@ -27,8 +27,9 @@ services:
       TZ: "Asia/Shanghai"
     volumes:
       - ../runs:/app/runs
-      # Live frontend mount: edit web/frontend/* and refresh the browser without rebuilding.
+      # Live frontend and backend mounts: edit web/* without rebuilding container.
       - ../web/frontend:/app/web/frontend:ro
+      - ../web/backend:/app/web/backend:ro
       # Local copy of game tilesets/maps/sprites for the in-game sandbox renderer.
       - ../.game_cache:/app/game_cache:ro
     restart: unless-stopped
