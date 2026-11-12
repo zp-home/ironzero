@@ -7,6 +7,8 @@ import com.corrodinggames.rts.game.ai.AI;
 import com.corrodinggames.rts.game.units.AttackMode;
 import com.corrodinggames.rts.game.units.OrderableUnit;
 import com.corrodinggames.rts.game.units.Unit;
+import com.corrodinggames.rts.game.units.UnitType;
+import com.corrodinggames.rts.game.units.Waypoint;
 import com.corrodinggames.rts.gameFramework.CommandControllerCommand;
 import com.eclipsesource.json.Json;
 import com.eclipsesource.json.JsonArray;
@@ -54,6 +56,16 @@ public final class IronZeroBridge implements ServerExtension {
     // 4 (== GROUP_BROADCAST) orders every living friendly unit.
     private static final int GROUP_COUNT = 4;
     private static final int GROUP_BROADCAST = GROUP_COUNT;
+    /** Team id reported for map features that belong to no player (>= 0 per protocol). */
+    private static final int NEUTRAL_TEAM_ID = 255;
+
+    /** Economy unit types reported in ``info.builders[].can_build``. */
+    private static final UnitType[] BUILDABLE_PROBE = {
+        UnitType.extractor,
+        UnitType.landFactory,
+        UnitType.turret,
+        UnitType.tank,
+    };
 
     private volatile boolean stop = false;
     private ServerSocket serverSocket;
@@ -251,6 +263,12 @@ public final class IronZeroBridge implements ServerExtension {
             if (unit.removed || unit.hp <= 0.0f) {
                 continue;
             }
+            // Map features (trees, rocks) are "team -1": not a player. They are
+            // neither ours nor an enemy. Counting them as enemies inflated
+            // enemy_alive and polluted the target list with untargetable props.
+            if (unit.team == null || unit.team.teamId < 0) {
+                continue;
+            }
             alive++;
             if (unit.isBuilding()) {
                 buildings++;
@@ -290,17 +308,83 @@ public final class IronZeroBridge implements ServerExtension {
                 + "\"reward\":0.0,\"result\":" + resultJson + ",\"terminated\":" + terminated
                 + ",\"truncated\":false,"
                 + "\"info\":{\"source\":\"rwpp\",\"frame\":" + frame + ",\"units_alive\":" + alive
-                + ",\"win_mode\":\"" + winMode + "\",\"unlock_ai\":" + unlockAi + "}}";
+                + ",\"win_mode\":\"" + winMode + "\",\"unlock_ai\":" + unlockAi
+                + ",\"builders\":" + buildersJson() + "}}";
         writeLine(line);
     }
 
+    /**
+     * Report, for each own builder, which economy unit types it can actually
+     * queue. This is answered by the game itself rather than inferred from map
+     * files, so operators can tell whether a map is economically playable
+     * before training against it.
+     */
+    private String buildersJson() {
+        StringBuilder out = new StringBuilder(256);
+        out.append('[');
+        boolean first = true;
+        for (Object item : Unit.unitList) {
+            if (!(item instanceof OrderableUnit)) {
+                continue;
+            }
+            OrderableUnit unit = (OrderableUnit) item;
+            if (unit.removed || unit.hp <= 0.0f || unit.team == null) {
+                continue;
+            }
+            if (unit.team.teamId != engine.playerTeam.teamId) {
+                continue;
+            }
+            if (!unit.isBuilder()) {
+                continue;
+            }
+            if (!first) {
+                out.append(',');
+            }
+            first = false;
+            String typeName = "?";
+            try {
+                typeName = unit.getUnitTypeInterface().getInternalName();
+            } catch (RuntimeException ignored) {
+                // Fall through with the placeholder name.
+            }
+            out.append("{\"entity_id\":").append(unit.id)
+                    .append(",\"unit_type\":\"").append(typeName).append("\",\"can_build\":[");
+            boolean firstType = true;
+            for (UnitType candidate : BUILDABLE_PROBE) {
+                boolean ok;
+                try {
+                    ok = candidate != null && !candidate.isLocked()
+                            && unit.canQueueAction(candidate, false);
+                } catch (RuntimeException ignored) {
+                    ok = false;
+                }
+                if (!ok) {
+                    continue;
+                }
+                if (!firstType) {
+                    out.append(',');
+                }
+                firstType = false;
+                out.append('"').append(candidate.getInternalName()).append('"');
+            }
+            out.append("]}");
+        }
+        out.append(']');
+        return out.toString();
+    }
+
     private String entityJson(Unit unit) {
-        int teamId = unit.team != null ? unit.team.teamId : -1;
+        // ``protocol.Entity.team_id`` requires >= 0. Unowned map features (trees,
+        // rocks) either have a null team or carry the "-1 neutral" marker which
+        // the engine uses internally; both must be mapped to a valid sentinel,
+        // otherwise every observation fails protocol validation.
+        int teamId = unit.team != null && unit.team.teamId >= 0 ? unit.team.teamId : NEUTRAL_TEAM_ID;
         boolean building = unit.isBuilding();
         return "{\"entity_id\":" + unit.id
                 + ",\"entity_type_id\":" + (building ? 2 : 1) + ",\"team_id\":" + teamId
                 + ",\"x\":" + fmt(unit.x) + ",\"y\":" + fmt(unit.y)
                 + ",\"hp\":" + fmt(unit.hp) + ",\"max_hp\":" + fmt(unit.maxHp)
+                + ",\"unit_type\":\"" + unit.getUnitTypeInterface().getInternalName() + "\""
                 + ",\"is_building\":" + building
                 + ",\"is_factory\":" + unit.isFactoryBuilding()
                 + ",\"is_builder\":" + unit.isBuilder()
@@ -332,7 +416,7 @@ public final class IronZeroBridge implements ServerExtension {
      * authoritative. Returns null while the battle is live.
      *
      * Annihilation mode: on building-less arena maps the native bookkeeping is
-     * unusable — ``Team.updateDefeatCheck`` marks any team without a factory or
+     * unusable --``Team.updateDefeatCheck`` marks any team without a factory or
      * builder as ``defeated`` on its first check, and the objective checker finds
      * no objective at all. Result detection therefore ignores the native flags
      * entirely and counts surviving units each frame: every enemy team at zero
@@ -604,11 +688,11 @@ public final class IronZeroBridge implements ServerExtension {
         JsonArray actions = message.get("actions") instanceof JsonArray
                 ? message.get("actions").asArray()
                 : new JsonArray();
-        int accepted = 0;
-        int rejected = 0;
+        // One entry per action: null = accepted, otherwise the ErrorCode name.
+        List<String> actionOutcomes = new ArrayList<>();
         for (JsonValue item : actions) {
             if (!item.isObject()) {
-                rejected++;
+                actionOutcomes.add("INVALID_MESSAGE");
                 continue;
             }
             JsonObject action = item.asObject();
@@ -636,27 +720,249 @@ public final class IronZeroBridge implements ServerExtension {
             } else if ("stop".equals(kind) || "hold".equals(kind)) {
                 // Hold ground: one command per unit so each keeps its own position.
                 // "hold" additionally switches the unit into guard-area fire mode.
-                accepted += holdGround(unitGroup, "hold".equals(kind));
+                int held = holdGround(unitGroup, "hold".equals(kind));
+                actionOutcomes.add(held > 0 ? null : "ACTION_MASKED");
+                continue;
+            } else if ("build_extractor".equals(kind) || "build_structure".equals(kind)) {
+                String structure = "build_extractor".equals(kind)
+                        ? "extractor"
+                        : action.getString("structure_type", "landFactory");
+                // Accept both the protocol's snake_case names and the engine's
+                // camelCase enum constants (landFactory / airFactory / turret).
+                structure = resolveUnitTypeName(structure);
+                if (resolveUnitType(structure) == null) {
+                    actionOutcomes.add("TARGET_INVALID");
+                    continue;
+                }
+                float x = (float) action.getDouble("x", 0.0);
+                float y = (float) action.getDouble("y", 0.0);
+                if ("build_extractor".equals(kind)) {
+                    // The policy names a resource slot; resolve it to map coordinates.
+                    double[] slot = resourceSlotPosition(action.getInt("slot_id", 0));
+                    if (slot != null) {
+                        x = (float) slot[0];
+                        y = (float) slot[1];
+                    }
+                }
+                int built = buildWithBuilders(unitGroup, structure, x, y);
+                // Distinguish "no builder can build this at all" from
+                // "builders exist but are out of range / busy". Both are
+                // rejections, but the first is a permanent capability gap.
+                actionOutcomes.add(built > 0 ? null : "ACTION_MASKED");
+                continue;
+            } else if ("repair_target".equals(kind)) {
+                long targetId = action.getLong("target_entity_id", -1L);
+                Unit target = findUnitById(targetId);
+                if (target == null) {
+                    actionOutcomes.add("TARGET_INVALID");
+                    continue;
+                }
+                command = engine.commandController.createCommandForTeam(engine.playerTeam);
+                addOwnOrderableUnits(command, unitGroup);
+                command.setRepairWaypoint(target);
+            } else {
+                // Unknown kind: name it explicitly instead of a generic mask error.
+                actionOutcomes.add("INVALID_MESSAGE");
                 continue;
             }
             if (command != null && command.getUnitCount() > 0) {
-                accepted++;
+                actionOutcomes.add(null);
             } else {
-                rejected++;
+                actionOutcomes.add("ACTION_MASKED");
             }
         }
         engine.commandController.dispatchQueuedCommands();
-        writeLine("{\"protocol\":\"ironzero/1\",\"type\":\"receipt\",\"message_id\":\"receipt-"
-                + engine.simulationTick + "\",\"episode_id\":\"rwpp-bridge\",\"tick\":"
-                + engine.simulationTick + ",\"decision_id\":\"" + decisionId + "\","
-                + "\"accepted\":" + (accepted > 0) + ",\"executed_at_tick\":"
-                + (accepted > 0 ? engine.simulationTick + 1 : null) + ","
-                + "\"accepted_count\":" + accepted + ",\"rejected_count\":" + rejected
-                + (accepted > 0 ? "" : ",\"rejected_reason\":\"ACTION_MASKED\"") + "}");
+        // Wire format: emit one receipt per action so the policy can attribute
+        // success/failure precisely. Only fields declared by
+        // ``protocol.ReceiptMessage`` are allowed (extra="forbid"): the earlier
+        // ``accepted_count``/``rejected_count`` extras made every official
+        // client fail to parse the line.
+        int receiptIndex = 0;
+        for (String reason : actionOutcomes) {
+            writeLine(receiptLine(decisionId, reason, receiptIndex++));
+        }
+        if (actionOutcomes.isEmpty()) {
+            writeLine(receiptLine(decisionId, null, receiptIndex));
+        }
     }
 
-    private void addOwnOrderableUnits(CommandControllerCommand command, int unitGroup) {
+    /** One protocol-valid receipt line; {@code reason == null} means accepted. */
+    private String receiptLine(String decisionId, String reason, int index) {
+        boolean ok = reason == null;
+        StringBuilder out = new StringBuilder(160);
+        out.append("{\"protocol\":\"ironzero/1\",\"type\":\"receipt\",\"message_id\":\"receipt-")
+                .append(engine.simulationTick).append('-').append(index)
+                .append("\",\"episode_id\":\"rwpp-bridge\",\"tick\":").append(engine.simulationTick)
+                .append(",\"decision_id\":\"").append(decisionId)
+                .append("\",\"accepted\":").append(ok)
+                .append(",\"executed_at_tick\":").append(ok ? Integer.toString(engine.simulationTick + 1) : "null");
+        if (!ok) {
+            out.append(",\"rejected_reason\":\"").append(reason).append('"');
+        }
+        out.append('}');
+        return out.toString();
+    }
+
+    /**
+     * Resolve a policy-side unit-type name to the game's {@link UnitType}.
+     * Returns {@code null} for unknown names so the caller can reject cleanly
+     * instead of throwing inside the simulation loop.
+     */
+    private UnitType resolveUnitType(String name) {
+        if (name == null || name.isEmpty()) {
+            return null;
+        }
+        try {
+            return UnitType.valueOf(name);
+        } catch (IllegalArgumentException unknown) {
+            return null;
+        }
+    }
+
+    /**
+     * Map protocol snake_case structure names onto engine enum constants.
+     * ``land_factory`` -> ``landFactory``, ``air_factory`` -> ``airFactory``.
+     * Unknown names are returned unchanged so {@link #resolveUnitType} rejects them.
+     */
+    private String resolveUnitTypeName(String name) {
+        if (name == null || name.isEmpty() || name.indexOf('_') < 0) {
+            return name;
+        }
+        StringBuilder out = new StringBuilder(name.length());
+        boolean upper = false;
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (c == '_') {
+                upper = true;
+                continue;
+            }
+            out.append(upper ? Character.toUpperCase(c) : c);
+            upper = false;
+        }
+        return out.toString();
+    }
+
+    /**
+     * Issue build orders with every builder in the selected group.
+     * Returns the number of builders that accepted the order.
+     *
+     * The engine rejects an order after dispatch when the builder cannot queue
+     * the unit type (tech-locked, no build entry, invalid spot). We therefore
+     * pre-check with {@code isLocked()} and {@code canQueueAction()} so that an
+     * impossible build is reported as rejected instead of being counted as
+     * accepted and silently dropped by the engine a frame later.
+     */
+    private int buildWithBuilders(int unitGroup, String unitTypeName, float x, float y) {
+        UnitType unitType = resolveUnitType(unitTypeName);
+        if (unitType == null) {
+            return 0;
+        }
+        // A locked unit type cannot be built by anyone right now.
+        if (unitType.isLocked()) {
+            return 0;
+        }
+        int ordered = 0;
         for (Object item : Unit.unitList) {
+            if (!(item instanceof OrderableUnit)) {
+                continue;
+            }
+            OrderableUnit unit = (OrderableUnit) item;
+            if (unit.removed || unit.hp <= 0.0f) {
+                continue;
+            }
+            if (unit.team == null || unit.team.teamId != engine.playerTeam.teamId) {
+                continue;
+            }
+            if (unitGroup >= 0 && unitGroup < GROUP_COUNT && (unit.id % GROUP_COUNT) != unitGroup) {
+                continue;
+            }
+            if (!unit.isBuilder() || !unit.canBeGivenBuildOrders()) {
+                continue;
+            }
+            if (!unit.canQueueAction(unitType, false)) {
+                continue;
+            }
+            // ``canQueueAction`` only reflects the build menu. Whether the spot
+            // itself is legal (terrain, range, occupancy) is decided by
+            // ``isValidNewWaypoint``; without this probe the engine drops the
+            // order one frame later and we would report a false "accepted".
+            Waypoint probe = new Waypoint();
+            probe.setBuildTo(x, y, unitType, 0);
+            if (!unit.isValidNewWaypoint(probe, false)) {
+                continue;
+            }
+            CommandControllerCommand command =
+                    engine.commandController.createCommandForTeam(engine.playerTeam);
+            command.addUnit(unit);
+            command.setBuildWaypoint(x, y, unitType, 0);
+            ordered++;
+        }
+        return ordered;
+    }
+
+    /**
+     * Position of the n-th extractor spot on the current map, or {@code null}
+     * when the map exposes none. Derived from the loaded map's resource list so
+     * the policy's {@code slot_id} maps onto a real location.
+     */
+    private double[] resourceSlotPosition(int slotId) {
+        java.util.List<double[]> slots = resourceSlots();
+        if (slots.isEmpty()) {
+            return null;
+        }
+        return slots.get(Math.floorMod(slotId, slots.size()));
+    }
+
+    private java.util.List<double[]> resourceSlots() {
+        java.util.List<double[]> slots = new java.util.ArrayList<>();
+        OrderableUnit probe = firstOwnBuilder();
+        try {
+            for (Object item : Unit.unitList) {
+                if (!(item instanceof Unit)) {
+                    continue;
+                }
+                Unit unit = (Unit) item;
+                if (unit.removed || unit.hp <= 0.0f) {
+                    continue;
+                }
+                if (unit.team != null || unit instanceof OrderableUnit) {
+                    continue;
+                }
+                // Trees/rocks are also unowned map features, so an ownership
+                // test alone is not enough: ask the game whether this entity is
+                // actually reclaimable ore. Without a builder we cannot ask, and
+                // we refuse to guess rather than sending builders at trees.
+                if (probe == null || !probe.isResourceUnit(unit)) {
+                    continue;
+                }
+                slots.add(new double[]{unit.x, unit.y});
+            }
+        } catch (RuntimeException ignored) {
+            return slots;
+        }
+        return slots;
+    }
+
+    private OrderableUnit firstOwnBuilder() {
+        for (Object item : Unit.unitList) {
+            if (!(item instanceof OrderableUnit)) {
+                continue;
+            }
+            OrderableUnit unit = (OrderableUnit) item;
+            if (unit.removed || unit.hp <= 0.0f) {
+                continue;
+            }
+            if (unit.team == null || unit.team.teamId != engine.playerTeam.teamId) {
+                continue;
+            }
+            if (unit.isBuilder()) {
+                return unit;
+            }
+        }
+        return null;
+    }
+
+    private void addOwnOrderableUnits(CommandControllerCommand command, int unitGroup) {        for (Object item : Unit.unitList) {
             if (!(item instanceof OrderableUnit)) {
                 continue;
             }
