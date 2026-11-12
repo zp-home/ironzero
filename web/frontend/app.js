@@ -30,16 +30,13 @@ class ApiError extends Error {
 }
 
 function apiBase() {
-  const explicit = typeof window.IRONZERO_API_BASE === 'string' && window.IRONZERO_API_BASE
-    ? window.IRONZERO_API_BASE
-    : API_URL_OVERRIDE;
-  if (explicit) return String(explicit).replace(/\/+$/, '');
-  if (typeof window !== 'undefined' && window.location) {
-    if (window.location.protocol === 'file:' || (window.location.port && window.location.port !== '8000')) {
-      return 'http://127.0.0.1:8000';
-    }
+  if (typeof window !== 'undefined' && window.IRONZERO_API_BASE) {
+    return String(window.IRONZERO_API_BASE).replace(/\/+$/, '');
   }
-  return String(API_DEFAULT_BASE).replace(/\/+$/, '');
+  if (API_URL_OVERRIDE) {
+    return String(API_URL_OVERRIDE).replace(/\/+$/, '');
+  }
+  return API_DEFAULT_BASE;
 }
 
 async function api(path, options) {
@@ -280,6 +277,10 @@ function normalizeUnit(raw) {
   const unit = raw && typeof raw === 'object' ? raw : {};
   const maxHp = Math.max(1, num(pickVal(unit, 'max_hp', 'maxHp', 'hp_max'), 100));
   const hp = clamp(num(pickVal(unit, 'hp', 'health'), maxHp), 0, maxHp);
+  const unitType = pickVal(unit, 'unit_type', 'unitType', 'type');
+  const isBuilding = pickVal(unit, 'is_building', 'isBuilding');
+  const isBuilder = pickVal(unit, 'is_builder', 'isBuilder');
+  const isFactory = pickVal(unit, 'is_factory', 'isFactory');
   return {
     id: pickVal(unit, 'id', 'entity_id', 'uid') === undefined ? 'u' : pickVal(unit, 'id', 'entity_id', 'uid'),
     team: normalizeTeam(pickVal(unit, 'team', 'side')),
@@ -290,6 +291,11 @@ function normalizeUnit(raw) {
     maxHp: maxHp,
     order: pickVal(unit, 'order', 'action') || null,
     target: pickVal(unit, 'target', 'target_id') === undefined ? null : pickVal(unit, 'target', 'target_id'),
+    // 贴图解析所需字段（见 docs/沙盘贴图契约.md 2.1）：一律驼峰，原值大小写敏感
+    unitType: unitType === undefined || unitType === null ? null : String(unitType),
+    isBuilding: !!isBuilding,
+    isBuilder: !!isBuilder,
+    isFactory: !!isFactory,
   };
 }
 
@@ -402,17 +408,9 @@ const els = {};
 function cacheEls() {
   const ids = [
     'clock', 'conn-badge', 'conn-label', 'conn-sub', 'demo-banner', 'demo-banner-text', 'demo-retry',
-    'runs-count', 'run-list', 'start-form', 'start-btn',
-    'kpi-update', 'kpi-update-foot', 'kpi-win', 'kpi-win-foot', 'kpi-return', 'kpi-return-foot', 'kpi-entropy', 'kpi-entropy-foot',
-    'legend-win', 'chart-win', 'tip-win', 'legend-return', 'chart-return', 'tip-return',
-    'run-status', 'stop-btn', 'meta-run', 'meta-kind', 'meta-created', 'meta-config', 'meta-eval',
-    'log-count', 'log-panel',
     'sandbox-demo-chip', 'infer-status', 'record-btn', 'stage-wrap', 'sandbox-canvas', 'rec-badge',
     'map-select', 'view-select', 'map-status', 'fog-toggle', 'items-toggle',
     'play-btn', 'latest-btn', 'speed-select', 'seek', 'frame-label', 'frame-sub',
-    'infer-form', 'ckpt-select', 'infer-sim', 'episodes-input', 'infer-opponent', 'infer-seed', 'infer-mode', 'infer-btn', 'infer-hint',
-    'score-own', 'score-enemy', 'hp-own', 'hp-own-val', 'hp-enemy', 'hp-enemy-val',
-    'sb-ckpt', 'sb-opponent', 'sb-episode', 'sb-frames', 'event-feed',
     'replay-card', 'replay-card-head', 'replay-toggle-btn', 'replay-toggle-icon', 'replay-toggle-text',
     'replay-content', 'replay-pagination', 'replay-page-info', 'replay-page-size', 'replay-prev-btn', 'replay-next-btn', 'replay-current-page',
     'replay-count', 'replay-refresh', 'replay-body', 'toast-host',
@@ -438,10 +436,10 @@ function cacheEls() {
     'fe-ppo-eval-hint', 'fe-ppo-summary-card', 'fe-ppo-summary', 'fe-ppo-summary-badge',
     'fe-ppo-checkpoint', 'fe-ppo-checkpoint-path', 'fe-ppo-log', 'fe-ppo-log-status',
     'fe-ppo-updates', 'fe-ppo-envs', 'fe-ppo-rollout', 'fe-ppo-ticks', 'fe-ppo-units', 'fe-ppo-device',
-    'fe-ppo-map', 'fe-ppo-units-field', 'fe-ppo-map-hint', 'fe-ppo-init-mode', 'fe-ppo-checkpoint-field', 'fe-ppo-init-checkpoint', 'fe-ppo-init-hint',
+    'fe-ppo-map', 'fe-ppo-units-field', 'fe-ppo-map-hint', 'fe-ppo-init-mode', 'fe-ppo-checkpoint-field', 'fe-ppo-init-checkpoint', 'fe-ppo-checkpoint-sort', 'fe-ppo-checkpoint-refresh', 'fe-ppo-init-hint',
     'fe-ppo-start', 'fe-ppo-stop', 'fe-ppo-hint', 'rwpp-status-ppo', 'rwpp-status-ppo-text',
     'fe-ppo-frame-ms', 'fe-ppo-vision', 'fe-ppo-kpi-device-foot',
-    'fe-checkpoint-field', 'fe-checkpoint-select', 'fe-checkpoint-refresh', 'fe-model-note', 'fe-map-count',
+    'fe-checkpoint-field', 'fe-checkpoint-select', 'fe-checkpoint-sort', 'fe-checkpoint-refresh', 'fe-model-note', 'fe-map-count',
     'fe-ppo-eval-every', 'fe-ppo-eval-episodes', 'fe-ppo-use-llm', 'fe-ppo-llm-note',
     'fe-ppo-reward', 'fe-ppo-reward-chip', 'fe-ppo-reward-note',
     'fe-ppo-strategy', 'fe-ppo-strategy-chip', 'fe-ppo-strategy-source',
@@ -528,7 +526,7 @@ const state = {
   checkpoints: [],
   replays: [],
   replayPagination: { page: 1, pageSize: 8, collapsed: true },
-  maps: { ready: false, available: false, error: null, list: [], units: {}, attempts: 0 },
+  maps: { ready: false, available: false, error: null, list: [], units: {}, unitSprites: null, attempts: 0 },
   sandbox: createSandboxState(),
   mainBusy: false,
   inferTimer: null,
@@ -2007,20 +2005,6 @@ function renderCheckpoints(list) {
   }
 }
 
-async function loadCheckpoints() {
-  if (state.mode === 'demo') {
-    renderCheckpoints(DEMO.checkpoints);
-    return;
-  }
-  try {
-    const data = await Api.checkpoints();
-    state.checkpoints = Array.isArray(data) ? data : (data && Array.isArray(data.checkpoints) ? data.checkpoints : []);
-    renderCheckpoints(state.checkpoints);
-  } catch (error) {
-    // 加载失败保持原列表，连接状态由顶部指示灯体现
-  }
-}
-
 function updateReplayCollapseUi() {
   const p = state.replayPagination;
   if (els.replayCard) {
@@ -3003,23 +2987,20 @@ const SANDBOX_COLORS = {
  * 实机地图：目录 / 地形预渲染 / 相机 / 单位贴图
  * ============================================================ */
 
-const UNIT_TILE_WIDTH = 16;
-const UNIT_TILE_HEIGHT = 30;
-const TURRET_TILE_WIDTH = 10;
-const TURRET_TILE_HEIGHT = 40;
+/** 移动单位贴图帧率（docs/沙盘贴图契约.md 2.4） */
+const UNIT_SPRITE_FPS = 6;
+/** 单位最小可见高度（屏幕像素），过小的贴图等比放大到该高度 */
+const UNIT_SPRITE_MIN_H = 10;
+/** 进入实机渲染前等待贴图加载的最长时间（毫秒），超时先渲染、后续帧自然补齐 */
+const UNIT_SPRITE_LOAD_TIMEOUT_MS = 4000;
 
-const spriteCache = {
-  tank: null,
-  turret: null,
-  builder: null,
-  extractor: null,
-  factory: null,
-  turret_base: null,
-  turret_top: null,
-  command_center: null,
-  pending: null,
-  failed: false,
-};
+/** rel -> Image，跨类型共享；加载失败只 console.warn 一次 */
+const unitSpriteImages = new Map();
+/** rel -> Promise，避免同一 rel 并发重复请求 */
+const unitSpritePending = new Map();
+/** 已警告过的键，保证同一问题只 warn 一次 */
+const unitSpriteWarned = new Set();
+
 const unitAngleCache = new Map();
 const terrainCache = new Map();
 
@@ -3032,34 +3013,101 @@ function loadImage(url) {
   });
 }
 
-async function ensureUnitSprites() {
-  if (spriteCache.tank && spriteCache.turret) return true;
-  if (spriteCache.pending) return spriteCache.pending;
-  spriteCache.pending = (async () => {
-    const units = state.maps.units || {};
-    const entries = [
-      ['tank', units.tank || 'units/tanks/tank.png'],
-      ['turret', units.tank_turret || 'units/tanks/tank_turret.png'],
-      ['builder', units.builder || 'units/original/builder.png'],
-      ['extractor', units.extractor || 'units/original/extractor.png'],
-      ['factory', units.factory || 'units/original/land_factory.png'],
-      ['turret_base', units.turret_base || 'units/original/turret_base.png'],
-      ['turret_top', units.turret_top || 'units/original/turret_top.png'],
-      ['command_center', units.command_center || 'units/original/base.png'],
-    ];
-    await Promise.all(
-      entries.map(async ([key, rel]) => {
-        try {
-          spriteCache[key] = await loadImage(Api.assetUrl(rel));
-        } catch (err) {
-          // 单个贴图缺失不打断流程
-        }
+function warnSpriteOnce(key, message) {
+  if (unitSpriteWarned.has(key)) return;
+  unitSpriteWarned.add(key);
+  console.warn('[沙盘贴图] ' + message);
+}
+
+/**
+ * 按 rel 取已加载的贴图；未加载则发起加载并返回 null（下一帧起可用）。
+ * 加载失败写入 null 并 warn 一次，之后不再重试（has() 判断，避免 null 被当成未缓存而每帧重试）。
+ */
+function unitSpriteImage(rel) {
+  if (!rel) return null;
+  if (unitSpriteImages.has(rel)) return unitSpriteImages.get(rel);
+  if (!unitSpritePending.has(rel)) {
+    const job = loadImage(Api.assetUrl(rel))
+      .then((image) => {
+        unitSpriteImages.set(rel, image);
+        return image;
       })
-    );
-    spriteCache.failed = !spriteCache.tank;
-    return true;
-  })();
-  return spriteCache.pending;
+      .catch(() => {
+        unitSpriteImages.set(rel, null);
+        warnSpriteOnce('rel:' + rel, '贴图加载失败，该单位回退矢量绘制：' + rel);
+        return null;
+      })
+      .finally(() => {
+        unitSpritePending.delete(rel);
+      });
+    unitSpritePending.set(rel, job);
+  }
+  return null;
+}
+
+/** 预加载清单内全部贴图，返回加载 Promise 数组（不阻塞调用方；缺失的按契约 warn 一次并回退矢量）。 */
+function preloadUnitSprites(manifest) {
+  if (!manifest || typeof manifest !== 'object') return [];
+  const rels = new Set();
+  const push = (entry) => {
+    if (!entry || typeof entry !== 'object') return;
+    if (entry.image) rels.add(entry.image);
+    if (entry.turretImage) rels.add(entry.turretImage);
+  };
+  for (const key of Object.keys(manifest.byType || {})) push(manifest.byType[key]);
+  for (const key of Object.keys(manifest.fallback || {})) push(manifest.fallback[key]);
+  const jobs = [];
+  for (const rel of rels) {
+    unitSpriteImage(rel); // 触发请求
+    const job = unitSpritePending.get(rel);
+    if (job) jobs.push(job);
+  }
+  return jobs;
+}
+
+/**
+ * 解析单位贴图描述，顺序：
+ *   unitType → byType[aliases[unitType]] → fallback[builder|building|mobile]
+ * 返回清单里的原始条目，或 null（无清单 / 无可用条目）。
+ */
+function resolveUnitSprite(unit) {
+  const manifest = state.maps && state.maps.unitSprites;
+  if (!manifest || typeof manifest !== 'object') {
+    warnSpriteOnce('manifest', '后端未下发 unitSprites，单位回退矢量绘制');
+    return null;
+  }
+  const byType = manifest.byType && typeof manifest.byType === 'object' ? manifest.byType : {};
+  const aliases = manifest.aliases && typeof manifest.aliases === 'object' ? manifest.aliases : {};
+  const fallback = manifest.fallback && typeof manifest.fallback === 'object' ? manifest.fallback : {};
+  const type = unit.unitType ? String(unit.unitType) : '';
+  let entry = null;
+  if (type && byType[type]) {
+    entry = byType[type];
+  } else if (type && aliases[type] && byType[aliases[type]]) {
+    entry = byType[aliases[type]];
+  } else if (unit.isBuilder && fallback.builder) {
+    entry = fallback.builder;
+  } else if (unit.isBuilding && fallback.building) {
+    entry = fallback.building;
+  } else {
+    entry = fallback.mobile || fallback.building || null;
+  }
+  if (!entry || typeof entry !== 'object') return null;
+  return entry;
+}
+
+/**
+ * 预加载全部单位贴图再进入实机渲染，避免“切到地图后先闪一帧矢量图形”。
+ * 单张失败已在 unitSpriteImage 里 warn 并回退，这里只等最长时间，不让坏图卡住整图加载。
+ */
+async function ensureUnitSprites() {
+  const jobs = preloadUnitSprites(state.maps && state.maps.unitSprites);
+  if (!jobs.length) return true;
+  await Promise.race([
+    Promise.all(jobs),
+    new Promise((resolve) => setTimeout(resolve, UNIT_SPRITE_LOAD_TIMEOUT_MS)),
+  ]);
+  return true;
 }
 
 async function loadMaps(force) {
@@ -3072,8 +3120,10 @@ async function loadMaps(force) {
     state.maps.available = !!(payload && payload.available);
     state.maps.list = list.filter((item) => item && !item.broken);
     state.maps.units = (payload && payload.units) || {};
+    state.maps.unitSprites = (payload && payload.unitSprites) || null;
     state.maps.error = null;
     state.maps.ready = true;
+    preloadUnitSprites(state.maps.unitSprites);
   } catch (error) {
     state.maps.available = false;
     state.maps.list = [];
@@ -3196,19 +3246,6 @@ function engineToMapPixel(x, y, detail) {
   };
 }
 
-function mapViewRegion(sandbox, detail) {
-  const crop = mapCrop(detail);
-  if (sandbox.viewMode === 'full') {
-    return {
-      x: 0,
-      y: 0,
-      width: Math.max(1, num(detail.width_px, crop.width)),
-      height: Math.max(1, num(detail.height_px, crop.height)),
-    };
-  }
-  return { x: crop.x, y: crop.y, width: crop.width, height: crop.height };
-}
-
 function mapCamera(width, height, region, padding) {
   const pad = num(padding, 0);
   const rw = Math.max(1, region.width);
@@ -3299,6 +3336,15 @@ function renderTerrain(detail, region, scale, images, options) {
   return canvas;
 }
 
+/**
+ * 地形道具层版本。改动道具层内容（layers 组合）时必须 +1，
+ * 否则 terrainCache 里长命的旧 entry 会继续用旧画布渲染。
+ * v2：不再把 `Units` 层烘进底图 —— 该层是编辑器里的开局单位占位，
+ *     运行时单位位置由回放帧决定，烘进去会让每个开局单位被画两遍（幽灵残影）。
+ */
+const TERRAIN_ITEMS_LAYERS = ['Items'];
+const TERRAIN_ITEMS_LAYERS_VERSION = 2;
+
 async function buildTerrainEntry(detail) {
   const cacheKey = detail.id || String(detail.relative || detail.name);
   const cached = terrainCache.get(cacheKey);
@@ -3317,17 +3363,28 @@ async function buildTerrainEntry(detail) {
   const entry = cached || {};
   entry.detail = detail;
   entry.images = images;
+  // 道具层版本不一致 → 丢弃旧画布重建（旧版 entry 没有该字段，等于版本 0）
+  if (entry.itemsLayersVersion !== TERRAIN_ITEMS_LAYERS_VERSION) {
+    entry.itemsLayersVersion = TERRAIN_ITEMS_LAYERS_VERSION;
+    entry.cropItems = null;
+    entry.fullItems = null;
+    entry.mapItems = null;
+  }
   if (!entry.cropGround) {
     entry.cropGround = renderTerrain(detail, crop, 1, images, { layers: ['Ground'] });
   }
   if (!entry.cropItems) {
-    entry.cropItems = renderTerrain(detail, crop, 1, images, { layers: ['Items', 'Units'], background: false });
+    entry.cropItems = renderTerrain(detail, crop, 1, images, {
+      layers: TERRAIN_ITEMS_LAYERS,
+      background: false,
+    });
   }
   return entry;
 }
 
 function ensureFullTerrain(entry, detail) {
-  if (entry.fullGround && entry.fullItems) {
+  const itemsStale = entry.itemsLayersVersion !== TERRAIN_ITEMS_LAYERS_VERSION;
+  if (entry.fullGround && entry.fullItems && !itemsStale) {
     return { ground: entry.fullGround, items: entry.fullItems, scale: entry.fullScale };
   }
   const width = Math.max(1, num(detail.width_px, 1000));
@@ -3335,15 +3392,17 @@ function ensureFullTerrain(entry, detail) {
   const scale = Math.min(1, 2048 / Math.max(width, height));
   entry.fullGround = renderTerrain(detail, wholeMapRegion(detail), scale, entry.images, { layers: ['Ground'] });
   entry.fullItems = renderTerrain(detail, wholeMapRegion(detail), scale, entry.images, {
-    layers: ['Items', 'Units'],
+    layers: TERRAIN_ITEMS_LAYERS,
     background: false,
   });
+  entry.itemsLayersVersion = TERRAIN_ITEMS_LAYERS_VERSION;
   entry.fullScale = scale;
   return { ground: entry.fullGround, items: entry.fullItems, scale: scale };
 }
 
 function ensureTerrainMap(entry, detail) {
-  if (entry.mapGround && entry.mapItems) {
+  const itemsStale = entry.itemsLayersVersion !== TERRAIN_ITEMS_LAYERS_VERSION;
+  if (entry.mapGround && entry.mapItems && !itemsStale) {
     return { ground: entry.mapGround, items: entry.mapItems, scale: entry.mapScale };
   }
   const width = Math.max(1, num(detail.width_px, 1000));
@@ -3351,9 +3410,10 @@ function ensureTerrainMap(entry, detail) {
   const scale = Math.min(1, 3000 / Math.max(width, height));
   entry.mapGround = renderTerrain(detail, wholeMapRegion(detail), scale, entry.images, { layers: ['Ground'] });
   entry.mapItems = renderTerrain(detail, wholeMapRegion(detail), scale, entry.images, {
-    layers: ['Items', 'Units'],
+    layers: TERRAIN_ITEMS_LAYERS,
     background: false,
   });
+  entry.itemsLayersVersion = TERRAIN_ITEMS_LAYERS_VERSION;
   entry.mapScale = scale;
   return { ground: entry.mapGround, items: entry.mapItems, scale: scale };
 }
@@ -3709,52 +3769,106 @@ function updateUnitAngles(frame, previousFrame) {
   }
 }
 
+/** 清单缺失时按契约 1 节的 fallback 尺寸兜底（只用于矢量保底的几何大小） */
+const UNIT_FALLBACK_SPRITE = {
+  mobile: { frameW: 16, frameH: 30, scale: 1, kind: 'mobile' },
+  builder: { frameW: 20, frameH: 20, scale: 1, kind: 'mobile' },
+  building: { frameW: 35, frameH: 44, scale: 1, kind: 'building' },
+};
+
+/**
+ * 从清单条目解析出分帧盒；清单缺字段时用图片真实尺寸反推（契约 1 节约束 2）。
+ * 图片还没加载完（image 为空）且清单没给 frameW/frameH 时，用 kind 的契约兜底尺寸，
+ * 避免图片到位前先按 1px 画一帧导致闪跳。
+ */
+function unitSpriteFrameBox(sprite, image, kind) {
+  const frames = Math.max(1, Math.round(num(sprite.frames, 1)));
+  const fallback = UNIT_FALLBACK_SPRITE[kind] || UNIT_FALLBACK_SPRITE.mobile;
+  let frameW = num(sprite.frameW, 0);
+  let frameH = num(sprite.frameH, 0);
+  if (frameW <= 0) frameW = image ? Math.floor(image.width / frames) : fallback.frameW;
+  if (frameH <= 0) frameH = image ? image.height : fallback.frameH;
+  // 契约要求 frameH == 图片高；不符时以图片为准，避免把整图压扁
+  if (image && Math.abs(frameH - image.height) > 0.5) frameH = image.height;
+  return {
+    frames: frames,
+    frameW: Math.max(1, frameW),
+    frameH: Math.max(1, frameH),
+    scale: num(sprite.scale, 1) || 1,
+  };
+}
+
+/** 契约 2.3：1:1 世界像素，drawH 不足 UNIT_SPRITE_MIN_H 时整体等比放大。 */
+function unitSpriteDrawSize(box, camScale) {
+  const factor = (box.scale || 1) * camScale;
+  let drawW = box.frameW * factor;
+  let drawH = box.frameH * factor;
+  if (!(drawH > 0)) {
+    drawH = UNIT_SPRITE_MIN_H;
+    drawW = Math.max(1, box.frameW * factor);
+  }
+  if (drawH < UNIT_SPRITE_MIN_H) {
+    const boost = UNIT_SPRITE_MIN_H / drawH;
+    drawW *= boost;
+    drawH = UNIT_SPRITE_MIN_H;
+  }
+  return { drawW: drawW, drawH: drawH };
+}
+
+/** 契约 2.4：移动单位按时间取帧，建筑固定第 0 帧。 */
+function unitSpriteFrameIndex(frames, isBuilding, time) {
+  if (isBuilding || frames <= 1) return 0;
+  const raw = Math.floor(Math.max(0, num(time, 0)) * UNIT_SPRITE_FPS);
+  return ((raw % frames) + frames) % frames;
+}
+
+/**
+ * 沙盘单位绘制（docs/沙盘贴图契约.md 第 2 节）：贴图优先，矢量保底。
+ * options.scale 为相机缩放 cam.scale；贴图尺寸由本函数按契约 2.3 自行计算。
+ * 保留阵营底盘指示、选中/精英环、血条；单位 x,y 为贴图中心。
+ */
 function drawSandboxSpriteUnit(ctx, unit, x, y, selected, leader, time, options) {
   const own = unit.team === 'own';
   const color = own ? SANDBOX_COLORS.own : SANDBOX_COLORS.enemy;
-  const baseSize = Math.max(8, num(options && options.size, 30));
+  const camScale = Math.max(0.0001, num(options && options.scale, 1));
   const hpFraction = clamp(unit.hp / Math.max(1, unit.maxHp), 0, 1);
   const angles = unitAngleCache.get(unit.id) || { heading: -Math.PI / 2, turret: -Math.PI / 2 };
+  const isBuilding = !!unit.isBuilding;
+  const isBuilder = !!unit.isBuilder;
 
-  // 实体类别推断
-  const unitType = String(unit.unit_type || '').toLowerCase();
-  const maxHp = num(unit.maxHp || unit.max_hp, 0);
-  const isBuilding = !!(unit.is_building || unit.entity_type_id === 2 || unitType === 'building' || unitType === 'command_center' || unitType === 'factory' || unitType === 'extractor' || unitType === 'turret');
-  const isBuilder = !!(unit.is_builder || unitType === 'builder' || unitType === 'combat_engineer');
-  const isFactory = !!(unit.is_factory || unitType === 'factory' || unitType === 'mech_factory');
-  const isExtractor = !!(unitType === 'extractor');
-  const isCommandCenter = !!(unitType === 'command_center' || (isBuilding && maxHp >= 2500.0));
-  const isTurret = !!(unitType === 'turret' || (isBuilding && !isCommandCenter && !isFactory && !isExtractor && maxHp <= 1000.0 && maxHp > 0));
+  const sprite = resolveUnitSprite(unit);
+  const image = sprite ? unitSpriteImage(sprite.image) : null;
+  const turretImage = sprite && sprite.turretImage ? unitSpriteImage(sprite.turretImage) : null;
 
-  // 差异化尺寸
-  let size = baseSize;
-  if (isCommandCenter) size = baseSize * 2.2;
-  else if (isFactory) size = baseSize * 1.8;
-  else if (isExtractor) size = baseSize * 1.35;
-  else if (isBuilding) size = baseSize * 1.5;
-  else if (isBuilder) size = baseSize * 0.95;
+  // 尺寸：有清单条目就用条目（图片未到位也保持一致，避免闪跳），否则用契约 fallback 尺寸
+  const fallbackKind = isBuilding ? 'building' : (isBuilder ? 'builder' : 'mobile');
+  const box = sprite ? unitSpriteFrameBox(sprite, image, fallbackKind) : UNIT_FALLBACK_SPRITE[fallbackKind];
+  const size = unitSpriteDrawSize(box, camScale);
+  const drawW = size.drawW;
+  const drawH = size.drawH;
+  const minSpan = Math.min(drawW, drawH);
 
-  // 阵营底盘指示（建筑用圆角矩形，移动单位用椭圆）
+  // 阵营底盘指示（建筑圆形矩形，移动单位椭圆）
   ctx.save();
   ctx.beginPath();
   if (isBuilding) {
-    const bw = size * 0.85;
-    const bh = size * 0.85;
+    const bw = Math.max(6, drawW * 0.86);
+    const bh = Math.max(6, drawH * 0.86);
     ctx.rect(x - bw / 2, y - bh / 2, bw, bh);
   } else {
-    ctx.ellipse(x, y + size * 0.2, size * 0.42, size * 0.26, 0, 0, Math.PI * 2);
+    ctx.ellipse(x, y + drawH * 0.18, Math.max(4, drawW * 0.42), Math.max(3, drawH * 0.24), 0, 0, Math.PI * 2);
   }
   ctx.strokeStyle = own ? 'rgba(63, 169, 255, 0.9)' : 'rgba(255, 90, 90, 0.9)';
-  ctx.lineWidth = Math.max(1, size * 0.055);
+  ctx.lineWidth = Math.max(1, minSpan * 0.06);
   ctx.shadowColor = color;
-  ctx.shadowBlur = size * 0.25;
+  ctx.shadowBlur = Math.min(18, Math.max(4, minSpan * 0.3));
   ctx.stroke();
   ctx.restore();
 
   if (selected || leader) {
     ctx.save();
     ctx.beginPath();
-    ctx.arc(x, y, size * 0.62, 0, Math.PI * 2);
+    ctx.arc(x, y, Math.max(7, Math.max(drawW, drawH) * 0.6), 0, Math.PI * 2);
     ctx.strokeStyle = selected ? 'rgba(234, 252, 255, 0.95)' : 'rgba(56, 225, 255, 0.32)';
     ctx.lineWidth = selected ? 1.8 : 1;
     if (selected) {
@@ -3768,110 +3882,74 @@ function drawSandboxSpriteUnit(ctx, unit, x, y, selected, leader, time, options)
     ctx.restore();
   }
 
-  // --- 分类绘制贴图 ---
+  // 贴图本体
   let rendered = false;
+  if (image) {
+    const frames = Math.max(1, Math.min(box.frames, Math.max(1, Math.floor(image.width / box.frameW))));
+    const frame = unitSpriteFrameIndex(frames, isBuilding, time);
+    const frameH = Math.max(1, Math.min(box.frameH, image.height));
+    ctx.save();
+    ctx.translate(x, y);
+    if (!isBuilding) ctx.rotate(angles.heading + Math.PI / 2);
+    ctx.drawImage(
+      image,
+      frame * box.frameW, 0, box.frameW, frameH,
+      -drawW / 2, -drawH / 2, drawW, drawH
+    );
+    ctx.restore();
+    rendered = true;
 
-  if (isCommandCenter && spriteCache.command_center) {
-    ctx.save();
-    ctx.translate(x, y);
-    const img = spriteCache.command_center;
-    // 原版指挥中心主基地：单帧 53x68 (整图 212x68 为 4 帧动图，切第 1 帧)
-    if (img.width >= 200) {
-      const frameW = 53;
-      const frameH = 68;
-      const drawW = size * (frameW / frameH);
-      ctx.drawImage(img, 0, 0, frameW, frameH, -drawW / 2, -size / 2, drawW, size);
-    } else {
-      ctx.drawImage(img, -size / 2, -size / 2, size, size);
-    }
-    ctx.restore();
-    rendered = true;
-  } else if (isFactory && spriteCache.factory) {
-    ctx.save();
-    ctx.translate(x, y);
-    const img = spriteCache.factory;
-    const drawW = size * (img.width / img.height);
-    ctx.drawImage(img, -drawW / 2, -size / 2, drawW, size);
-    ctx.restore();
-    rendered = true;
-  } else if (isExtractor && spriteCache.extractor) {
-    ctx.save();
-    ctx.translate(x, y);
-    const img = spriteCache.extractor;
-    if (img.width >= 100) {
-      const frameW = 37;
-      const frameH = 59;
-      const drawW = size * (frameW / frameH);
-      ctx.drawImage(img, 0, 0, frameW, frameH, -drawW / 2, -size / 2, drawW, size);
-    } else {
-      ctx.drawImage(img, -size / 2, -size / 2, size, size);
-    }
-    ctx.restore();
-    rendered = true;
-  } else if (isTurret && spriteCache.turret_base) {
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.drawImage(spriteCache.turret_base, -size * 0.45, -size * 0.45, size * 0.9, size * 0.9);
-    if (spriteCache.turret_top) {
-      ctx.rotate(angles.turret + Math.PI / 2);
-      ctx.drawImage(spriteCache.turret_top, -size * 0.35, -size * 0.35, size * 0.7, size * 0.7);
-    }
-    ctx.restore();
-    rendered = true;
-  } else if (isBuilder && spriteCache.builder) {
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(angles.heading + Math.PI / 2);
-    // 原版黄色建造车，20x20
-    const bSize = size * 0.85;
-    ctx.drawImage(spriteCache.builder, -bSize / 2, -bSize / 2, bSize, bSize);
-    ctx.restore();
-    rendered = true;
-  } else if (!isBuilding && spriteCache.tank) {
-    // 默认战斗坦克
-    const bodyWidth = size * (UNIT_TILE_WIDTH / UNIT_TILE_HEIGHT);
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(angles.heading + Math.PI / 2);
-    ctx.drawImage(spriteCache.tank, 0, 0, UNIT_TILE_WIDTH, UNIT_TILE_HEIGHT, -bodyWidth / 2, -size / 2, bodyWidth, size);
-    ctx.restore();
-    if (spriteCache.turret) {
+    // 炮塔单独贴图：围绕单位中心按炮塔角度叠加（建筑不随航向旋转，但炮塔要转）
+    if (turretImage) {
+      const turretBox = unitSpriteFrameBox(
+        {
+          frames: num(sprite.turretFrames, 1),
+          frameW: num(sprite.turretFrameW, 0),
+          frameH: num(sprite.turretFrameH, 0),
+          scale: num(sprite.turretScale, box.scale),
+        },
+        turretImage,
+        'mobile'
+      );
+      const turretSize = unitSpriteDrawSize(turretBox, camScale);
+      const turretFrames = Math.max(
+        1,
+        Math.min(turretBox.frames, Math.max(1, Math.floor(turretImage.width / turretBox.frameW)))
+      );
+      const turretFrame = unitSpriteFrameIndex(turretFrames, false, time);
+      const turretFrameH = Math.max(1, Math.min(turretBox.frameH, turretImage.height));
       ctx.save();
       ctx.translate(x, y);
       ctx.rotate(angles.turret + Math.PI / 2);
-      const turretWidth = size * (TURRET_TILE_WIDTH / TURRET_TILE_HEIGHT) * 1.05;
-      const turretHeight = size * 1.02;
       ctx.drawImage(
-        spriteCache.turret,
-        0, 0, TURRET_TILE_WIDTH, TURRET_TILE_HEIGHT,
-        -turretWidth / 2, -turretHeight * 0.7, turretWidth, turretHeight
+        turretImage,
+        turretFrame * turretBox.frameW, 0, turretBox.frameW, turretFrameH,
+        -turretSize.drawW / 2, -turretSize.drawH / 2, turretSize.drawW, turretSize.drawH
       );
       ctx.restore();
     }
-    rendered = true;
   }
 
-  // 保底矢量绘制（没有对应贴图时，用外观几何明确区分，绝不全画成坦克）
+  // 矢量保底：只在清单缺失或图片加载失败时出现（resolveUnitSprite / unitSpriteImage 已各 warn 一次）
   if (!rendered) {
     ctx.save();
     if (isBuilding) {
       ctx.beginPath();
-      ctx.rect(x - size * 0.4, y - size * 0.4, size * 0.8, size * 0.8);
+      ctx.rect(x - drawW * 0.4, y - drawH * 0.4, drawW * 0.8, drawH * 0.8);
       ctx.fillStyle = own ? '#1b4b8a' : '#8a1b24';
       ctx.fill();
       ctx.lineWidth = 1.5;
       ctx.strokeStyle = color;
       ctx.stroke();
-      // 内部科技标示
       ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
-      ctx.fillRect(x - size * 0.2, y - size * 0.2, size * 0.4, size * 0.4);
+      ctx.fillRect(x - minSpan * 0.2, y - minSpan * 0.2, minSpan * 0.4, minSpan * 0.4);
     } else if (isBuilder) {
-      // 建造者：六边形工程车
+      const radius = Math.max(4, minSpan * 0.45);
       ctx.beginPath();
-      for (let i = 0; i < 6; i++) {
+      for (let i = 0; i < 6; i += 1) {
         const rad = (i * Math.PI) / 3;
-        const px = x + Math.cos(rad) * size * 0.38;
-        const py = y + Math.sin(rad) * size * 0.38;
+        const px = x + Math.cos(rad) * radius;
+        const py = y + Math.sin(rad) * radius;
         if (i === 0) ctx.moveTo(px, py);
         else ctx.lineTo(px, py);
       }
@@ -3883,7 +3961,7 @@ function drawSandboxSpriteUnit(ctx, unit, x, y, selected, leader, time, options)
       ctx.stroke();
     } else {
       ctx.beginPath();
-      ctx.arc(x, y, size * 0.32, 0, Math.PI * 2);
+      ctx.arc(x, y, Math.max(4, minSpan * 0.45), 0, Math.PI * 2);
       ctx.fillStyle = own ? '#2f6fbf' : '#b5303c';
       ctx.fill();
       ctx.lineWidth = 1.4;
@@ -3893,11 +3971,11 @@ function drawSandboxSpriteUnit(ctx, unit, x, y, selected, leader, time, options)
     ctx.restore();
   }
 
-  // 血条
-  const barWidth = Math.max(14, size * 0.66);
-  const barHeight = Math.max(2.5, size * 0.09);
+  // 血条：按绘制高度定位到贴图上方，避免大建筑血条压在贴图上
+  const barWidth = Math.max(14, drawW * 0.78);
+  const barHeight = Math.max(2.5, Math.min(6, drawH * 0.1));
   const barX = x - barWidth / 2;
-  const barY = y - size * 0.62;
+  const barY = y - drawH / 2 - barHeight - 2;
   ctx.fillStyle = 'rgba(2, 6, 12, 0.8)';
   ctx.fillRect(barX - 1, barY - 1, barWidth + 2, barHeight + 2);
   ctx.fillStyle = 'rgba(255, 255, 255, 0.14)';
@@ -3939,6 +4017,7 @@ function drawSandbox() {
   const detail = sandbox.mapDetail;
   const terrainSim = sandbox.simMode === 'terrain';
   const frames = sandbox.frames;
+  const customScale = sandbox.customScale || 1.0;
 
   let frame = null;
   let nextFrame = null;
@@ -3976,6 +4055,9 @@ function drawSandbox() {
   }
   const mapMode = !!(detail && sandbox.terrainView);
   const cam = mapCamera(width, height, region, mapMode ? 0 : 20);
+  cam.scale *= customScale;
+  cam.ox -= (cam.region.x * (cam.scale - (cam.scale / customScale)));
+  cam.oy -= (cam.region.y * (cam.scale - (cam.scale / customScale)));
   const offsetX = cam.ox + cam.region.x * cam.scale;
   const offsetY = cam.oy + cam.region.y * cam.scale;
   const drawnWidth = cam.region.width * cam.scale;
@@ -4193,17 +4275,13 @@ function drawSandbox() {
     leaders.add(unit.id);
   }
   const time = performance.now() / 1000;
-  // 铁锈战争真实世界尺寸：车身高 24px (30 * 0.8)，碰撞半径 11px
-  // 随相机缩放 cam.scale 保持 1:1 物理比例，远景全场时保留保底尺寸确保可见
-  const baseWorldSize = 24.0;
-  const realSpriteSize = baseWorldSize * cam.scale;
-  const minSpriteSize = sandbox.viewMode === 'full' ? 10 : 12;
-  const spriteSize = Math.max(minSpriteSize, realSpriteSize);
+  // 贴图尺寸由 drawSandboxSpriteUnit 按契约 2.3 自行计算（frameW/frameH * scale * cam.scale），
+  // 这里只传相机缩放；抽象模式（无实机地图）仍用几何渲染，尺寸按世界碰撞半径换算。
   const baseRadius = 11.0;
   const unitRadius = Math.max(3.5, baseRadius * cam.scale);
   for (const unit of sorted) {
-    if (mapMode && spriteCache.tank) {
-      drawSandboxSpriteUnit(ctx, unit, mapX(unit.x), mapY(unit.y), unit.id === sandbox.selectedId, leaders.has(unit.id), time, { size: spriteSize });
+    if (mapMode) {
+      drawSandboxSpriteUnit(ctx, unit, mapX(unit.x), mapY(unit.y), unit.id === sandbox.selectedId, leaders.has(unit.id), time, { scale: cam.scale });
     } else {
       drawSandboxUnit(ctx, unit, mapX, mapY, unit.id === sandbox.selectedId, leaders.has(unit.id), time, { radius: unitRadius });
     }
@@ -4608,6 +4686,11 @@ function interpolateUnits(frame, nextFrame, fraction) {
       maxHp: unit.maxHp,
       order: next ? next.order : unit.order,
       target: next ? next.target : unit.target,
+      // 贴图相关字段逐字段透传（类型不会中途变化，取左帧值）
+      unitType: unit.unitType,
+      isBuilding: unit.isBuilding,
+      isBuilder: unit.isBuilder,
+      isFactory: unit.isFactory,
     });
   }
   return result;
@@ -5004,8 +5087,26 @@ function bindEvents() {
   if (els.fePpoStart) els.fePpoStart.addEventListener('click', feStartPpo);
   if (els.fePpoStop) els.fePpoStop.addEventListener('click', feStopPpo);
   if (els.fePolicy) els.fePolicy.addEventListener('change', feSyncInferPolicyUi);
+  if (els.feCheckpointSort) {
+    els.feCheckpointSort.addEventListener('change', () => {
+      renderFeCheckpointOptions();
+    });
+  }
+  if (els.fePpoCheckpointSort) {
+    els.fePpoCheckpointSort.addEventListener('change', () => {
+      renderFeCheckpointOptions();
+    });
+  }
   if (els.feCheckpointRefresh) {
     els.feCheckpointRefresh.addEventListener('click', async () => {
+      toast('正在重新扫描 Checkpoint 权重目录…', 'info');
+      await loadFeCheckpoints(true);
+      const count = (state.fe.checkpointList || []).length;
+      toast('已刷新 Checkpoint 列表，共发现 ' + count + ' 个模型', 'ok');
+    });
+  }
+  if (els.fePpoCheckpointRefresh) {
+    els.fePpoCheckpointRefresh.addEventListener('click', async () => {
       toast('正在重新扫描 Checkpoint 权重目录…', 'info');
       await loadFeCheckpoints(true);
       const count = (state.fe.checkpointList || []).length;
@@ -5116,6 +5217,16 @@ function bindEvents() {
 
   if (els.sandboxCanvas) {
     els.sandboxCanvas.addEventListener('click', handleSandboxClick);
+    els.sandboxCanvas.addEventListener('wheel', (event) => {
+      event.preventDefault();
+      const zoomSpeed = 0.1;
+      const zoom = event.deltaY > 0 ? (1 - zoomSpeed) : (1 + zoomSpeed);
+      // Simple zoom logic: update a scale variable that mapCamera/drawSandbox uses
+      if (!state.sandbox.customScale) state.sandbox.customScale = 1.0;
+      state.sandbox.customScale *= zoom;
+      state.sandbox.customScale = Math.max(0.1, Math.min(5.0, state.sandbox.customScale));
+      drawSandbox();
+    }, { passive: false });
   }
 
   if (els.logPanel) {
@@ -6030,13 +6141,11 @@ async function feStartInferInner() {
     : '脚本策略';
   feSetInferStatus('启动 ' + launchCount + ' 路并发实例（' + policyLabel + '）…');
   feRenderInferDashboard();
+  const frameMs = els.feFrameMs ? parseInt(els.feFrameMs.value, 10) : 2;
   const inferConfig = {
     ticks: ticks,
     policy: policy,
-    // 2 ms/tick ≈ 8x faster than real time. The policy decides every 10 ticks and
-    // the scripted recorder samples every 4th observation, so real-time pacing
-    // (16 ms) only makes the wait longer without changing what happens in game.
-    frame_ms: 2,
+    frame_ms: frameMs,
     map_name: mapItem.name,
     map_path: mapItem.relative || '',
     map_width: num(mapItem.width_px, 0),
@@ -7494,11 +7603,43 @@ function feInferMapFromPath(path) {
   return '';
 }
 
+function sortCheckpoints(list, sortBy) {
+  const arr = (list || []).slice();
+  if (sortBy === 'win_rate') {
+    return arr.sort((a, b) => {
+      const wrA = (a.eval && typeof a.eval.win_rate === 'number') ? a.eval.win_rate : -1;
+      const wrB = (b.eval && typeof b.eval.win_rate === 'number') ? b.eval.win_rate : -1;
+      if (wrB !== wrA) return wrB - wrA;
+      return String(b.mtime || '').localeCompare(String(a.mtime || ''));
+    });
+  }
+  if (sortBy === 'update') {
+    return arr.sort((a, b) => {
+      const upA = typeof a.update === 'number' ? a.update : -1;
+      const upB = typeof b.update === 'number' ? b.update : -1;
+      if (upB !== upA) return upB - upA;
+      return String(b.mtime || '').localeCompare(String(a.mtime || ''));
+    });
+  }
+  if (sortBy === 'name') {
+    return arr.sort((a, b) => String(a.name || a.path || '').localeCompare(String(b.name || b.path || '')));
+  }
+  // 默认按时间倒序
+  return arr.sort((a, b) => String(b.mtime || '').localeCompare(String(a.mtime || '')));
+}
+
 function feCheckpointDisplayName(item, index) {
   if (!item) return '';
+  const rawPath = String(item.path || item.name || '').replace(/\\/g, '/');
+  const fileName = basename(rawPath);
+  const parentName = basename(rawPath.replace(/[/\\][^/\\]+$/, ''));
+
   const parts = [];
   if (index === 0) {
-    parts.push('⭐ [最新]');
+    parts.push('⭐ [最新/首选]');
+  }
+  if (parentName.startsWith('econ_')) {
+    parts.push('🏗️ [经济/建造]');
   }
   const mapName = item.map || feInferMapFromPath(item.path || item.name);
   if (mapName) {
@@ -7514,9 +7655,6 @@ function feCheckpointDisplayName(item, index) {
     parts.push('胜率 ' + Math.round(item.eval.win_rate * 100) + '%');
   }
 
-  const rawPath = String(item.path || item.name || '').replace(/\\/g, '/');
-  const fileName = basename(rawPath);
-  const parentName = basename(rawPath.replace(/[/\\][^/\\]+$/, ''));
   if (fileName.includes('best')) {
     parts.push('最优(best)');
   }
@@ -7532,7 +7670,9 @@ function feCheckpointDisplayName(item, index) {
 async function loadFeCheckpoints(force) {
   const fe = state.fe;
   if (fe.checkpointsLoading) return;
-  if (fe.checkpointsLoaded && !force) return;
+  if (fe.checkpointsLoaded && !force) {
+      if (fe.checkpointList && fe.checkpointList.length > 0) return;
+  }
   fe.checkpointsLoading = true;
   if (state.mode === 'demo') {
     const list = (typeof DEMO !== 'undefined' && Array.isArray(DEMO.checkpoints)) ? DEMO.checkpoints : [];
@@ -7545,10 +7685,14 @@ async function loadFeCheckpoints(force) {
   try {
     const payload = await Api.checkpoints();
     const list = Array.isArray(payload) ? payload : ((payload && payload.checkpoints) || []);
-    fe.checkpointList = list.slice().sort((left, right) => String(right.mtime || '').localeCompare(String(left.mtime || '')));
-    fe.checkpointsLoaded = true;
+    // 即使列表为空，也不要轻易置空，防止逻辑覆盖
+    if (list.length > 0) {
+        fe.checkpointList = list.slice().sort((left, right) => String(right.mtime || '').localeCompare(String(left.mtime || '')));
+        fe.checkpointsLoaded = true;
+    } else {
+        fe.checkpointsLoaded = false;
+    }
   } catch (error) {
-    fe.checkpointList = [];
     fe.checkpointsLoaded = false;
   } finally {
     fe.checkpointsLoading = false;
@@ -7557,20 +7701,26 @@ async function loadFeCheckpoints(force) {
 }
 
 function renderFeCheckpointOptions() {
-  const list = state.fe.checkpointList || [];
+  const rawList = state.fe.checkpointList || [];
+  const inferSortBy = (els.feCheckpointSort && els.feCheckpointSort.value) || 'time';
+  const ppoSortBy = (els.fePpoCheckpointSort && els.fePpoCheckpointSort.value) || 'time';
+
+  const inferList = sortCheckpoints(rawList, inferSortBy);
+  const ppoList = sortCheckpoints(rawList, ppoSortBy);
+
   const select = els.feCheckpointSelect;
   if (select) {
     const previous = select.value;
     select.innerHTML = '';
-    if (!list.length) {
+    if (!inferList.length) {
       const option = document.createElement('option');
       option.value = '';
       option.textContent = '（暂无检测到 Checkpoint，请点击上方刷新）';
       select.appendChild(option);
       select.disabled = true;
     } else {
-      for (let i = 0; i < list.length; i += 1) {
-        const item = list[i];
+      for (let i = 0; i < inferList.length; i += 1) {
+        const item = inferList[i];
         const option = document.createElement('option');
         option.value = item.path;
         option.textContent = feCheckpointDisplayName(item, i)
@@ -7578,13 +7728,13 @@ function renderFeCheckpointOptions() {
         select.appendChild(option);
       }
       select.disabled = false;
-      select.value = list.some((item) => item.path === previous) ? previous : list[0].path;
+      select.value = inferList.some((item) => item.path === previous) ? previous : inferList[0].path;
     }
   }
   if (els.fePolicy) {
     const modelOption = Array.prototype.find.call(els.fePolicy.options, (option) => option.value === 'model');
     if (modelOption) {
-      modelOption.disabled = false; // 用户随时可以自由选择 PPO 模型策略进行推理
+      modelOption.disabled = false;
     }
   }
   // 同步填充数据采集面板的模型 Checkpoint 下拉框
@@ -7592,15 +7742,15 @@ function renderFeCheckpointOptions() {
   if (trainSelect) {
     const previous = trainSelect.value;
     trainSelect.innerHTML = '';
-    if (!list.length) {
+    if (!inferList.length) {
       const option = document.createElement('option');
       option.value = '';
       option.textContent = '（无可用模型）';
       trainSelect.appendChild(option);
       trainSelect.disabled = true;
     } else {
-      for (let i = 0; i < list.length; i += 1) {
-        const item = list[i];
+      for (let i = 0; i < inferList.length; i += 1) {
+        const item = inferList[i];
         const option = document.createElement('option');
         option.value = item.path;
         option.textContent = feCheckpointDisplayName(item, i)
@@ -7608,7 +7758,7 @@ function renderFeCheckpointOptions() {
         trainSelect.appendChild(option);
       }
       trainSelect.disabled = false;
-      trainSelect.value = list.some((item) => item.path === previous) ? previous : list[0].path;
+      trainSelect.value = inferList.some((item) => item.path === previous) ? previous : inferList[0].path;
     }
   }
   // 同步填充 PPO 训练面板的初始 Checkpoint 下拉框
@@ -7616,15 +7766,15 @@ function renderFeCheckpointOptions() {
   if (ppoSelect) {
     const previous = ppoSelect.value;
     ppoSelect.innerHTML = '';
-    if (!list.length) {
+    if (!ppoList.length) {
       const option = document.createElement('option');
       option.value = '';
       option.textContent = '（无可用权重）';
       ppoSelect.appendChild(option);
       ppoSelect.disabled = true;
     } else {
-      for (let i = 0; i < list.length; i += 1) {
-        const item = list[i];
+      for (let i = 0; i < ppoList.length; i += 1) {
+        const item = ppoList[i];
         const option = document.createElement('option');
         option.value = item.path;
         option.textContent = feCheckpointDisplayName(item, i)
@@ -7632,8 +7782,8 @@ function renderFeCheckpointOptions() {
         ppoSelect.appendChild(option);
       }
       ppoSelect.disabled = false;
-      const bestDefault = list.find((item) => /bc|best|ft/i.test(item.name || item.path)) || list[0];
-      ppoSelect.value = list.some((item) => item.path === previous) ? previous : (bestDefault ? bestDefault.path : list[0].path);
+      const bestDefault = ppoList.find((item) => /bc|best|ft/i.test(item.name || item.path)) || ppoList[0];
+      ppoSelect.value = ppoList.some((item) => item.path === previous) ? previous : (bestDefault ? bestDefault.path : ppoList[0].path);
     }
   }
   feSyncInferPolicyUi();
@@ -7678,6 +7828,9 @@ function feSyncPpoConfigUi() {
   const initMode = (els.fePpoInitMode && els.fePpoInitMode.value) || 'warmstart';
   if (els.fePpoCheckpointField) {
     els.fePpoCheckpointField.hidden = (initMode !== 'checkpoint');
+  }
+  if (initMode === 'checkpoint' && (!state.fe.checkpointList || !state.fe.checkpointList.length)) {
+    void loadFeCheckpoints(true);
   }
   if (els.fePpoInitHint) {
     if (initMode === 'warmstart') {
