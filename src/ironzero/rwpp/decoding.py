@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 
 from ..micro_config import MicroDuelConfig
-from ..mock_engine import ACTION_KINDS, EXTRACTOR_TYPE_ID
+from ..mock_engine import ACTION_KINDS
 
 
 def observation_to_state(message: dict[str, Any]) -> dict[str, Any]:
@@ -131,13 +131,24 @@ def decode_action(
                  "factory_entity_id": int(factory.get("entity_id", -1)),
                  "unit_type": "tank"}]
     if kind == "upgrade_building":
-        buildings = [
-            u for u in own
-            if u.get("is_building") and int(u.get("entity_type_id") or 0) == EXTRACTOR_TYPE_ID
-        ]
-        if not buildings:
+        # Select the target by what the bridge says the engine would accept, not
+        # by a hard-coded type id. The old test was
+        # ``entity_type_id == EXTRACTOR_TYPE_ID (10)``, but the bridge used to
+        # report every building as ``entity_type_id = 2``, so this branch never
+        # found a building and degraded every upgrade order into ``hold`` -- the
+        # extractor tier upgrade, the core of the Rusted Warfare economy, simply
+        # did not exist on the real game.
+        #
+        # ``can_upgrade`` is the engine's own answer ("this building has a next
+        # tier available right now", from ``getBuildActionId``). Bridges that do
+        # not report it fall back to any own building, which at worst yields a
+        # rejected order instead of a silently dropped one.
+        upgradable = [u for u in own if u.get("can_upgrade")]
+        if not upgradable:
+            upgradable = [u for u in own if u.get("is_building")]
+        if not upgradable:
             return _hold_action(state, group)
-        building = buildings[int(target_index) % len(buildings)]
+        building = upgradable[int(target_index) % len(upgradable)]
         return [{"kind": "upgrade_building", "unit_group": group,
                  "building_entity_id": int(building.get("entity_id", -1))}]
     if kind == "attack_target":

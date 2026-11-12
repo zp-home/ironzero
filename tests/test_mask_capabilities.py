@@ -28,9 +28,20 @@ BUILDER = {"entity_id": 7, "entity_type_id": BUILDER_TYPE_ID, "hp": 170.0,
            "max_hp": 170.0, "x": 100.0, "y": 100.0, "is_builder": True}
 
 
-def _state(builders=None, funds: float = 4000.0, enemies: int = 0):
+def _state(builders=None, funds: float = 4000.0, enemies: int = 0,
+           buildings: int = 0, upgradeable: bool = False):
+    own = [dict(BUILDER)]
+    for index in range(buildings):
+        building = {
+            "entity_id": 40 + index, "entity_type_id": 10,
+            "hp": 600.0, "max_hp": 600.0, "x": 200.0, "y": 200.0,
+            "is_building": True,
+        }
+        if upgradeable:
+            building["can_upgrade"] = True
+        own.append(building)
     state = {
-        "own_entities": [dict(BUILDER)],
+        "own_entities": own,
         "visible_enemy_entities": [
             {"entity_id": 100 + i, "hp": 210.0, "max_hp": 210.0, "x": 500.0, "y": 500.0}
             for i in range(enemies)
@@ -63,12 +74,35 @@ def test_extractor_masked_when_engine_only_offers_factory() -> None:
 
 
 def test_all_economy_kinds_open_when_engine_offers_everything() -> None:
+    """With a builder, an upgradable building and money, everything is open."""
+
     mask = _mask(_state(builders=[{"entity_id": 7, "unit_type": "builder",
                                    "can_build": ["extractor", "landFactory",
-                                                 "tank", "turret"]}]))
+                                                 "tank", "turret"]}],
+                        buildings=1, upgradeable=True))
     selectable = _selectable(mask)
     assert {"build_extractor", "build_structure",
             "produce_unit", "upgrade_building"} <= selectable
+
+
+def test_upgrade_needs_an_upgradable_building_not_just_a_builder() -> None:
+    """``upgrade_building`` upgrades a *building*; a builder alone is not enough.
+
+    The kind used to be gated on the builder's ``can_build`` list containing
+    ``extractor``, which is the wrong question: an upgrade targets a building
+    that already exists. Gating it that way both masked a legal order on a map
+    where extractors are not yet buildable and left the kind selectable with
+    nothing to upgrade.
+    """
+
+    no_building = _selectable(_mask(_state(
+        builders=[{"entity_id": 7, "can_build": ["extractor"]}])))
+    assert "upgrade_building" not in no_building
+
+    with_building = _selectable(_mask(_state(
+        builders=[{"entity_id": 7, "can_build": ["extractor"]}],
+        buildings=1, upgradeable=True)))
+    assert "upgrade_building" in with_building
 
 
 def test_unreported_capabilities_fall_back_to_funding_gate() -> None:
@@ -151,11 +185,23 @@ def test_each_economy_kind_respects_its_capability(kind: str) -> None:
     """Dropping one buildable from the report closes exactly its kind."""
 
     full = ["extractor", "landFactory", "tank", "turret"]
-    with_all = _selectable(_mask(_state(builders=[{"entity_id": 7, "can_build": full}])))
-    assert kind in with_all
 
-    necessary = {"build_extractor": "extractor", "upgrade_building": "extractor",
+    def selectable_for(can_build: list[str]) -> set[str]:
+        # An upgradable building is present in every case: ``upgrade_building``
+        # is gated on that, not on the builder's menu, so without it the kind
+        # would be masked for a reason unrelated to the parametrised one.
+        return _selectable(_mask(_state(
+            builders=[{"entity_id": 7, "can_build": can_build}],
+            buildings=1, upgradeable=True)))
+
+    assert kind in selectable_for(full)
+
+    # ``upgrade_building`` no longer depends on the build menu (it targets a
+    # building that already exists), so there is no buildable to remove for it.
+    if kind == "upgrade_building":
+        return
+
+    necessary = {"build_extractor": "extractor",
                  "build_structure": "landFactory", "produce_unit": "tank"}[kind]
     reduced = [name for name in full if name != necessary]
-    without = _selectable(_mask(_state(builders=[{"entity_id": 7, "can_build": reduced}])))
-    assert kind not in without
+    assert kind not in selectable_for(reduced)

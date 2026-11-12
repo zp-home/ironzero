@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..micro_config import DEFAULT_CONFIG, MicroDuelConfig
-from ..mock_engine import ACTION_KINDS, BUILDER_TYPE_ID
+from ..mock_engine import ACTION_KINDS
 
 __all__ = ["build_masks", "flat_mask_vector", "masks_as_lists"]
 
@@ -26,7 +26,6 @@ _KIND_REQUIRED_BUILDABLE: dict[str, str] = {
     "build_extractor": "extractor",
     "build_structure": "landFactory",
     "produce_unit": "tank",
-    "upgrade_building": "extractor",
 }
 
 # Which ``MicroDuelConfig`` attribute prices each economy kind.
@@ -92,6 +91,18 @@ def build_masks(state: dict, config: MicroDuelConfig = DEFAULT_CONFIG) -> dict[s
     # guess is gone; a bridge that omits ``is_builder`` simply leaves the
     # economy masked instead of inviting guaranteed rejections.
     has_builder = any(unit.get("is_builder") for unit in own)
+    # ``upgrade_building`` needs something that is *already built* -- the
+    # builder's build menu is irrelevant to it. Gating it on the builder's
+    # capability (the old ``"extractor" in can_build`` requirement) both masked a
+    # legal order when the map cannot build extractors yet and left it selectable
+    # when nothing upgradable existed. The bridge reports the engine's own answer
+    # (``can_upgrade``, from ``getBuildActionId``); when it does not, fall back to
+    # "we have a building and a builder", which at worst yields one rejected
+    # order instead of a permanently dead or always-invalid kind.
+    if any("can_upgrade" in unit for unit in own):
+        has_upgradable = any(unit.get("can_upgrade") for unit in own)
+    else:
+        has_upgradable = has_builder and any(unit.get("is_building") for unit in own)
     capabilities = _reported_capabilities(state, own)
     for index, kind in enumerate(ACTION_KINDS):
         if index >= kind_mask.shape[0]:
@@ -111,7 +122,7 @@ def build_masks(state: dict, config: MicroDuelConfig = DEFAULT_CONFIG) -> dict[s
         elif kind == "produce_unit":
             kind_mask[index] = has_builder and buildable and affordable
         elif kind == "upgrade_building":
-            kind_mask[index] = has_builder and buildable and affordable
+            kind_mask[index] = has_upgradable and affordable
         else:
             kind_mask[index] = True
     if not kind_mask.any():
