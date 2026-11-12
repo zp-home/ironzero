@@ -204,9 +204,15 @@ def run_infer(
                 map_height=map_height,
                 frame_ms=frame_ms,
             )
+        # A user-requested stop must not be reported as a failure: ``stop_job``
+        # already wrote ``stopped`` into JOBS, and this final ``_update`` would
+        # otherwise overwrite it with ``failed`` (killed processes exit non-zero
+        # and produce no replay). Keeping ``stopped`` is what lets the dashboard
+        # show 已停止 instead of 失败.
+        was_stopped = job_id in STOPPED_JOBS
         _update(
             job_id,
-            status="done" if replay else "failed",
+            status="stopped" if was_stopped else ("done" if replay else "failed"),
             finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
             seconds=round(time.time() - started, 1),
             replay_path=_relative(Path(replay)) if replay else None,
@@ -217,7 +223,17 @@ def run_infer(
             result=episode_result,
         )
     except Exception as exc:  # noqa: BLE001
-        _update(job_id, status="failed", error=str(exc), seconds=round(time.time() - started, 1))
+        # Stopping is asynchronous: the kill can surface here as an exception
+        # (file handles torn down mid-read). Report it as stopped, not failed.
+        if job_id in STOPPED_JOBS:
+            _update(
+                job_id,
+                status="stopped",
+                finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+                seconds=round(time.time() - started, 1),
+            )
+        else:
+            _update(job_id, status="failed", error=str(exc), seconds=round(time.time() - started, 1))
     finally:
         PORT_SLOTS.put(port)
 
@@ -292,11 +308,21 @@ def run_train(
             thread.join()
         with JOBS_LOCK:
             total = len(JOBS[job_id]["replays"])
+        # Same contract as run_infer: a user-requested stop is "stopped", never
+        # "failed", even though the killed workers produced no replay.
         _update(
             job_id,
-            status="done" if total else "failed",
+            status="stopped" if job_id in STOPPED_JOBS else ("done" if total else "failed"),
             finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
             seconds=round(time.time() - started, 1),
         )
     except Exception as exc:  # noqa: BLE001
-        _update(job_id, status="failed", error=str(exc), seconds=round(time.time() - started, 1))
+        if job_id in STOPPED_JOBS:
+            _update(
+                job_id,
+                status="stopped",
+                finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+                seconds=round(time.time() - started, 1),
+            )
+        else:
+            _update(job_id, status="failed", error=str(exc), seconds=round(time.time() - started, 1))

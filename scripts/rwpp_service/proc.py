@@ -15,6 +15,7 @@ import subprocess
 import time
 
 from .paths import REPO_ROOT
+from .recover import kill_pid_tree
 from .state import (
     ACTIVE_PROCESSES,
     EPISODE_TIMEOUT_MARGIN_S,
@@ -87,13 +88,20 @@ def stop_job(job_id: str) -> bool:
         if job_id in PPO_PROCESSES:
             procs.append(PPO_PROCESSES[job_id])
             PPO_STOP.add(job_id)
+        adopted_pid = int(job.get("pid") or 0) if job.get("adopted") else 0
         for p in procs:
             try:
                 p.kill()
             except OSError:
                 pass
         ACTIVE_PROCESSES[job_id] = []
+    if adopted_pid:
+        # An adopted job has no local Popen handle (it outlived a restart), so the
+        # pid tree is killed instead. Also tell its monitor thread to wind down.
+        PPO_STOP.add(job_id)
+        kill_pid_tree(adopted_pid)
     return True
+
 
 
 def stop_all_jobs() -> int:

@@ -69,6 +69,7 @@ def run_ppo(
     map_width: float,
     map_height: float,
     frame_ms: int = 2,
+    physics_ms: int = 0,
     vision_radius: float = 260.0,
     eval_every: int = 0,
     eval_episodes: int = 1,
@@ -121,6 +122,10 @@ def run_ppo(
         "--eval-episodes",
         str(max(1, int(eval_episodes))),
     ]
+    if int(physics_ms) > 0:
+        # Pin the simulation delta so the wall-clock pacing (``--frame-ms``) can
+        # be lowered without changing what one episode simulates.
+        command.extend(["--physics-ms", str(int(physics_ms))])
     if use_llm:
         command.append("--use-llm")
     # Arena scenarios (e.g. the 25-vs-25 IronZero25 map) need the wider
@@ -271,6 +276,47 @@ def resolve_preset(payload: dict, map_name: str, map_path: str) -> dict:
     }
 
 
+#: BC 预热权重可能落盘的父目录（都相对 ``REPO_ROOT``）。
+#:
+#: ``scripts/bc_warmstart_rwpp.py`` 的 ``--out`` 默认值是 ``runs/bc_ironzero25``，
+#: 但仓库里实际发布的权重在 ``runs/experiments/bc_ironzero{5,10,15,20,25}``。
+#: 原来只查 ``runs/bc_ironzero*``，结果 warmstart **永远找不到**权重、静默退回
+#: ``None``（等于从零随机探索），训练表现和前几百轮胜率长期对不上预期。
+#: 两处都查，顺序保持「先兼容旧默认位置」。
+_BC_CHECKPOINT_PARENTS: tuple[str, ...] = ("runs", "runs/experiments")
+
+
+def _robust_units(units_per_team) -> int | None:
+    """把 ``units_per_team`` 收敛成正整数，非法值返回 ``None``。"""
+
+    try:
+        units = int(units_per_team)
+    except (TypeError, ValueError):
+        return None
+    return units if units > 0 else None
+
+
+def resolve_bc_checkpoint(units_per_team) -> Path | None:
+    """按坦克数查找可用的 BC 预热权重，找不到返回 ``None``。
+
+    先按当前坦克数精确匹配，再回退到 25v25（最大场景）的权重；
+    每个候选名都在 :data:`_BC_CHECKPOINT_PARENTS` 的每个父目录下查找。
+    """
+
+    names: list[str] = []
+    units = _robust_units(units_per_team)
+    if units is not None:
+        names.append(f"bc_ironzero{units}")
+    if "bc_ironzero25" not in names:
+        names.append("bc_ironzero25")
+    for name in names:
+        for parent in _BC_CHECKPOINT_PARENTS:
+            candidate = REPO_ROOT / parent / name / "checkpoint.pt"
+            if candidate.is_file():
+                return candidate
+    return None
+
+
 def resolve_init_checkpoint(payload: dict, units_per_team) -> str | None:
     """收敛 ``init_checkpoint``：显式路径优先，否则按坦克数回退到 BC 预热权重。"""
 
@@ -278,11 +324,23 @@ def resolve_init_checkpoint(payload: dict, units_per_team) -> str | None:
     init_mode = payload.get("init_mode")
     if (init_mode == "warmstart" or not init_checkpoint) and init_mode != "scratch":
         # 根据当前坦克数量优先寻找最匹配的预热权重
-        best_bc = REPO_ROOT / "runs" / f"bc_ironzero{units_per_team}" / "checkpoint.pt"
-        if not best_bc.is_file():
-            best_bc = REPO_ROOT / "runs" / "bc_ironzero25" / "checkpoint.pt"
-        if best_bc.is_file():
+        best_bc = resolve_bc_checkpoint(units_per_team)
+        if best_bc is not None:
             init_checkpoint = str(best_bc)
+        elif init_mode == "warmstart":
+            # 静默退回 None 正是旧 bug 的隐蔽之处（用户以为在 warmstart，实际从零）。
+            # 找不到就在服务端日志里显式抱怨一句，别再无声无息。
+            print(
+                f"[warmstart] 未找到 BC 预热权重 (units_per_team={units_per_team!r})，"
+                f"已查找: "
+                + ", ".join(
+                    str(REPO_ROOT / parent / f"bc_ironzero{_robust_units(units_per_team) or 25}" / "checkpoint.pt")
+                    for parent in _BC_CHECKPOINT_PARENTS
+                )
+                + " 及 bc_ironzero25 回退；本次将从头开始训练。",
+                file=sys.stderr,
+                flush=True,
+            )
     if init_checkpoint:
         candidate = Path(str(init_checkpoint))
         if not candidate.is_absolute():

@@ -14,6 +14,7 @@ from http.server import ThreadingHTTPServer
 
 from . import state
 from .handler import Handler
+from .recover import recover_jobs
 
 __all__ = ["main"]
 
@@ -22,11 +23,27 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="IronZero host-side real-game service")
     parser.add_argument("--port", type=int, default=8300)
     parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--max-parallel", type=int, default=4, help="maximum concurrent game instances")
+    parser.add_argument(
+        "--max-parallel",
+        type=int,
+        default=state.MAX_PARALLEL,
+        help=f"maximum concurrent game instances (default {state.MAX_PARALLEL})",
+    )
+    parser.add_argument(
+        "--no-recover",
+        action="store_true",
+        help="do not adopt training runs left over from a previous service process",
+    )
     args = parser.parse_args(argv)
     state.MAX_PARALLEL = max(1, args.max_parallel)
     for slot in range(state.MAX_PARALLEL):
         state.PORT_SLOTS.put(5130 + slot)
+    if not args.no_recover:
+        # Before listen(): the first /jobs poll must already see adopted runs, or
+        # the dashboard shows an empty console while training is still going.
+        adopted = recover_jobs()
+        if adopted:
+            print(f"[rwpp-service] recovered {adopted} job(s) from the previous process", flush=True)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(
         f"[rwpp-service] listening on http://{args.host}:{args.port} max_parallel={state.MAX_PARALLEL}",

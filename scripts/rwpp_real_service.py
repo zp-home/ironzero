@@ -3,7 +3,7 @@
 
 入口保持不变：
 
-    python scripts/rwpp_real_service.py --port 8300 --max-parallel 4
+    python scripts/rwpp_real_service.py --port 8300 --max-parallel 10
 
 脚本目录不是包，必须先把 ``scripts/`` 放进 ``sys.path`` 才能 import
 ``rwpp_service``。

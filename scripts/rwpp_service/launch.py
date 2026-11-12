@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 
 from .paths import REPO_ROOT
+from .paths import _persist_job
 from .ppo import resolve_init_checkpoint, resolve_preset, run_ppo
 from .runners import run_infer, run_train
 from . import state
@@ -26,7 +27,7 @@ _PPO_CHECKS = (
     ("frame_ms must be 0..16", lambda v: 0 <= v["frame_ms"] <= 16),
     ("vision_radius must be 0..2000", lambda v: 0.0 <= v["vision_radius"] <= 2000.0),
     ("updates must be 1..500", lambda v: 1 <= v["updates"] <= 500),
-    ("envs must be 1..8", lambda v: 1 <= v["envs"] <= 8),
+    ("envs must be 1..16", lambda v: 1 <= v["envs"] <= 16),
     ("rollout_steps must be 1..512", lambda v: 1 <= v["rollout_steps"] <= 512),
     ("episode_ticks must be 120..216000", lambda v: 120 <= v["episode_ticks"] <= 216000),
 )
@@ -141,6 +142,9 @@ class StartMixin:
                 "error": None,
                 "last_log": "",
             }
+            # Persist immediately: a restart in the next few seconds must still
+            # know this job exists (see ``recover.load_persisted_jobs``).
+            _persist_job(job_id, dict(JOBS[job_id]))
 
         def runner() -> None:
             run_ppo(
@@ -242,6 +246,7 @@ class StartMixin:
                 "map_width": map_width,
                 "map_height": map_height,
             }
+            _persist_job(job_id, dict(JOBS[job_id]))
 
         def runner() -> None:
             if kind == "train":
