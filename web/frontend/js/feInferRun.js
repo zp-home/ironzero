@@ -45,8 +45,10 @@ export async function feStartInferInner() {
     toast('演示模式下无法连接真机服务', 'error');
     return;
   }
-  const selected = clampInt(els.feConcurrency && els.feConcurrency.value, 1, 4, 1);
-  const maxParallel = state.rwpp.maxParallel || 4;
+  // 服务端槽位上限（--max-parallel，默认 10）才是真的约束：这里只做静态上限，
+  // 再与 /health 报回来的 maxParallel 取小值，避免下拉框比服务端更宽。
+  const selected = clampInt(els.feConcurrency && els.feConcurrency.value, 1, 10, 1);
+  const maxParallel = state.rwpp.maxParallel || 10;
   const launchCount = Math.max(1, Math.min(selected, maxParallel));
   const mapItem = feMapItemById(els.mapSelect ? els.mapSelect.value : '') || feDefaultMap();
   if (!mapItem) {
@@ -74,7 +76,7 @@ export async function feStartInferInner() {
   await refreshRwppStatus(true);
   const free = state.rwpp.freeSlots;
   if (free !== null && free !== undefined && free < launchCount) {
-    toast('服务端空闲槽位不足（空闲 ' + free + ' / 上限 ' + (state.rwpp.maxParallel || 4) + '），请减少并发或稍后重试', 'error');
+    toast('服务端空闲槽位不足（空闲 ' + free + ' / 上限 ' + (state.rwpp.maxParallel || 10) + '），请减少并发或稍后重试', 'error');
     return;
   }
   fe.inferTasks = [];
@@ -155,6 +157,46 @@ export function startFeInferPolling() {
   void feInferTick();
 }
 
+/**
+ * 停止全部并发实机推理实例。
+ *
+ * 后端对每个 job 都提供 POST /api/rwpp/jobs/{id}/stop；并发推理会同时有 1..10 个
+ * 独立无头游戏进程，因此这里对所有 running 任务逐个下发停止，而不是只停当前观战
+ * 的那一个。停止后不立刻销毁任务对象：轮询会继续把它们的最终状态收敛成
+ * done/failed，再走 feFinishInferIfDone 的统一收尾（保留帧与回放）。
+ */
+export async function feStopInfer() {
+  const fe = state.fe;
+  const running = feRunningInferTasks();
+  if (!running.length) {
+    toast('当前没有运行中的推理实例', 'error');
+    return;
+  }
+  if (els.feInferStop) {
+    els.feInferStop.disabled = true;
+    els.feInferStop.textContent = '停止中…';
+  }
+  fe.stopRequested = true;
+  feSetInferStatus('正在停止 ' + running.length + ' 路推理实例…', 'warn');
+  const results = await Promise.allSettled(
+    running.map((task) => Api.rwppJobStop(task.jobId))
+  );
+  const failed = results.filter((result) => result.status === 'rejected');
+  if (failed.length) {
+    // 单个实例停止失败不阻断其余实例；错误留给用户看，轮询仍会更新真实状态。
+    const first = failed[0].reason;
+    handleFeError(first, '停止推理');
+    feSetInferStatus(
+      '停止请求部分失败（' + failed.length + '/' + results.length + '），等待服务端收敛…',
+      'bad'
+    );
+  } else {
+    feSetInferStatus('已请求停止 ' + running.length + ' 路推理实例，等待收尾…', 'warn');
+    toast('已请求停止 ' + running.length + ' 路实机推理', 'ok');
+  }
+  feRenderInferDashboard();
+}
+
 export function stopFeInferPolling() {
   const fe = state.fe;
   if (fe.inferTimer) {
@@ -206,15 +248,18 @@ export async function feInferTick() {
     if (watchTask) {
       const watchRunning = watchTask.status === 'running';
       const watchSeconds = Math.round(watchTask.seconds || 0);
+      const watchLabel = watchRunning ? '运行中'
+        : (watchTask.status === 'done' ? '已完成'
+          : (watchTask.status === 'stopped' ? '已停止' : '失败'));
       feSetInferStatus(
-        (watchRunning ? '运行中' : (watchTask.status === 'done' ? '已完成' : '失败'))
+        watchLabel
           + ' · ' + (watchTask.policy === 'model'
             ? '模型策略 · ' + (watchTask.checkpointName || '')
             : '脚本策略')
           + ' · 已收 ' + watchTask.frames.length + ' 帧 · tick=' + Math.round(watchTask.latestTick)
           + (watchRunning && watchSeconds ? ' · ' + watchSeconds + 's' : '')
           + (!watchRunning && watchTask.result ? ' · 结果 ' + resultMeta(watchTask.result).label : ''),
-        watchRunning ? '' : (watchTask.status === 'done' ? 'ok' : 'bad')
+        watchRunning ? '' : (watchTask.status === 'done' ? 'ok' : (watchTask.status === 'stopped' ? 'warn' : 'bad'))
       );
     }
     await feFinishInferIfDone();
@@ -232,7 +277,8 @@ export async function feFinishInferIfDone() {
   stopFeInferPolling();
   feSetInferRunning(false);
   const done = tasks.filter((task) => task.status === 'done').length;
-  const failed = tasks.length - done;
+  const stopped = tasks.filter((task) => task.status === 'stopped').length;
+  const failed = tasks.length - done - stopped;
   const frames = tasks.reduce((sum, task) => sum + task.frames.length, 0);
   const counts = {};
   for (const task of tasks) {
@@ -243,11 +289,27 @@ export async function feFinishInferIfDone() {
   const resultText = Object.keys(counts).length
     ? ' · ' + Object.keys(counts).map((label) => label + ' ' + counts[label]).join(' / ')
     : '';
-  feSetInferStatus('完成 · ' + done + ' 成功' + (failed ? ' / ' + failed + ' 失败' : '') + ' · 共 ' + frames + ' 帧' + resultText, failed ? 'warn' : 'ok');
+  if (stopped && !done && !failed) {
+    // Every instance was stopped by the user: that is a clean outcome, not an error.
+    feSetInferStatus('已停止 · ' + stopped + ' 实例人工终止 · 共保留 ' + frames + ' 帧' + resultText, 'warn');
+  } else {
+    feSetInferStatus(
+      '完成 · ' + done + ' 成功'
+        + (stopped ? ' / ' + stopped + ' 已停止' : '')
+        + (failed ? ' / ' + failed + ' 失败' : '')
+        + ' · 共 ' + frames + ' 帧' + resultText,
+      failed ? 'warn' : 'ok'
+    );
+  }
   feRenderInferDashboard();
   await loadReplays();
   await refreshRwppStatus(true);
-  toast('实机推理完成：' + done + '/' + tasks.length + ' 实例成功，共 ' + frames + ' 帧' + resultText, failed ? 'error' : 'ok');
+  toast(
+    '实机推理结束：' + done + '/' + tasks.length + ' 成功'
+      + (stopped ? '（' + stopped + ' 已停止）' : '')
+      + '，共 ' + frames + ' 帧' + resultText,
+    failed ? 'error' : 'ok'
+  );
 }
 
 export async function feRestoreInferJobs() {
@@ -259,7 +321,7 @@ export async function feRestoreInferJobs() {
     const payload = await Api.rwppJobs();
     const jobs = ((payload && payload.jobs) || []).filter((job) => job && job.kind === 'infer' && job.status === 'running');
     if (!jobs.length) return;
-    const restored = jobs.slice(0, 4);
+    const restored = jobs.slice(0, 10);
     fe.inferTasks = restored.map((job, index) =>
       feNewInferTask(String(job.id), index + 1, {
         status: 'running',

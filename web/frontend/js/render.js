@@ -4,10 +4,11 @@
 
 import { drawFrameEvents, drawKillBurst, drawSandboxHud, drawSandboxUnit } from './hud.js';
 import { drawShotLine } from './hud.js';
+import { applyCamera, baseGeometry, ensureCamera, isDefaultCamera } from './camera.js';
 import { interpolateUnits } from './playback.js';
 import { drawSandboxSpriteUnit, updateUnitAngles } from './sprites.js';
 import { els, state } from './state.js';
-import { SANDBOX_COLORS, engineToMapPixel, mapCamera, mapCrop, wholeMapRegion } from './terrain.js';
+import { SANDBOX_COLORS, engineToMapPixel, mapCrop, wholeMapRegion } from './terrain.js';
 import { clamp, num } from './util.js';
 import { computeFollowRegion, isUnitVisible } from './view.js';
 
@@ -40,7 +41,6 @@ export function drawSandbox() {
   const detail = sandbox.mapDetail;
   const terrainSim = sandbox.simMode === 'terrain';
   const frames = sandbox.frames;
-  const customScale = sandbox.customScale || 1.0;
 
   let frame = null;
   let nextFrame = null;
@@ -58,11 +58,20 @@ export function drawSandbox() {
   }
 
   let region;
+  const cameraDefault = isDefaultCamera(sandbox.camera);
   if (detail) {
     if (sandbox.viewMode === 'full') {
       region = wholeMapRegion(detail);
     } else if (terrainSim) {
-      region = computeFollowRegion(sandbox, detail, units, width, height);
+      // 交战跟随每帧都在朝单位包围盒收敛；用户一旦手动缩放/平移就冻结该区域，
+      // 否则镜头会在「跟随」和「用户视角」之间来回拉扯，拖动会像在打滑。
+      if (cameraDefault) {
+        region = computeFollowRegion(sandbox, detail, units, width, height);
+      } else if (sandbox.cameraRegion) {
+        region = sandbox.cameraRegion;
+      } else {
+        region = computeFollowRegion(sandbox, detail, units, width, height);
+      }
     } else {
       region = mapCrop(detail);
     }
@@ -77,14 +86,14 @@ export function drawSandbox() {
     region = { x: 0, y: 0, width: 1000, height: 1000 };
   }
   const mapMode = !!(detail && sandbox.terrainView);
-  const cam = mapCamera(width, height, region, mapMode ? 0 : 20);
-  cam.scale *= customScale;
-  cam.ox -= (cam.region.x * (cam.scale - (cam.scale / customScale)));
-  cam.oy -= (cam.region.y * (cam.scale - (cam.scale / customScale)));
-  const offsetX = cam.ox + cam.region.x * cam.scale;
-  const offsetY = cam.oy + cam.region.y * cam.scale;
-  const drawnWidth = cam.region.width * cam.scale;
-  const drawnHeight = cam.region.height * cam.scale;
+  // 相机分两步：先算「刚好装满画布」的基准几何（等价于旧的 mapCamera contain 拟合），
+  // 再叠加用户手动缩放/平移（camera.js）。zoom=1、pan=0 时输出与旧实现逐像素一致。
+  const geom = baseGeometry(width, height, region, mapMode ? 0 : 20);
+  const cam = applyCamera(geom, ensureCamera(sandbox));
+  const offsetX = cam.rect.x;
+  const offsetY = cam.rect.y;
+  const drawnWidth = cam.rect.width;
+  const drawnHeight = cam.rect.height;
   const mapX = (x) => {
     if (detail) {
       if (terrainSim) return cam.ox + num(x, 0) * cam.scale;
@@ -107,10 +116,14 @@ export function drawSandbox() {
     height: drawnHeight,
     screenWidth: width,
     screenHeight: height,
-    region: cam.region,
+    region: geom.region,
     detail: detail || null,
     simMode: sandbox.simMode,
     corners: { x: offsetX, y: offsetY, width: drawnWidth, height: drawnHeight },
+    rect: { x: offsetX, y: offsetY, width: drawnWidth, height: drawnHeight },
+    // 事件层（滚轮/拖动）用它做锚点解算，避免每帧重新推导基准几何
+    geom: geom,
+    zoom: cam.zoom,
     project: (x, y) => ({ x: mapX(x), y: mapY(y) }),
   };
 
@@ -121,10 +134,13 @@ export function drawSandbox() {
 
   if (mapMode) {
     const view = sandbox.terrainView;
-    const sx = (cam.region.x - view.region.x) * view.scale;
-    const sy = (cam.region.y - view.region.y) * view.scale;
-    const sw = Math.max(1, cam.region.width * view.scale);
-    const sh = Math.max(1, cam.region.height * view.scale);
+    // 可视区域一律取 baseGeometry 的 region。相机解算只给 scale/ox/oy/rect，
+    // 不带 region；地形源矩形若从解算结果上取，会读成 undefined 并抛 TypeError，
+    // 最终被 selectMap 的 catch 记成「地图加载失败，已回退抽象渲染」。
+    const sx = (geom.region.x - view.region.x) * view.scale;
+    const sy = (geom.region.y - view.region.y) * view.scale;
+    const sw = Math.max(1, geom.region.width * view.scale);
+    const sh = Math.max(1, geom.region.height * view.scale);
     ctx.imageSmoothingEnabled = true;
     try {
       ctx.drawImage(view.ground, sx, sy, sw, sh, offsetX, offsetY, drawnWidth, drawnHeight);

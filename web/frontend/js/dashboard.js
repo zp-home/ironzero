@@ -84,6 +84,8 @@ export function toast(message, kind) {
 
 export function handleSandboxClick(event) {
   const sandbox = state.sandbox;
+  // 拖动平移后松手会先触发 pointerup 再冒出一个 click，这里做时间门控，避免拖完误选中单位
+  if (Date.now() - (sandbox.dragMovedAt || 0) < 300) return;
   const canvas = els.sandboxCanvas;
   const view = sandbox.view;
   if (!canvas || !view || !sandbox.frames.length) return;

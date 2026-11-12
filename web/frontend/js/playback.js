@@ -10,7 +10,7 @@ import { collectFrameEvents } from './rwpp.js';
 import { createSandboxState, els, state } from './state.js';
 import { syncMapStatus } from './terrain.js';
 import { BASE_FPS, basename, clamp, fmtNum, num } from './util.js';
-import { syncMapSelect } from './view.js';
+import { syncCameraUi, syncMapSelect } from './view.js';
 
 export function playerStatus(sandbox) {
   if (sandbox.source === 'replay') return { label: '回放', cls: 'done' };
@@ -47,6 +47,7 @@ export function resetSandbox(options) {
   if (els.sandboxDemoChip) els.sandboxDemoChip.hidden = true;
   syncMapSelect();
   syncMapStatus();
+  syncCameraUi();
   updatePlayerUi(true);
   drawSandbox();
 }

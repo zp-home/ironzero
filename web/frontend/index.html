@@ -137,6 +137,11 @@
                     <span>道具</span>
                     <button class="toggle-btn" type="button" id="items-toggle" aria-pressed="true" disabled>开</button>
                   </span>
+                  <span class="mini-field" title="滚轮缩放（以光标为中心）、按住拖动平移、双击复位">
+                    <span>视图</span>
+                    <b class="view-zoom" id="view-zoom">1.0×</b>
+                    <button class="toggle-btn" type="button" id="view-reset-btn" title="复位到全览（也可双击沙盘或按 0）">复位</button>
+                  </span>
                   <span class="map-status" id="map-status">等待实机推理 · 地形仅视觉</span>
                 </div>
                 <div class="stage-wrap" id="stage-wrap">
@@ -216,6 +221,77 @@
                   </div>
                 </div>
               </section>
+
+              <section class="card model-manager-card collapsed" id="model-manager-card">
+                <header class="card-head" id="model-manager-head">
+                  <h2>
+                    模型管理
+                    <span class="chip" id="model-manager-count">—</span>
+                    <span class="demo-chip" hidden>演示数据</span>
+                  </h2>
+                  <div class="head-actions">
+                    <span class="hint" id="model-manager-status">未加载</span>
+                    <button class="btn btn-sm btn-ghost" type="button" id="model-manager-refresh"
+                            title="重新扫描 checkpoint 目录（绕过后端 25s 缓存）">刷新</button>
+                    <button class="btn btn-sm btn-ghost" type="button" id="model-manager-toggle-btn"
+                            title="展开或收起模型管理">
+                      <span id="model-manager-toggle-icon">▶</span> <span id="model-manager-toggle-text">展开</span>
+                    </button>
+                  </div>
+                </header>
+                <div class="model-manager-content" id="model-manager-content">
+                  <div class="mm-summary">
+                    <div class="mm-stat">
+                      <span class="mm-stat-label">权重要占用</span>
+                      <b id="model-manager-total">—</b>
+                    </div>
+                    <div class="mm-stat">
+                      <span class="mm-stat-label">可清理临时作业</span>
+                      <b id="model-manager-tmp">—</b>
+                    </div>
+                    <button class="btn btn-sm btn-danger" type="button" id="model-manager-clean-tmp"
+                            title="递归删除名字里带 smoke/bench/probe/test/tmp/scratch/verify/econ 的作业目录">
+                      一键清理临时作业
+                    </button>
+                  </div>
+
+                  <div class="mm-section">
+                    <h3>Checkpoint 权重 <span class="hint">删除单个 .pt，保留 metrics/回放/日志</span></h3>
+                    <div class="replay-table-wrap mm-table-wrap">
+                      <table class="replay-table">
+                        <thead>
+                          <tr><th>名称</th><th>大小</th><th>修改时间</th><th>状态</th><th>操作</th></tr>
+                        </thead>
+                        <tbody id="model-manager-weights-body">
+                          <tr><td colspan="5" class="empty">展开面板后加载</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <button class="btn btn-xs btn-ghost mm-more" type="button" id="model-manager-more-weights" hidden>展开更多</button>
+                  </div>
+
+                  <div class="mm-section">
+                    <h3>作业目录 <span class="hint">删除整个目录，含权重/回放/日志/评估报告</span></h3>
+                    <div class="replay-table-wrap mm-table-wrap">
+                      <table class="replay-table">
+                        <thead>
+                          <tr><th>作业目录</th><th>大小</th><th>修改时间</th><th>状态</th><th>操作</th></tr>
+                        </thead>
+                        <tbody id="model-manager-jobs-body">
+                          <tr><td colspan="5" class="empty">展开面板后加载</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <button class="btn btn-xs btn-ghost mm-more" type="button" id="model-manager-more-jobs" hidden>展开更多</button>
+                  </div>
+
+                  <div class="hint-line subtle">
+                    受保护的条目不能删除：正在运行的作业引用的权重、BC 预热权重
+                    （runs/experiments/bc_ironzero*）、最新权重，以及下拉框当前选中的模型。
+                    删除一律不可撤销。
+                  </div>
+                </div>
+              </section>
             </div>
 
             <aside class="dash-side">
@@ -269,9 +345,16 @@
                       <option value="2">2 路</option>
                       <option value="3">3 路</option>
                       <option value="4">4 路</option>
+                      <option value="5">5 路</option>
+                      <option value="6">6 路</option>
+                      <option value="7">7 路</option>
+                      <option value="8">8 路</option>
+                      <option value="9">9 路</option>
+                      <option value="10">10 路</option>
                     </select>
                   </label>
                   <button class="btn btn-primary field-wide" type="button" id="fe-start-btn">开始实机推理</button>
+                  <button class="btn btn-danger field-wide" type="button" id="fe-infer-stop" hidden>停止推理</button>
                 </div>
                 <div class="hint-line" id="fe-infer-status">空闲：选择地图、时长与并发后开始</div>
                 <div class="hint-line subtle">每个并发实例是一个独立无头游戏进程，各自串行推进 tick；并发 = 多开进程。服务端槽位见 KPI 卡。</div>
@@ -440,6 +523,12 @@
                       <option value="2" selected>2 路</option>
                       <option value="3">3 路</option>
                       <option value="4">4 路</option>
+                      <option value="5">5 路</option>
+                      <option value="6">6 路</option>
+                      <option value="7">7 路</option>
+                      <option value="8">8 路</option>
+                      <option value="9">9 路</option>
+                      <option value="10">10 路</option>
                     </select>
                   </label>
                   <button class="btn btn-primary field-wide" type="button" id="fe-train-start">开始实机训练</button>
@@ -630,8 +719,8 @@
                     <input id="fe-ppo-updates" type="number" min="1" max="500" step="1" value="40" />
                   </label>
                   <label class="field">
-                    <span>并行实例 envs（1–6）</span>
-                    <input id="fe-ppo-envs" type="number" min="1" max="6" step="1" value="4" />
+                    <span>并行实例 envs（1–10）</span>
+                    <input id="fe-ppo-envs" type="number" min="1" max="10" step="1" value="4" />
                   </label>
                   <label class="field">
                     <span>每轮决策 rollout</span>

@@ -3,6 +3,7 @@
  */
 
 import { Api } from './api.js';
+import { isDefaultCamera, resetCamera } from './camera.js';
 import { toast } from './dashboard.js';
 import { drawSandbox } from './render.js';
 import { ensureUnitSprites } from './sprites.js';
@@ -10,6 +11,29 @@ import { els, state } from './state.js';
 import { buildTerrainEntry, ensureFullTerrain, ensureTerrainMap, mapCrop } from './terrain.js';
 import { setMapStatus, syncMapStatus, wholeMapRegion } from './terrain.js';
 import { clamp, num } from './util.js';
+
+/**
+ * 复位手动相机到全览。
+ * 切换地图 / 切换视野 / 载入新回放时都会走到这里，保证不会「记住上一张图的放大位置」。
+ */
+export function resetSandboxView(sandbox) {
+  const target = sandbox || state.sandbox;
+  resetCamera(target);
+  syncCameraUi();
+  return target.camera;
+}
+
+/** 把相机状态同步到工具条（缩放读数 + 复位按钮可用性） */
+export function syncCameraUi() {
+  const camera = state.sandbox.camera;
+  if (els.viewZoom) {
+    const zoom = camera ? num(camera.zoom, 1) : 1;
+    els.viewZoom.textContent = (Math.round(zoom * 10) / 10).toFixed(1) + '×';
+  }
+  if (els.viewResetBtn) {
+    els.viewResetBtn.disabled = isDefaultCamera(camera);
+  }
+}
 
 export function updateTerrainView(sandbox) {
   const detail = sandbox.mapDetail;
@@ -63,10 +87,18 @@ export async function refreshTerrainView() {
   }
   updateTerrainView(sandbox);
   sandbox.cameraRegion = null;
+  resetCamera(sandbox);
   syncMapStatus();
   syncMapSelect();
   syncMapToggles();
-  drawSandbox();
+  syncCameraUi();
+  // 地形已经建成并写入 terrainView，地图本身是加载成功的。渲染层若抛异常，
+  // 只影响这一帧画面，绝不能冒泡到 selectMap() 的 catch 里被记成「地图加载失败」。
+  try {
+    drawSandbox();
+  } catch (error) {
+    console.error('[沙盘渲染] 地形视图绘制失败：', error);
+  }
 }
 
 export function computeFollowRegion(sandbox, detail, units, screenW, screenH) {
@@ -226,6 +258,7 @@ export async function selectMap(mapId, options) {
     sandbox.terrainError = null;
     sandbox.viewMode = 'battle';
     sandbox.cameraRegion = null;
+    resetCamera(sandbox);
     if (els.mapSelect) els.mapSelect.value = '';
     if (els.viewSelect) {
       els.viewSelect.value = 'battle';
@@ -233,6 +266,7 @@ export async function selectMap(mapId, options) {
     }
     syncMapStatus();
     syncMapToggles();
+    syncCameraUi();
     drawSandbox();
     return;
   }
@@ -250,9 +284,11 @@ export async function selectMap(mapId, options) {
   sandbox.terrainError = null;
   sandbox.terrainLoading = true;
   sandbox.cameraRegion = null;
+  resetCamera(sandbox);
   if (els.mapSelect) els.mapSelect.value = nextId;
   if (els.viewSelect) els.viewSelect.disabled = false;
   syncMapStatus();
+  syncCameraUi();
   drawSandbox();
   try {
     const detail = await Api.mapDetail(nextId);
@@ -288,10 +324,12 @@ export async function applyViewMode(mode) {
   sandbox.viewMode = mode === 'full' ? 'full' : 'battle';
   if (els.viewSelect) els.viewSelect.value = sandbox.viewMode;
   sandbox.cameraRegion = null;
+  resetCamera(sandbox);
   if (sandbox.mapDetail) {
     await refreshTerrainView();
   } else {
     syncMapStatus();
+    syncCameraUi();
     drawSandbox();
   }
 }

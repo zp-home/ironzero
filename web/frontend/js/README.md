@@ -41,10 +41,10 @@ if (document.readyState === 'loading') {
 | 模块 | 行数 | 职责 |
 | --- | ---: | --- |
 | `main.js` | 77 | 启动入口 + `DOMContentLoaded` 调度 + `state.fe` 分段初始化编排 |
-| `api.js` | 111 | API 适配层：`API_DEFAULT_BASE`/`API_URL_OVERRIDE`/`ApiError`/`apiBase`/`api()`/`encodePathId`/`Api` 门面 |
+| `api.js` | 130 | API 适配层：`API_DEFAULT_BASE`/`API_URL_OVERRIDE`/`ApiError`/`apiBase`/`api()`/`encodePathId`/`Api` 门面 |
 | `util.js` | 125 | 纯工具：`pickVal`/`num`/`numOrNull`/`clamp`/`clampInt`/`fmtNum`/`fmtPct`/`pad2`/`clockString`/`fmtDateTime`/`parseBeijingDate`/`fmtShortTime`/`basename`/`safeStringify`/`mulberry32`/`BASE_FPS` |
 | `normalize.js` | 156 | 后端字段归一化：`normalizeMap/Team/Unit/Event/Frame/Result/Replay`、`STATUS_META`/`statusMeta`/`resultMeta` |
-| `state.js` | 164 | **共享可变状态**：`els`、`state`、`cacheEls()`、`createSandboxState()` |
+| `state.js` | 174 | **共享可变状态**：`els`、`state`、`cacheEls()`、`createSandboxState()` |
 | `demo.js` | 363 | 演示数据：`DEMO`、`buildDemoEvents`/`demoDetailFromEvents`/`buildDemoLogTail`/`buildDemoBattle`/`initDemoData`/`demoReplayPayload` |
 | `connection.js` | 126 | 连接状态与降级：`clockTimer`/`startClock`/`renderConn`/`showDemoChips`/`checkHealth`/`retryConnection`/`enterDemo`/`exitDemo` |
 | `train.js` | 346 | 训练监控 · 事件流：指标点、日志面板、`applyEvent`、KPI、详情 |
@@ -53,28 +53,30 @@ if (document.readyState === 'loading') {
 | `replays.js` | 209 | Checkpoint 列表 / 回放库：分页、折叠、`renderReplays`/`loadReplays` |
 | `rwpp.js` | 329 | 真机 RWPP 录制：状态轮询、录制任务、`openReplay`/`removeReplay` |
 | `sandbox.js` | 303 | 对局沙盘 · 推理任务：`submitInfer`、帧流分批接收、`pollInfer` |
-| `playback.js` | 339 | 对局沙盘 · 播放：`resetSandbox`、帧步进/倍速、`interpolateUnits`、事件特效、`updatePlayerUi` |
+| `playback.js` | 340 | 对局沙盘 · 播放：`resetSandbox`、帧步进/倍速、`interpolateUnits`、事件特效、`updatePlayerUi` |
 | `recorder.js` | 114 | 对局沙盘 · 录制：`captureStream` + `MediaRecorder`，`start/stop/cancel/finalizeRecording` |
-| `terrain.js` | 329 | 实机地图 · 目录与地形预渲染：`loadMaps`/`renderTerrain`/`buildTerrainEntry`/`mapCrop`/`mapCamera` |
-| `view.js` | 330 | 实机地图 · 相机与视图：`computeFollowRegion`/`selectMap`/`applyViewMode`/`syncMapSelect`/`syncMapToggles` |
+| `terrain.js` | 329 | 实机地图 · 目录与地形预渲染：`loadMaps`/`renderTerrain`/`buildTerrainEntry`/`mapCrop`（`mapCamera` 已不被 render 使用，仅留作旧实现对照） |
+| `view.js` | 368 | 实机地图 · 相机与视图：`resetSandboxView`/`syncCameraUi`/`computeFollowRegion`/`selectMap`/`applyViewMode`/`syncMapSelect`/`syncMapToggles` |
+| `camera.js` | 210 | 沙盘手动相机（纯函数，无 DOM）：`MIN_ZOOM`/`MAX_ZOOM`、`baseGeometry`/`ensureCamera`/`resetCamera`/`isDefaultCamera`/`applyCamera`/`zoomAt`/`panBy`/`zoomFactorFromWheel`/`commitCamera`/`resolveCamera` |
 | `sprites.js` | 382 | 单位贴图：加载/缓存/帧动画/朝向角/`drawSandboxSpriteUnit` |
-| `render.js` | 450 | 沙盘渲染主流程：`drawSandbox`、`fogLayer`、`drawFogLayer`、边框、空态 |
+| `render.js` | 466 | 沙盘渲染主流程：`drawSandbox`（相机解算 + 地形裁剪贴图）、`fogLayer`、`drawFogLayer`、边框、空态 |
 | `hud.js` | 244 | 沙盘渲染叠加层：`drawSandboxHud`/`drawSandboxUnit`/`drawFrameEvents`/`drawShotLine`/`drawKillBurst` |
-| `dashboard.js` | 151 | Tab 切换 / 提示条 / 动画循环 / 主轮询：`switchTab`/`tabFromHash`/`toast`/`handleSandboxClick`/`animationLoop`/`tickMain` |
-| `bindings.js` | 309 | DOM 事件绑定：`bindEvents()`（原 283 行单函数） |
+| `dashboard.js` | 153 | Tab 切换 / 提示条 / 动画循环 / 主轮询：`switchTab`/`tabFromHash`/`toast`/`handleSandboxClick`/`animationLoop`/`tickMain` |
+| `bindings.js` | 468 | DOM 事件绑定：`bindEvents()`（原 283 行单函数）+ 模型管理面板（`renderModelManager`/`refreshModelManager`/`deleteModel*`/`cleanTmpModels`） |
 | `control.js` | 247 | 指挥中心公共件：`FE_*`/`DASH_COLORS`、`dashSetup`/`dashGrid`/`drawDashLine`/`drawDashBars`、`feSetText`/`feSetStatusPill` |
-| `feInfer.js` | 269 | 实机推理任务对象：任务创建、帧摄入、标记完成/失败、观看同步 |
-| `feInferUi.js` | 266 | 实机推理展示层：FPS、图表、任务卡、KPI、状态灯 |
-| `feInferRun.js` | 281 | 实机推理调度：启停、轮询、收尾、任务恢复 |
+| `feInfer.js` | 299 | 实机推理任务对象：任务创建、帧摄入、标记完成/失败、观看同步 |
+| `feInferUi.js` | 283 | 实机推理展示层：FPS、图表、任务卡、KPI、状态灯 |
+| `feInferRun.js` | 343 | 实机推理调度：启停、轮询、收尾、任务恢复 |
 | `feTrain.js` | 377 | 实机训练（多线程数据采集）：启停、轮询、KPI、日志、产物 |
 | `feMaps.js` | 112 | 地图下拉控制：`feMapList`/`feInferMapList`/`feDefaultMap`/`renderFeMapControls` |
 | `ppo.js` | 368 | PPO 常量与展示层：`PPO_MAP`、事件解析、日志/摘要/KPI、`feApplyTrainMode` |
 | `ppoCharts.js` | 147 | PPO 六联图：`feDrawPpoCharts` |
 | `ppoRun.js` | 286 | PPO 调度：启停、轮询、任务恢复 |
-| `checkpoint.js` | 224 | 模型推理 · checkpoint 选择：加载、排序、显示名、下拉渲染 |
-| `model.js` | 246 | 策略 UI 同步 / 奖励分解 / 战略指挥面板 |
+| `checkpoint.js` | 251 | 模型推理 · checkpoint 选择：加载、排序、显示名、下拉渲染、扫描中/读取失败状态 |
+| `model.js` | 284 | 策略 UI 同步 / 奖励分解 / 战略指挥面板 |
+| `modelManager.js` | 480 | 模型管理面板：权重表 + 作业目录表、单删/批量清理临时作业、保护状态展示 |
 
-合计 **33 个文件 / 8383 行**。
+合计 **35 个文件 / 9492 行**（含 `camera.js` 与 `modelManager.js`，见下）。
 
 ### 与规范 3.5 节模块名的对应
 
@@ -93,15 +95,27 @@ if (document.readyState === 'loading') {
 | `ppo.js`（实机 PPO 训练） | → `ppo.js` + `ppoCharts.js` + `ppoRun.js` |
 | `model.js`（checkpoint/评估/LLM/奖励/战略） | → `model.js` + `checkpoint.js` |
 
+拆分完成后新增的面板（模型管理）单独成文件，不属于上述任何规范模块：
+
+| 新增文件 | 说明 |
+| --- | --- |
+| `camera.js` | 从 `terrain.js` 抽出的沙盘手动相机（纯函数、无 DOM），供 `view.js`/`render.js` 共用 |
+| `modelManager.js` | 模型管理面板（权重表 / 作业目录表 / 删除 / 批量清理临时作业） |
+
 命名与职责边界未变，只是把一个「段」拆成若干个 400 行以内的文件。
 
 ### 超过 400 行的文件
 
-只有 `render.js`（**450 行**）。原因：`drawSandbox()` 单个函数就有 **340 行**，
-是不可切分的整体（一个 canvas 绘制主循环，内部共享大量局部变量）。强行拆会改变函数体，
-违反「不改写函数体」铁律。**未超过 600 行上限。**
+拆分完成时只有 `render.js` 超标；后续三个功能改动把它和另外两个文件推过了 400 行，
+每个都有明确原因，且**均未超过 600 行上限**：
 
-`charts.js`（396）与 `control.js`（247）均在 400 行以内，无需例外说明。
+| 文件 | 行数 | 为什么没拆 |
+| --- | ---: | --- |
+| `render.js` | 466 | `drawSandbox()` 单个函数就有 **340 行**，是不可切分的整体（一个 canvas 绘制主循环，内部共享大量局部变量）。强行拆会改变函数体，违反「不改写函数体」铁律。地图加载后地形视图的裁剪贴图修复也落在这里。 |
+| `modelManager.js` | 480 | 新增的模型管理面板是一个整体视图：`renderModelManager` 的表格渲染 + 三个删除入口 + 批量清理 + 状态摘要共享同一份行内事件委托，拆开只会增加跨文件传参。 |
+| `bindings.js` | 468 | 原本的 283 行 `bindEvents()` 加上模型管理面板的 20 条绑定（刷新 / 单删权重 / 单删作业 / 批量清理 / 折叠）。所有 DOM 绑定集中在一处是刻意的：拆散后「谁绑了哪个 id」将无法静态核对。 |
+
+`charts.js`（396）、`sprites.js`（382）、`feTrain.js`（377）与 `control.js`（247）均在 400 行以内，无需例外说明。
 
 ---
 
@@ -126,9 +140,9 @@ if (document.readyState === 'loading') {
   sandbox.js   ──► api, dashboard, demo, normalize, playback, replays, rwpp, state, terrain, util, view
   playback.js  ──► demo, normalize, recorder, render, rwpp, state, terrain, util, view
   terrain.js   ──► api, feMaps, sprites, state, util, view
-  view.js      ──► api, dashboard, render, sprites, state, terrain, util
+  view.js      ──► api, camera, dashboard, render, sprites, state, terrain, util
   sprites.js   ──► api, state, terrain, util
-  render.js    ──► hud, playback, sprites, state, terrain, util, view
+  render.js    ──► camera, hud, playback, sprites, state, terrain, util, view
   hud.js       ──► model, playback, terrain, util
   dashboard.js ──► checkpoint, connection, feInferRun, feInferUi, feTrain, playback, ppo,
                    ppoRun, recorder, render, replays, rwpp, state, terrain
@@ -141,11 +155,12 @@ if (document.readyState === 'loading') {
   ppo.js       ──► control, feInferUi, feTrain, model, ppoCharts, state, util
   ppoCharts.js ──► control, ppo, state, util
   ppoRun.js    ──► api, dashboard, feInferUi, feMaps, ppo, rwpp, state, util
-  checkpoint.js──► api, demo, model, state, util
+  checkpoint.js──► api, dashboard, demo, model, state, util
   model.js     ──► checkpoint, control, ppo, state, util
-  bindings.js  ──► charts, checkpoint, connection, dashboard, feInferRun, feInferUi, feTrain,
-                   model, playback, ppo, ppoRun, recorder, render, replays, rwpp, sandbox,
-                   state, terrain, trainRuns, util, view
+  modelManager.js──► api, checkpoint, dashboard, state, util
+  bindings.js  ──► camera, charts, checkpoint, connection, dashboard, feInferRun, feInferUi,
+                   feTrain, model, modelManager, playback, ppo, ppoRun, recorder, render,
+                   replays, rwpp, sandbox, state, terrain, trainRuns, util, view
   main.js      ──► bindings, checkpoint, connection, control, dashboard, feInferRun, feInferUi,
                    feTrain, model, playback, ppo, ppoCharts, ppoRun, replays, rwpp, state, terrain
 ```
@@ -154,10 +169,10 @@ if (document.readyState === 'loading') {
 
 | 模块 | 被 import 次数 |
 | --- | ---: |
-| `state.js` | 27 |
-| `util.js` | 25 |
-| `api.js` | 13 |
-| `dashboard.js` | 13 |
+| `state.js` | 28 |
+| `util.js` | 27 |
+| `dashboard.js` | 15 |
+| `api.js` | 14 |
 | `normalize.js` | 11 |
 | `terrain.js` | 11 |
 
@@ -247,17 +262,17 @@ export async function boot() {
 }
 ```
 
-`boot()` 由 `DOMContentLoaded` 触发，此时**全部 33 个模块都已求值完毕**，
+`boot()` 由 `DOMContentLoaded` 触发，此时**全部 35 个模块都已求值完毕**，
 不存在任何 TDZ 风险；且三行调用保持了原文件中的先后次序（第 3、4 段合并进同一个
 `initFeModelState()`，内部顺序不变），`state.fe.ppo` 在被扩展前必定已由 `initFePpoState()` 建好。
 原语句内容**逐字保留**，只是外面包了一层函数。
 
 ### 5.4 已验证
 
-对全部 33 个模块做了顶层语句的静态审计（提取每个模块「求值期」会真正执行的语句，
+对全部 35 个模块做了顶层语句的静态审计（提取每个模块「求值期」会真正执行的语句，
 解析其中的标识符到「来自哪个模块、是 function 还是 const」），结论：
 
-- 33 个模块里，**没有任何一处**模块求值期的跨模块引用指向 `const`/`let`/`class`；
+- 35 个模块里，**没有任何一处**模块求值期的跨模块引用指向 `const`/`let`/`class`；
 - 所有跨模块引用都指向 `function` 声明（已提升，安全）；
 - 模块顶层唯一会"执行"的表达式都是各自文件内的**字面量/自引用**初始化
   （`const DASH_COLORS = {…}`、`const Api = {…}`、`new Map()` 等），不跨模块取值。
@@ -282,7 +297,7 @@ Get-ChildItem web\frontend\js\*.js | ForEach-Object {
   node --input-type=module --check < $_.FullName
 }
 
-# 2) 行数（应全部 ≤400，仅 render.js 450）
+# 2) 行数（应全部 ≤400，例外见 §2「超过 400 行的文件」：render.js / modelManager.js / bindings.js）
 Get-ChildItem web\frontend\js\*.js | ForEach-Object {
   "{0,-14} {1}" -f $_.Name, (Get-Content $_.FullName | Measure-Object -Line).Lines
 }

@@ -27,7 +27,7 @@ export function feSyncPpoConfigUi() {
     } else if (isArtillery) {
       els.fePpoMapHint.textContent = '原版战役挑战：开局双方预置 22 辆火炮部队与阵地建筑，直接爆发大兵团炮火决战。';
     } else {
-      els.fePpoMapHint.textContent = '原版遭遇战规则：初始部队严格遵循原版地图设定（双方各 1 个主基地 + 1 辆建造车），无预置坦克部队。当前微操模型不包含采矿造工厂等宏观运营指令，双方开局不会产生部队交火。若要训练坦克走位集火，强烈建议选用上方【对称竞技场】或原版【Artillery】！';
+      els.fePpoMapHint.textContent = '原版遭遇战规则：初始部队严格遵循原版地图设定（双方各 1 个主基地 + 1 辆建造车 + 地图货币点）。此页已支持采矿/造工厂/造兵/升级等宏观运营指令，可训练经济运营与建造技能；对手会持续补兵，前期打不过属于正常。';
     }
   }
 
@@ -39,6 +39,11 @@ export function feSyncPpoConfigUi() {
     else if (mapChoice === 'IronZero5') els.fePpoUnits.value = '5';
     else if (isArtillery) els.fePpoUnits.value = '22';
     else {
+      // Stock skirmish maps start both sides with exactly one command center
+      // and one builder, so 2 is the true starting army size. The enemy AI
+      // reinforces well past this, which is why the encoder clamps every
+      // count/HP ratio: the value normalises the *starting* army, it does not
+      // cap what the policy can see or build.
       els.fePpoUnits.value = '2';
     }
   }
@@ -60,14 +65,46 @@ export function feSyncPpoConfigUi() {
   }
 }
 
+/** 推理页状态栏的默认文案（与 index.html#fe-infer-status 的初始值一致） */
+export const FE_INFER_STATUS_IDLE = '空闲：选择地图、时长与并发后开始';
+
+/**
+ * 本函数自己写进状态栏的临时文案前缀。
+ * 只有当前文案确实是我们写的，才允许覆盖/还原 —— 否则会把推理任务真实状态
+ *（启动中/已停止/接回实例…）冲掉。
+ */
+const FE_INFER_STATUS_OWN = ['正在扫描 Checkpoint 权重目录', '无法获取模型列表', '没有可用 checkpoint'];
+
 export function feSyncInferPolicyUi() {
   const isModel = !!(els.fePolicy && els.fePolicy.value === 'model');
   if (els.feCheckpointField) els.feCheckpointField.hidden = !isModel;
   if (els.feModelNote) els.feModelNote.hidden = !isModel;
-  if (isModel && !(state.fe.checkpointList || []).length && els.feInferStatus) {
-    els.feInferStatus.textContent = '没有可用 checkpoint：先到「实机训练」页跑一次 PPO';
-    els.feInferStatus.className = 'hint-line bad';
+  if (!isModel || !els.feInferStatus) return;
+  const fe = state.fe;
+  const current = String(els.feInferStatus.textContent || '');
+  const owned = FE_INFER_STATUS_OWN.some((prefix) => current.indexOf(prefix) === 0);
+  if ((fe.checkpointList || []).length) {
+    // 加载成功后要撤掉自己写的「正在扫描…」，否则状态栏会一直停在扫描态。
+    if (owned) {
+      els.feInferStatus.textContent = FE_INFER_STATUS_IDLE;
+      els.feInferStatus.className = 'hint-line';
+    }
+    return;
   }
+  // 三种空态必须能区分，否则后端超时在界面上看起来就像「一个权重都没有」：
+  //   loading → 正在扫描；error → 请求失败（含超时）；其余 → 真的没有 checkpoint。
+  if (fe.checkpointsLoading) {
+    els.feInferStatus.textContent = '正在扫描 Checkpoint 权重目录…';
+    els.feInferStatus.className = 'hint-line';
+    return;
+  }
+  if (fe.checkpointsError) {
+    els.feInferStatus.textContent = '无法获取模型列表：' + fe.checkpointsError + ' · 点击「↻ 刷新权重」重试';
+    els.feInferStatus.className = 'hint-line bad';
+    return;
+  }
+  els.feInferStatus.textContent = '没有可用 checkpoint：先到「实机训练」页跑一次 PPO';
+  els.feInferStatus.className = 'hint-line bad';
 }
 
 export function sandboxStrategyLabel(sandbox) {
@@ -236,6 +273,7 @@ export function initFeModelState() {
     checkpointList: [],
     checkpointsLoaded: false,
     checkpointsLoading: false,
+    checkpointsError: null,
   });
 
   Object.assign(state.fe.ppo, {

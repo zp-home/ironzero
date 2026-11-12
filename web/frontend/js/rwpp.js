@@ -75,7 +75,7 @@ export async function refreshRwppStatus(force) {
     rwpp.available = !!(payload && payload.ok);
     rwpp.service = payload && payload.service ? String(payload.service) : null;
     rwpp.hostRunning = payload && numOrNull(payload.running) !== null ? num(payload.running, 0) : 0;
-    rwpp.maxParallel = payload && numOrNull(payload.max_parallel) !== null ? num(payload.max_parallel, 4) : 4;
+    rwpp.maxParallel = payload && numOrNull(payload.max_parallel) !== null ? num(payload.max_parallel, 10) : 10;
     rwpp.freeSlots = payload && numOrNull(payload.free_slots) !== null ? num(payload.free_slots, null) : null;
     rwpp.ppoRunning = payload && numOrNull(payload.ppo_running) !== null ? num(payload.ppo_running, 0) : 0;
     rwpp.serviceError = null;

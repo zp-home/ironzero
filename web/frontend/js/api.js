@@ -79,6 +79,12 @@ export function encodePathId(value) {
   return String(value == null ? '' : value).split('/').map(encodeURIComponent).join('/');
 }
 
+/** 「当前下拉框选中的模型」查询串：后端据此拒绝删除正在使用的权重 */
+function selectedQuery(selected) {
+  const text = String(selected == null ? '' : selected);
+  return text ? '?selected=' + encodeURIComponent(text) : '';
+}
+
 export const Api = {
   health: () => api('/api/health'),
   runs: () => api('/api/runs'),
@@ -86,7 +92,20 @@ export const Api = {
   startRun: (config) => api('/api/runs', { method: 'POST', body: config }),
   stopRun: (id) => api('/api/runs/' + encodeURIComponent(id) + '/stop', { method: 'POST' }),
   runEvents: (id, after) => api('/api/runs/' + encodeURIComponent(id) + '/events?after=' + Math.max(0, Math.floor(after || 0))),
-  checkpoints: () => api('/api/checkpoints'),
+  checkpoints: (force) => api('/api/checkpoints' + (force ? '?force=1' : ''), { timeout: 45000 }),
+  models: (force) => api('/api/models' + (force ? '?force=1' : ''), { timeout: 45000 }),
+  // Deletions may remove a whole job directory (weights + replays + logs), so the
+  // timeout is much longer than the 8s default: on a Docker Desktop bind mount an
+  // rmtree over a few hundred files can take a while, and a client-side abort
+  // would report a failure for work that actually succeeded.
+  deleteModel: (path, selected) => api(
+    '/api/models/' + encodePathId(path) + selectedQuery(selected),
+    { method: 'DELETE', timeout: 120000 },
+  ),
+  deleteModelJob: (path, selected) => api(
+    '/api/models/job/' + encodePathId(path) + selectedQuery(selected),
+    { method: 'DELETE', timeout: 120000 },
+  ),
   startInfer: (config) => api('/api/infer', { method: 'POST', body: config }),
   infer: (id) => api('/api/infer/' + encodeURIComponent(id)),
   inferFrames: (id, after) => api('/api/infer/' + encodeURIComponent(id) + '/frames?after=' + Math.max(0, Math.floor(after || 0))),

@@ -137,6 +137,32 @@ export function feMarkTaskFailed(task, message) {
   }
 }
 
+/**
+ * Mark a task the user stopped. Distinct from "failed": the episode was killed on
+ * request, so there is no replay and no result, but nothing went wrong. Keeping a
+ * separate状态 lets the card show 已停止 instead of 失败 (the host service reports
+ * `stopped` after scripts/rwpp_service/proc.py::stop_job).
+ */
+export function feMarkTaskStopped(task) {
+  if (!task || task.status === 'stopped' || task.status === 'done') return;
+  task.status = 'stopped';
+  task.error = null;
+  task.streaming = false;
+  if (!task.toastShown) {
+    task.toastShown = true;
+    toast('实例 #' + task.index + ' 已停止', 'ok');
+  }
+  if (state.fe.watchJobId === task.jobId) {
+    const sandbox = state.sandbox;
+    sandbox.status = 'stopped';
+    sandbox.streaming = false;
+    sandbox.playing = false;
+    updatePlayerUi(true);
+    drawSandbox();
+  }
+  feRenderTaskCards();
+}
+
 export function feHandleTaskError(task, error) {
   const status = error && error.status;
   if (status === 503) {
@@ -159,6 +185,10 @@ export async function feFetchTaskFrames(task) {
   const job = payload.job || {};
   if (numOrNull(job.seconds) !== null) task.seconds = num(job.seconds, task.seconds);
   const status = job.status || payload.status;
+  if (status === 'stopped') {
+    feMarkTaskStopped(task);
+    return;
+  }
   if (status === 'failed') {
     feMarkTaskFailed(task, job.error || '宿主机任务失败');
     return;

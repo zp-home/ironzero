@@ -149,7 +149,7 @@ export async function feStartTrain() {
   }
   const episodes = clampInt(els.feTrainEpisodes && els.feTrainEpisodes.value, 1, 50, 3);
   const ticks = clampInt(els.feTrainTicks && els.feTrainTicks.value, 120, 216000, 1200);
-  const concurrency = clampInt(els.feTrainConcurrency && els.feTrainConcurrency.value, 1, 4, 2);
+  const concurrency = clampInt(els.feTrainConcurrency && els.feTrainConcurrency.value, 1, 10, 2);
   const policy = (els.feTrainPolicy && els.feTrainPolicy.value) || 'scripted';
   let checkpoint = null;
   if (policy === 'model') {

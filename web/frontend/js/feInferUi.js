@@ -156,8 +156,14 @@ export function feRenderTaskCards() {
     const title = document.createElement('b');
     title.textContent = '实例 #' + task.index;
     const pill = document.createElement('span');
-    const tone = task.status === 'running' ? 'running' : (task.status === 'done' ? 'done' : (task.status === 'failed' ? 'failed' : 'idle'));
-    const label = task.status === 'running' ? '运行中' : (task.status === 'done' ? '已完成' : (task.status === 'failed' ? '失败' : '空闲'));
+    const tone = task.status === 'running' ? 'running'
+      : (task.status === 'done' ? 'done'
+        : (task.status === 'stopped' ? 'stopped'
+          : (task.status === 'failed' ? 'failed' : 'idle')));
+    const label = task.status === 'running' ? '运行中'
+      : (task.status === 'done' ? '已完成'
+        : (task.status === 'stopped' ? '已停止'
+          : (task.status === 'failed' ? '失败' : '空闲')));
     feSetStatusPill(pill, label, tone);
     head.appendChild(title);
     head.appendChild(pill);
@@ -182,8 +188,12 @@ export function feRenderTaskCards() {
   }
   const running = tasks.filter((task) => task.status === 'running').length;
   const done = tasks.filter((task) => task.status === 'done').length;
+  const stopped = tasks.filter((task) => task.status === 'stopped').length;
   const failed = tasks.filter((task) => task.status === 'failed').length;
-  feSetText(els.feTaskSummary, '运行中 ' + running + ' · 已完成 ' + done + (failed ? ' · 失败 ' + failed : '') + ' · 点击任务卡切换');
+  feSetText(els.feTaskSummary, '运行中 ' + running + ' · 已完成 ' + done
+    + (stopped ? ' · 已停止 ' + stopped : '')
+    + (failed ? ' · 失败 ' + failed : '')
+    + ' · 点击任务卡切换');
 }
 
 export function feRenderInferKpis() {
@@ -200,7 +210,7 @@ export function feRenderInferKpis() {
   feSetText(els.feKpiFps, (fe.latestFps || 0).toFixed(1));
   feSetText(els.feKpiTick, watch ? Math.round(watch.latestTick) : 0);
   if (els.feKpiSlots) {
-    const maxParallel = state.rwpp.maxParallel || 4;
+    const maxParallel = state.rwpp.maxParallel || 10;
     const free = state.rwpp.freeSlots;
     feSetText(els.feKpiSlots, 'max ' + maxParallel + ' · 空闲 ' + (free === null || free === undefined ? '—' : free));
   }
@@ -217,7 +227,7 @@ export function feRenderInferDashboard() {
 
 export function feUpdateSlots() {
   const rwpp = state.rwpp;
-  const maxParallel = rwpp.maxParallel || 4;
+  const maxParallel = rwpp.maxParallel || 10;
   const free = rwpp.freeSlots;
   if (els.feSlotsMax) els.feSlotsMax.textContent = String(maxParallel);
   if (els.feSlotsFree) els.feSlotsFree.textContent = free === null || free === undefined ? '—' : String(free);
@@ -248,6 +258,13 @@ export function feSetInferRunning(running) {
     els.feStartBtn.disabled = running;
     els.feStartBtn.textContent = running ? '实机推理中…' : '开始实机推理';
   }
+  // 推理运行时露出「停止推理」，与实机训练/PPO 两页的 start+stop 布局保持一致。
+  if (els.feInferStop) {
+    els.feInferStop.hidden = !running;
+    els.feInferStop.disabled = false;
+    els.feInferStop.textContent = '停止推理';
+  }
+  if (!running) state.fe.stopRequested = false;
   if (els.mapSelect) els.mapSelect.disabled = running;
   if (els.feTicks) els.feTicks.disabled = running;
   if (els.feConcurrency) els.feConcurrency.disabled = running;

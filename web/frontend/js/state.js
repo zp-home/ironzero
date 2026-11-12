@@ -9,13 +9,14 @@ export function cacheEls() {
     'clock', 'conn-badge', 'conn-label', 'conn-sub', 'demo-banner', 'demo-banner-text', 'demo-retry',
     'sandbox-demo-chip', 'infer-status', 'record-btn', 'stage-wrap', 'sandbox-canvas', 'rec-badge',
     'map-select', 'view-select', 'map-status', 'fog-toggle', 'items-toggle',
+    'view-zoom', 'view-reset-btn',
     'play-btn', 'latest-btn', 'speed-select', 'seek', 'frame-label', 'frame-sub',
     'replay-card', 'replay-card-head', 'replay-toggle-btn', 'replay-toggle-icon', 'replay-toggle-text',
     'replay-content', 'replay-pagination', 'replay-page-info', 'replay-page-size', 'replay-prev-btn', 'replay-next-btn', 'replay-current-page',
     'replay-count', 'replay-refresh', 'replay-body', 'toast-host',
     'rwpp-status', 'rwpp-status-text', 'rwpp-record-btn',
     'rwpp-status-train', 'rwpp-status-train-text',
-    'fe-policy', 'fe-ticks', 'fe-start-btn', 'fe-infer-status', 'fe-concurrency',
+    'fe-policy', 'fe-ticks', 'fe-start-btn', 'fe-infer-stop', 'fe-infer-status', 'fe-concurrency',
     'fe-kpi-concurrency', 'fe-kpi-slots', 'fe-kpi-running', 'fe-kpi-done', 'fe-kpi-frames',
     'fe-kpi-fps', 'fe-kpi-tick', 'fe-task-count', 'fe-task-summary', 'fe-task-cards',
     'fe-chart-fps', 'fe-chart-hp', 'fe-chart-alive',
@@ -42,6 +43,12 @@ export function cacheEls() {
     'fe-ppo-eval-every', 'fe-ppo-eval-episodes', 'fe-ppo-use-llm', 'fe-ppo-llm-note',
     'fe-ppo-reward', 'fe-ppo-reward-chip', 'fe-ppo-reward-note',
     'fe-ppo-strategy', 'fe-ppo-strategy-chip', 'fe-ppo-strategy-source',
+    'model-manager-card', 'model-manager-head', 'model-manager-toggle-btn',
+    'model-manager-toggle-icon', 'model-manager-toggle-text', 'model-manager-refresh',
+    'model-manager-clean-tmp', 'model-manager-content', 'model-manager-status',
+    'model-manager-total', 'model-manager-tmp', 'model-manager-count',
+    'model-manager-weights-body', 'model-manager-jobs-body',
+    'model-manager-more-weights', 'model-manager-more-jobs',
   ];
   for (const id of ids) {
     const key = id.replace(/-([a-z])/g, (match, chr) => chr.toUpperCase());
@@ -83,6 +90,9 @@ export function createSandboxState() {
     itemsEnabled: true,
     mapLocked: false,
     cameraRegion: null,
+    // 手动相机（见 camera.js）：相对全览的缩放倍数 + 屏幕像素平移，复位即回 {1,0,0}
+    camera: { zoom: 1, panX: 0, panY: 0 },
+    dragMovedAt: 0,
     meta: {},
     checkpoint: null,
     opponent: null,

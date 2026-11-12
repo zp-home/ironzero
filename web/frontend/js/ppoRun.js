@@ -101,7 +101,7 @@ export async function feStartPpo() {
     return;
   }
   const updates = clampInt(els.fePpoUpdates && els.fePpoUpdates.value, 1, 500, 20);
-  const envs = clampInt(els.fePpoEnvs && els.fePpoEnvs.value, 1, 6, 2);
+  const envs = clampInt(els.fePpoEnvs && els.fePpoEnvs.value, 1, 10, 4);
   const rollout = clampInt(els.fePpoRollout && els.fePpoRollout.value, 1, 512, 20);
   const episodeTicks = clampInt(els.fePpoTicks && els.fePpoTicks.value, 120, 216000, 3600);
   const device = (els.fePpoDevice && els.fePpoDevice.value) || 'auto';

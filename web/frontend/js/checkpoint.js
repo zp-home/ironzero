@@ -4,6 +4,7 @@
 
 import { Api } from './api.js';
 import { DEMO } from './demo.js';
+import { toast } from './dashboard.js';
 import { feSyncInferPolicyUi, feSyncPpoConfigUi, feSyncTrainPolicyUi } from './model.js';
 import { els, state } from './state.js';
 import { basename, num, numOrNull, pad2, parseBeijingDate } from './util.js';
@@ -106,16 +107,20 @@ export async function loadFeCheckpoints(force) {
       if (fe.checkpointList && fe.checkpointList.length > 0) return;
   }
   fe.checkpointsLoading = true;
+  // 先在界面上亮出「正在扫描权重目录…」。容器里冷启动一次扫描要 7-8 秒，
+  // 若等请求返回再渲染，这 8 秒里下拉框和状态栏都毫无反馈，像是卡死。
+  renderFeCheckpointOptions();
   if (state.mode === 'demo') {
     const list = (typeof DEMO !== 'undefined' && Array.isArray(DEMO.checkpoints)) ? DEMO.checkpoints : [];
     fe.checkpointList = list.slice();
     fe.checkpointsLoaded = true;
+    fe.checkpointsError = null;
     fe.checkpointsLoading = false;
     renderFeCheckpointOptions();
     return;
   }
   try {
-    const payload = await Api.checkpoints();
+    const payload = await Api.checkpoints(!!force);
     const list = Array.isArray(payload) ? payload : ((payload && payload.checkpoints) || []);
     // 即使列表为空，也不要轻易置空，防止逻辑覆盖
     if (list.length > 0) {
@@ -124,11 +129,20 @@ export async function loadFeCheckpoints(force) {
     } else {
         fe.checkpointsLoaded = false;
     }
+    // 请求成功即清掉上一次的错误，否则错误提示会一直挂在推理页上。
+    fe.checkpointsError = null;
   } catch (error) {
     fe.checkpointsLoaded = false;
+    // 之前这里静默吞掉异常，页面只剩「暂无检测到 Checkpoint」，用户无法区分
+    // 「真的没有权重」和「后端扫描超时/失败」。保留消息给 UI 展示。
+    fe.checkpointsError = (error && error.message) ? String(error.message) : String(error);
+    if (force) toast('读取模型列表失败：' + fe.checkpointsError.slice(0, 160), 'error');
   } finally {
     fe.checkpointsLoading = false;
     renderFeCheckpointOptions();
+    // 渲染完选项后把错误/空态同步给推理页状态栏（renderFeCheckpointOptions 已调过
+    // feSyncInferPolicyUi，但那时还在 loading 中，故这里再同步一次）。
+    feSyncInferPolicyUi();
   }
 }
 
@@ -140,6 +154,19 @@ export function renderFeCheckpointOptions() {
   const inferList = sortCheckpoints(rawList, inferSortBy);
   const ppoList = sortCheckpoints(rawList, ppoSortBy);
 
+  // 空列表时的占位文案必须能区分「读取失败」与「真的没有权重」，
+  // 否则后端超时在界面上看起来就像「一个模型都没有」。
+  const fe = state.fe;
+  const blankText = fe.checkpointsLoading
+    ? '正在扫描权重目录…'
+    : (fe.checkpointsError ? '（读取模型列表失败，请点击上方 ↻ 刷新）' : '（暂无检测到 Checkpoint，请点击上方刷新）');
+  const trainBlankText = fe.checkpointsLoading
+    ? '正在扫描权重目录…'
+    : (fe.checkpointsError ? '（读取模型列表失败，请点击上方 ↻ 刷新）' : '（无可用模型）');
+  const ppoBlankText = fe.checkpointsLoading
+    ? '正在扫描权重目录…'
+    : (fe.checkpointsError ? '（读取权重列表失败，请点击 ↻ 刷新权重）' : '（无可用权重）');
+
   const select = els.feCheckpointSelect;
   if (select) {
     const previous = select.value;
@@ -147,7 +174,7 @@ export function renderFeCheckpointOptions() {
     if (!inferList.length) {
       const option = document.createElement('option');
       option.value = '';
-      option.textContent = '（暂无检测到 Checkpoint，请点击上方刷新）';
+      option.textContent = blankText;
       select.appendChild(option);
       select.disabled = true;
     } else {
@@ -177,7 +204,7 @@ export function renderFeCheckpointOptions() {
     if (!inferList.length) {
       const option = document.createElement('option');
       option.value = '';
-      option.textContent = '（无可用模型）';
+      option.textContent = trainBlankText;
       trainSelect.appendChild(option);
       trainSelect.disabled = true;
     } else {
@@ -201,7 +228,7 @@ export function renderFeCheckpointOptions() {
     if (!ppoList.length) {
       const option = document.createElement('option');
       option.value = '';
-      option.textContent = '（无可用权重）';
+      option.textContent = ppoBlankText;
       ppoSelect.appendChild(option);
       ppoSelect.disabled = true;
     } else {
