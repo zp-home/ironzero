@@ -11,7 +11,7 @@
 
 > 当前状态：M1 无头环境验证已通过，本机已确认同一 1.15 Build #28 游戏资源（21.4 MiB assets、84 张地图）。
 >
-> 平台进度：`ironzero/1` Bridge（NDJSON/TCP）、Gymnasium 兼容环境、动作掩码、确定性微操参考环境、PPO + GAE 训练与评估闭环**已实现并通过 102 项测试**；参考环境按真实 1.15 坦克数值校准（HP 210 / 伤害 25 / 射程 130 / 75 tick 射速 / 66 单位每秒），200 轮 PPO 对脚本 AI 的评估胜率 0% → 100%（随机基线 0%，平均回报 −1.33 → +1.21）。训练/推理 Web 平台（Docker + 监控大屏 + 对局沙盘 + 回放/录制）已可运行，沙盘支持真实地图地形模拟（A* 绕水/碰撞）、迷雾与道具层。
+> 平台进度：`ironzero/1` Bridge（NDJSON/TCP）、Gymnasium 兼容环境、动作掩码、确定性微操参考环境、PPO + GAE 训练与评估闭环**已实现并通过 203 项测试**；参考环境按真实 1.15 坦克数值校准（HP 210 / 伤害 25 / 射程 130 / 75 tick 射速 / 66 单位每秒），200 轮 PPO 对脚本 AI 的评估胜率 0% → 100%（随机基线 0%，平均回报 −1.33 → +1.21）。训练/推理 Web 平台（Docker + 监控大屏 + 对局沙盘 + 回放/录制）已可运行，沙盘支持真实地图地形模拟（A* 绕水/碰撞）、迷雾与道具层。
 >
 > 真机进度：已从零重建 RWPP 1.15 无头运行时（180 tick 冒烟通过）；IronZero Java 扩展把真实游戏世界状态（tick/单位/队伍，10 tick 一帧）经回环 NDJSON 输出，并**支持动作注入**（move / attack_move / attack_target 经 `CommandController` 执行，回执 accepted）；`scripts/record_rwpp_replay.py` 可驱动真机单位并把回放落进平台，沙盘按真实 Lake 地图播放。**平台一键真机模式（容器内 Java + runtime）待接**，详见 [平台搭建方案 5.4](./docs/平台搭建方案.md)。
 
@@ -21,7 +21,7 @@
 
 - 读取游戏 tick、单位、资源、建筑、生产队列和战争迷雾状态
 - 为强化学习模型提供结构化观测与合法动作空间
-- 支持 PPO、多环境并行、课程学习和后续自博弈
+- 支持 PPO、多环境并行；课程学习与自博弈尚未实现（见下方路线图）
 - 支持 Java Agent 原版客户端与 RWPP Headless 两种接入方式
 - 支持训练完成后的独立推理与安全动作校验
 - 探索 LLM 负责战略、RL 负责战术的混合架构
@@ -39,6 +39,69 @@ Gymnasium 环境（reset / step / reward）
         ↓
 训练与推理系统（PPO / 模型导出 / 安全校验）
 ```
+
+## 目录结构
+
+代码按「一层一个职责」组织，单文件默认 ≤300 行。旧 import 路径全部保留为薄 shim，升级不会破坏外部引用。
+
+```text
+src/ironzero/
+  protocol.py          # ironzero/1 消息模型（Pydantic）+ schema 校验
+  micro_config.py      # 观测/动作契约的单一真相源
+  bridge.py            # NDJSON/TCP 桥接客户端与服务端
+  tcp_adapter.py       # 桥接 → 游戏适配层
+  mock_server.py       # 离线 mock 游戏服务入口
+  env.py               # Gymnasium 兼容环境（离线）
+  assets.py            # 游戏资源数值解析（unit.ini / .tmx）
+  replay.py            # ironzero.replay/1 帧格式
+
+  engine/              # 确定性参考引擎（原 mock_engine.py，mixin 组合）
+    constants.py         # 动作种类、实体类型 ID、调参、错误码
+    entities.py          # Unit / MockResourceSlot
+    config.py            # make_terrain_config
+    spawn.py             # 出生点与地形布阵
+    actions.py           # 动作校验与执行
+    movement.py          # 移动、A* 路径跟随、卡住恢复
+    combat.py            # 选目标、视野、伤害、胜负判定
+    economy.py           # 采矿、建造、生产队列
+    observation.py       # 引擎侧原始观测载荷
+    reward.py            # 潜势与奖励窗口
+    opponents.py         # 脚本 AI 与内置对手
+    engine.py            # MicroDuelEngine 编排（step/advance/evaluate）
+    adapter.py           # MicroDuelAdapter
+
+  observation/         # 观测编码（原 observations.py）
+    encoding.py          # encode_observation
+    terrain_channel.py   # 地形可通行通道与降采样
+    features.py          # 实体特征、分组、栅格投影
+    masks.py             # 动作掩码与扁平化
+
+  terrain/             # 地形与寻路（原 terrain.py）
+    grid.py              # TerrainGrid：加载、坐标变换、阻挡判定
+    passable.py          # 最近可通行点搜索
+    pathing.py           # A* 寻路与路径压缩
+    utils.py             # 数值钳制工具
+
+  rwpp/                # 真机环境（原 rwpp_env.py）
+    config.py            # RwppGameConfig 与默认常量
+    process.py           # 无头进程启动与帧预算
+    transport.py         # 行协议读取
+    decoding.py          # 桥接观测 → 状态、动作编码
+    vision.py            # 观测级战争迷雾
+    reward.py            # HP 潜势、血量比例、军队距离
+    spaces.py            # Box / MultiDiscrete space
+    env.py               # RwppDuelEnv：reset/step/终止结算
+
+  strategy/            # 战略层（LLM + 规则降级）
+  training/            # PPO、向量化环境、训练与评估入口
+
+web/
+  backend/app/         # FastAPI 后端（routers 按资源分组）
+  frontend/js/         # 监控大屏（ES Modules）
+scripts/rwpp_service/  # 宿主机真机任务托管服务
+```
+
+模块边界、拆分规则与验证方式见 [目录结构与模块边界](./docs/目录结构与模块边界.md)。
 
 ## 文档
 
@@ -94,7 +157,7 @@ start http://127.0.0.1:8000
 
 平台只保留两个主页面，都面向**真实《铁锈战争》1.15 无头对局**，且都带监控大屏（KPI + 曲线）：
 
-- **实机推理**：选地图（73 张）+ 策略（scripted）+ 时长 + **并发实例 1..4** → 宿主机同时拉起 N 个独立真实对局，帧实时回传；大屏显示并发任务卡、实时帧率、双方血量/存活单位曲线，大沙盘按真实地图渲染、自动跟随、可录制 `.webm`
+- **实机推理**：选地图（71 张）+ 策略（scripted）+ 时长 + **并发实例 1..4** → 宿主机同时拉起 N 个独立真实对局，帧实时回传；大屏显示并发任务卡、实时帧率、双方血量/存活单位曲线，大沙盘按真实地图渲染、自动跟随、可录制 `.webm`
 - **实机训练**：选地图/局数/每局 ticks + **并发线程 1..4** → 并行跑多个真实游戏进程逐局采集，大屏显示进度 KPI、每局耗时柱状图、累计帧/tick 曲线 + 产物回放（播放跳回实机推理）
 - **真机回放**：每局落盘 `ironzero.replay/1`，回放库标注「真机」，点击即可按真实 Lake 地图播放
 
@@ -215,7 +278,7 @@ python -m ironzero.mock_server --port 5123
 - Java Agent 与 RWPP Headless 架构
 - 状态空间、动作空间和奖励函数设计
 - 桥接协议与游戏线程安全
-- PPO、多环境、课程学习和评估方案
+- PPO、多环境与评估方案
 - 推理部署与 LLM + RL 混合架构
 - 分阶段实施计划和风险控制
 
@@ -225,7 +288,7 @@ python -m ironzero.mock_server --port 5123
 - [x] 动作桥：移动、攻击、停止/守区 + 单位组（建造/生产待接）
 - [x] Micro 场景：固定地图、小规模单位对战（离线 8v8 + 真机 22v25 均已训练/评估）
 - [ ] 经济场景：采矿、建造、生产和资源点
-- [x] 完整 1v1 部分：多地图 + 战争迷雾 + 内置 AI 基线（自博弈待做）
+- [x] 完整 1v1 部分：多地图 + 战争迷雾（仅观测级半径裁剪）+ 内置 AI 基线（单一难度；自博弈待做）
 - [ ] 自博弈与模型晋级
 - [x] LLM + RL 混合指挥（战略层骨架 + 规则降级，PPO 战术层已打通）
 

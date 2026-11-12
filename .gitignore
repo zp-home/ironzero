@@ -63,3 +63,10 @@ web/frontend/.gitkeep
 
 # Local game asset cache (copyrighted assets, never committed)
 .game_cache/
+
+# One-off debugging probes / scratch output (see docs/产物目录规范.md)
+audit/_tmp_*
+_*.log
+_*.out
+_*.err
+.tmp_*

@@ -37,18 +37,27 @@ Copyright 2026 周培智
 
 ## 3. RWPP 与 AGPLv3
 
-当前仓库不包含 RWPP 源代码或 RWPP 扩展代码。
+当前仓库**包含一个 RWPP 服务器扩展**：`src/ironzero_bridge/java/ironzero/IronZeroBridge.java`。
+它 `implements io.github.rwpp.server.ServerExtension`，并通过 `io.github.rwpp.api.*` 与
+`com.corrodinggames.rts.*`（game-lib）交互，在运行时加载进 RWPP 宿主进程。
 
-未来如果增加直接链接、修改或分发 RWPP 的代码，相关目录必须单独标注许可证。RWPP 使用 AGPLv3，可能要求提供对应源代码并满足网络使用相关义务。不要默认认为 Apache-2.0 可以覆盖 RWPP 代码或包含 RWPP 代码的衍生作品。
+- 该扩展**不复制** RWPP 上游源码（见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)），
+  但它依赖并链接 RWPP / game-lib，属于衍生作品。
+- 因此 **`src/ironzero_bridge/` 不适用 Apache-2.0**，单独按 **AGPL-3.0** 分发；其分发需满足
+  AGPLv3 的对应源代码与网络使用义务。仓库其余部分（`src/ironzero/` 等）保持 Apache-2.0。
+- 发布前请核对 RWPP 的 LICENSE、具体 API 使用方式与实际分发方式。
 
-建议未来的目录边界：
+当前实际的许可证边界：
 
 ```text
-src/ironzero/              Apache-2.0
-game-agent/rwpp-extension/  按 RWPP 要求单独标注，可能为 AGPL-3.0
+src/ironzero/                  Apache-2.0
+src/ironzero_bridge/           AGPL-3.0（RWPP 扩展，链接 RWPP / game-lib）
+web/  scripts/  tools/  tests/ Apache-2.0
+schemas/  configs/  docs/  site/  Apache-2.0
+vendor/rwpp/                   仅锁定第三方版本信息，不包含其代码
 ```
 
-在添加相关代码前，应核对 RWPP 的 LICENSE、具体 API 使用方式和分发方式。
+发布前应再次核对 RWPP 的 LICENSE、具体 API 使用方式和分发方式。
 
 ## 4. 游戏本体与游戏资源
 
