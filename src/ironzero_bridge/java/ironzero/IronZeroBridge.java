@@ -880,12 +880,24 @@ public final class IronZeroBridge implements ServerExtension {
                     command = engine.commandController.createCommandForTeam(engine.playerTeam);
                     addOwnOrderableUnits(command, unitGroup);
                     command.setAttackUnitWaypoint(target);
+                } else {
+                    // The named target is gone. This is not a mask bug: the policy
+                    // picked an enemy slot that was visible when the observation
+                    // was produced, but the unit died (or left vision) before the
+                    // order arrived. Reported separately from ACTION_MASKED so the
+                    // histogram can tell the two apart -- they need different
+                    // fixes (resend-time revalidation vs. mask repair).
+                    actionOutcomes.add("TARGET_NOT_VISIBLE");
+                    continue;
                 }
             } else if ("stop".equals(kind) || "hold".equals(kind)) {
                 // Hold ground: one command per unit so each keeps its own position.
                 // "hold" additionally switches the unit into guard-area fire mode.
                 int held = holdGround(unitGroup, "hold".equals(kind));
-                actionOutcomes.add(held > 0 ? null : "ACTION_MASKED");
+                // The selected group has no living unit. The mask opens a group
+                // slot only while that group has at least one alive unit, so this
+                // means the group died between the observation and the order.
+                actionOutcomes.add(held > 0 ? null : "UNIT_NOT_OWNED");
                 continue;
             } else if ("build_extractor".equals(kind) || "build_structure".equals(kind)) {
                 String structure = "build_extractor".equals(kind)
@@ -944,7 +956,11 @@ public final class IronZeroBridge implements ServerExtension {
             if (command != null && command.getUnitCount() > 0) {
                 actionOutcomes.add(null);
             } else {
-                actionOutcomes.add("ACTION_MASKED");
+                // A move/attack-move whose unit group has no living member. The
+                // group head is only open while the group has an alive unit, so
+                // this is the same observation-vs-order race as above. Naming it
+                // separately keeps ACTION_MASKED meaningful for the economy kinds.
+                actionOutcomes.add("UNIT_NOT_OWNED");
             }
         }
         engine.commandController.dispatchQueuedCommands();
