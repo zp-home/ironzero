@@ -14,8 +14,9 @@ against 25 AI units). Defaults keep that old contract; the fixed IronZero25
       --win-mode annihilation --unlock-ai `
       --envs 2 --updates 100 --frame-ms 1 --out runs/rwpp_ppo_25
 
-Observation/action contract for that command: obs_dim 768 (12 global + 2x25x10
-entity + 4x8x8 grid) and action heads ``(5, 5, 8, 8, 26)``.
+Observation/action contract for that command: obs_dim 771 (15 global + 2x25x10
+entity + 4x8x8 grid) and action heads ``(10, 5, 8, 8, 26)``, where the kind
+head is ``len(ACTION_KINDS)``.
 """
 
 from __future__ import annotations
@@ -282,7 +283,15 @@ def _build_strategy(use_llm: bool):
 
 
 def _load_compatible_weights(policy, state_dict: dict) -> list[str]:
-    """Load weights flexibly, adapting mismatched entity/input dimensions where possible."""
+    """Load weights flexibly, adapting mismatched head/input dimensions.
+
+    The action space has grown over time (kind head 5 -> 10, target head 9 ->
+    26, ...). Any head whose width changed is migrated by copying the shared
+    leading rows/columns, so a warm start keeps every weight it *can* reuse
+    instead of silently discarding the whole tensor. Without this, a checkpoint
+    from an older action space loaded "successfully" while the kind head stayed
+    randomly initialised.
+    """
 
     import torch
 
@@ -295,27 +304,27 @@ def _load_compatible_weights(policy, state_dict: dict) -> list[str]:
         if src.shape == param.shape:
             model_dict[name] = src
             loaded_keys.append(name)
-        elif name == "trunk.0.weight" and src.dim() == 2 and param.dim() == 2:
+            continue
+        if src.dim() != param.dim():
+            continue
+        if src.dim() == 2:
             out_ch = min(param.shape[0], src.shape[0])
             in_ch = min(param.shape[1], src.shape[1])
             param_copy = param.clone()
             param_copy[:out_ch, :in_ch] = src[:out_ch, :in_ch]
             model_dict[name] = param_copy
-            loaded_keys.append(f"{name} (adapted {src.shape} -> {param.shape})")
-        elif name == "heads.4.weight" and src.dim() == 2 and param.dim() == 2:
-            n_slots = min(param.shape[0], src.shape[0])
+            loaded_keys.append(f"{name} (adapted {tuple(src.shape)} -> {tuple(param.shape)})")
+        elif src.dim() == 1:
+            n = min(param.shape[0], src.shape[0])
             param_copy = param.clone()
-            param_copy[:n_slots, :] = src[:n_slots, :]
+            param_copy[:n] = src[:n]
             model_dict[name] = param_copy
-            loaded_keys.append(f"{name} (adapted {src.shape} -> {param.shape})")
-        elif name == "heads.4.bias" and src.dim() == 1 and param.dim() == 1:
-            n_slots = min(param.shape[0], src.shape[0])
-            param_copy = param.clone()
-            param_copy[:n_slots] = src[:n_slots]
-            model_dict[name] = param_copy
-            loaded_keys.append(f"{name} (adapted {src.shape} -> {param.shape})")
+            loaded_keys.append(f"{name} (adapted {tuple(src.shape)} -> {tuple(param.shape)})")
 
+    missing = [name for name in model_dict if name not in loaded_keys]
     policy.load_state_dict(model_dict)
+    if missing:
+        loaded_keys.append(f"WARNING: kept random init for {missing}")
     return loaded_keys
 
 

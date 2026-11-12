@@ -3,7 +3,7 @@
 
 Action layout (see ``MicroDuelConfig.action_nvec``)::
 
-    [kind(5), group(G), x(P), y(P), target(T)]
+    [kind(len(ACTION_KINDS)), group(G), x(P), y(P), target(T)]
 
 Heads are sampled hierarchically: the kind is sampled first, then only the
 heads that are meaningful for that kind contribute to the log-probability and
@@ -18,14 +18,18 @@ from typing import Any
 import torch
 from torch import nn
 
-# Heads that are semantically active per action kind:
-# 0 move, 1 attack_move, 2 attack_target, 3 stop, 4 hold
-ACTIVE_HEADS: tuple[tuple[int, ...], ...] = (
-    (0, 1, 2, 3),
-    (0, 1, 2, 3),
-    (0, 1, 4),
-    (0, 1),
-    (0, 1),
+# Which *semantic* heads each action kind consumes, keyed by the kind name from
+# ``mock_engine.ACTION_KINDS``. Head 0 is always the kind itself; head 1 is the
+# unit group and is used by every kind. The remaining heads are conditional:
+#   * position heads (2=x, 3=y) are only meaningful for orders that name a point
+#   * the target head (4) carries the enemy slot *or* the build slot index
+# Deriving the map from names (rather than hard-coding indices) keeps the policy
+# in lock-step with the action space even if ACTION_KINDS is reordered.
+_POSITION_KINDS: frozenset[str] = frozenset(
+    {"move_group", "attack_move", "build_structure"}
+)
+_TARGET_KINDS: frozenset[str] = frozenset(
+    {"attack_target", "build_extractor", "produce_unit", "upgrade_building", "repair_target"}
 )
 
 MASK_KEYS: tuple[str, ...] = ("kind", "group", "x", "y", "target")
@@ -35,10 +39,17 @@ class MaskedActorCritic(nn.Module):
     def __init__(
         self,
         obs_dim: int,
-        nvec: tuple[int, ...] = (5, 4, 8, 8, 9),
+        nvec: tuple[int, ...] | None = None,
         hidden: int = 256,
     ) -> None:
         super().__init__()
+        if nvec is None:
+            # Derive from the scenario contract instead of hard-coding a stale
+            # default: a mismatch here silently builds a policy whose kind head
+            # disagrees with the mask width and fails at the first forward pass.
+            from ..micro_config import DEFAULT_CONFIG
+
+            nvec = DEFAULT_CONFIG.action_nvec
         self.obs_dim = obs_dim
         self.nvec = tuple(nvec)
         self.trunk = nn.Sequential(
@@ -106,14 +117,31 @@ class MaskedActorCritic(nn.Module):
         return actions, logprob, value
 
     def _active_matrix(self, kinds: torch.Tensor, device: torch.device) -> torch.Tensor:
-        """(B, 5) boolean matrix marking heads active for the sampled kind."""
+        """(B, num_heads) boolean matrix marking heads active for each kind."""
+
+        from ..mock_engine import ACTION_KINDS
 
         active = torch.zeros(kinds.shape[0], len(self.nvec), dtype=torch.bool, device=device)
-        active[:, 0] = True
-        active[:, 1] = True
-        active[:, 2] = kinds <= 1
-        active[:, 3] = kinds <= 1
-        active[:, 4] = kinds == 2
+        active[:, 0] = True  # the kind head itself
+        if len(self.nvec) < 2:
+            return active
+        active[:, 1] = True  # every order names a unit group
+        # Translate kind indices into the semantic flags for this batch.
+        kinds_cpu = kinds.detach().to("cpu").tolist()
+        uses_position = torch.zeros(kinds.shape[0], dtype=torch.bool, device=device)
+        uses_target = torch.zeros(kinds.shape[0], dtype=torch.bool, device=device)
+        for row, kind_index in enumerate(kinds_cpu):
+            name = ACTION_KINDS[int(kind_index) % len(ACTION_KINDS)]
+            if name in _POSITION_KINDS:
+                uses_position[row] = True
+            if name in _TARGET_KINDS:
+                uses_target[row] = True
+        if len(self.nvec) > 2:
+            active[:, 2] = uses_position
+        if len(self.nvec) > 3:
+            active[:, 3] = uses_position
+        if len(self.nvec) > 4:
+            active[:, 4] = uses_target
         return active
 
     def log_prob(
@@ -147,10 +175,6 @@ class MaskedActorCritic(nn.Module):
         logprob = self.log_prob(dists, actions)
         entropy = self.entropy(dists, actions)
         return logprob, entropy, value
-
-    def greedy_action(self, obs: torch.Tensor, masks: dict[str, torch.Tensor] | None) -> torch.Tensor:
-        actions, _, _ = self.act(obs, masks, deterministic=True)
-        return actions
 
 
 def _orthogonal_init(module: nn.Module, gain: float = 2 ** 0.5) -> None:

@@ -19,8 +19,8 @@ from typing import Any
 import numpy as np
 
 from .micro_config import DEFAULT_CONFIG, MicroDuelConfig
-from .mock_engine import ACTION_KINDS, MicroDuelAdapter
-from .observations import build_masks, encode_observation, flat_mask_vector
+from .mock_engine import ACTION_KINDS, EXTRACTOR_TYPE_ID, MicroDuelAdapter
+from .observations import build_masks, encode_observation
 
 
 class BoxSpace:
@@ -153,9 +153,6 @@ class MicroDuelEnv:
     def action_masks(self) -> dict[str, np.ndarray]:
         return self.masks
 
-    def flat_action_mask(self) -> np.ndarray:
-        return flat_mask_vector(self.masks)
-
     def close(self) -> None:
         self.adapter.close()
 
@@ -199,6 +196,66 @@ class MicroDuelEnv:
                 ]
             # "no target" slot or stale index -> safe fallback
             return [{"kind": "stop", "unit_group": group} for group in groups]
+
+        if kind == "build_extractor":
+            # The target head doubles as the resource-slot selector. Slots are
+            # a single global list, so this is a single action (not per group).
+            slots = state.get("resource_slots") or []
+            if not slots:
+                return [{"kind": "stop", "unit_group": groups[0]}]
+            slot_id = int(target_index) % len(slots)
+            return [{"kind": "build_extractor", "slot_id": slot_id}]
+
+        if kind == "build_structure":
+            gx = int(np.clip(gx, 0, cfg.position_grid - 1))
+            gy = int(np.clip(gy, 0, cfg.position_grid - 1))
+            x, y = cfg.grid_to_world(gx, gy)
+            return [
+                {
+                    "kind": "build_structure",
+                    "structure_type": "land_factory",
+                    "x": x,
+                    "y": y,
+                }
+            ]
+
+        if kind == "produce_unit":
+            factories = [
+                u for u in state.get("own_entities", [])
+                if u.get("is_factory") or u.get("is_factory_building")
+            ]
+            if not factories:
+                return [{"kind": "stop", "unit_group": groups[0]}]
+            factory = factories[int(target_index) % len(factories)]
+            return [
+                {
+                    "kind": "produce_unit",
+                    "factory_entity_id": int(factory.get("entity_id", -1)),
+                    "unit_type": "tank",
+                }
+            ]
+
+        if kind == "upgrade_building":
+            extractors = [
+                u for u in state.get("own_entities", [])
+                if (u.get("is_building") and int(u.get("entity_type_id") or 0) == EXTRACTOR_TYPE_ID)
+            ]
+            if not extractors:
+                return [{"kind": "stop", "unit_group": groups[0]}]
+            building = extractors[int(target_index) % len(extractors)]
+            return [
+                {
+                    "kind": "upgrade_building",
+                    "building_entity_id": int(building.get("entity_id", -1)),
+                }
+            ]
+
+        if kind == "repair_target":
+            if target_index < len(target_ids) and target_index < len(enemies):
+                return [
+                    {"kind": "repair_target", "target_entity_id": int(target_ids[target_index])}
+                ]
+            return [{"kind": "stop", "unit_group": groups[0]}]
 
         return [{"kind": kind, "unit_group": group} for group in groups]
 

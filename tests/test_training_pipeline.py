@@ -12,9 +12,53 @@ import torch
 
 from ironzero.env import MicroDuelEnv
 from ironzero.micro_config import DEFAULT_CONFIG
+from ironzero.mock_engine import ACTION_KINDS
+from ironzero.observations import build_masks
 from ironzero.training.evaluate import evaluate_policy, sample_masked_action
 from ironzero.training.policy import MaskedActorCritic, masks_to_tensors
 from ironzero.training.ppo import PPOConfig, PPOTrainer, load_policy
+
+
+class ActionContractTests(unittest.TestCase):
+    """Guards the single source of truth for the action/observation contract.
+
+    A previous change moved the ``kind`` head from 5 to 10 values but left parts
+    of the stack pinned to the old width, which only surfaced at the first
+    forward pass. This assertion makes that class of half-finished edit fail
+    loudly at its source instead.
+    """
+
+    def test_action_space_contract_is_derived_consistently(self) -> None:
+        cfg = DEFAULT_CONFIG
+        # 1. The kind head spans exactly the engine's action vocabulary...
+        self.assertEqual(cfg.action_nvec[0], len(ACTION_KINDS))
+        # 2. ...while the head count stays at five (kind, group, x, y, target).
+        self.assertEqual(len(cfg.action_nvec), 5)
+
+        # 3. The masks the environment actually emits are as wide as the head.
+        #    A narrower mask crashes the masked forward pass, not the mask build.
+        env = MicroDuelEnv(seed=11)
+        try:
+            _, info = env.reset()
+            masks = build_masks(info["raw_state"])
+        finally:
+            env.close()
+        self.assertEqual(masks["kind"].shape[0], cfg.action_nvec[0])
+
+        # 4. The policy derives its heads from the same contract when no explicit
+        #    ``nvec`` is passed, so a stale hard-coded default cannot reappear.
+        policy = MaskedActorCritic(cfg.flat_obs_dim)
+        self.assertEqual(policy.nvec, cfg.action_nvec)
+        # Prove the derived widths are usable end to end, not just equal.
+        tensors = {
+            key: torch.ones(1, width, dtype=torch.bool)
+            for key, width in zip(("kind", "group", "x", "y", "target"), cfg.action_nvec)
+        }
+        actions, logprob, _ = policy.act(
+            torch.zeros(1, cfg.flat_obs_dim), tensors, deterministic=True
+        )
+        self.assertEqual(actions.shape, (1, len(cfg.action_nvec)))
+        self.assertTrue(torch.isfinite(logprob).all())
 
 
 class PolicyTests(unittest.TestCase):
@@ -36,7 +80,7 @@ class PolicyTests(unittest.TestCase):
         policy = MaskedActorCritic(DEFAULT_CONFIG.flat_obs_dim, nvec=DEFAULT_CONFIG.action_nvec)
         obs = torch.zeros(2, DEFAULT_CONFIG.flat_obs_dim)
         masks = {
-            "kind": torch.ones(2, 5, dtype=torch.bool),
+            "kind": torch.ones(2, DEFAULT_CONFIG.action_nvec[0], dtype=torch.bool),
             "group": torch.tensor(
                 [[True, False, False, False, True], [False, False, False, True, True]]
             ),
@@ -98,7 +142,7 @@ class PPOStackTests(unittest.TestCase):
         _, info = env.reset()
         rng = np.random.default_rng(0)
         kinds = {sample_masked_action(info["masks"], rng)[0] for _ in range(200)}
-        self.assertTrue(kinds.issubset(set(range(5))))
+        self.assertTrue(kinds.issubset(set(range(DEFAULT_CONFIG.action_nvec[0]))))
         self.assertGreater(len(kinds), 2)
         env.close()
 

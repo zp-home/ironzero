@@ -331,13 +331,3 @@ class BridgeServer:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.stop()
-
-
-def load_message_line(line: bytes | str) -> Envelope:
-    """Parse a line captured from a bridge log (helper for replay tooling)."""
-
-    return parse_message(line)
-
-
-def to_json_line(message: Message) -> str:
-    return json.dumps(dump_message(message), ensure_ascii=False, sort_keys=True)

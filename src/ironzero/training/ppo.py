@@ -7,6 +7,7 @@ import inspect
 import json
 import threading
 import time
+import warnings
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -453,7 +454,11 @@ class PPOTrainer:
                         elapsed_s=record["elapsed_s"],
                     )
                 )
-            if update % cfg.eval_every == 0 or update == cfg.total_updates:
+            # ``eval_every == 0`` means "evaluate only on the final update".
+            due = (
+                cfg.eval_every > 0 and update % cfg.eval_every == 0
+            ) or update == cfg.total_updates
+            if due:
                 if cfg.async_eval and update < cfg.total_updates:
                     if self._eval_thread is not None and self._eval_thread.is_alive():
                         print(
@@ -601,22 +606,73 @@ def load_policy(path: str | Path, device: str | torch.device = "cpu") -> tuple[M
     """
 
     payload = torch.load(Path(path), map_location=device, weights_only=False)
-    micro = MicroDuelConfig(**payload["micro_config"])
+    raw_micro = dict(payload.get("micro_config") or {})
     ppo_config = dict(payload.get("ppo_config") or {})
     try:
         hidden = int(ppo_config.get("hidden", 256))
     except (TypeError, ValueError):
         hidden = 256
-    state_dict = payload["model"]
+    state_dict = dict(payload["model"])
     trunk_key = "trunk.0.weight"
     if trunk_key in state_dict:
         # Authoritative: the saved matrix shape cannot disagree with the weights.
         hidden = int(state_dict[trunk_key].shape[0])
-    policy = MaskedActorCritic(micro.flat_obs_dim, nvec=micro.action_nvec, hidden=hidden)
-    policy.load_state_dict(state_dict)
+
+    # The observation/action contract can grow between releases (the global
+    # feature block and the kind head both did). Rebuild against the *current*
+    # contract and migrate the weights, instead of rebuilding a stale config
+    # that then disagrees with what the live environment produces.
+    micro = MicroDuelConfig(**raw_micro)
+    target_obs_dim = micro.flat_obs_dim
+    target_nvec = micro.action_nvec
+    saved_obs_dim = state_dict[trunk_key].shape[1] if trunk_key in state_dict else target_obs_dim
+
+    policy = MaskedActorCritic(target_obs_dim, nvec=target_nvec, hidden=hidden)
+    migrated = _migrate_state_dict(policy.state_dict(), state_dict)
+    policy.load_state_dict(migrated)
+    if saved_obs_dim != target_obs_dim:
+        warnings.warn(
+            f"checkpoint was trained with obs_dim={saved_obs_dim} but the current "
+            f"contract produces {target_obs_dim}; the trunk input was migrated "
+            f"(leading weights kept, new features start from zero influence).",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     policy.to(torch.device(device))
     policy.eval()
     return policy, micro
+
+
+def _migrate_state_dict(target: dict, saved: dict) -> dict:
+    """Copy every tensor whose shape still matches; pad/truncate the rest.
+
+    A head or trunk layer whose width changed keeps its shared leading block and
+    leaves the new rows/columns at their freshly-initialised values. This makes
+    old checkpoints usable after an action-space or observation-space change.
+    """
+
+    out = dict(target)
+    for name, param in target.items():
+        src = saved.get(name)
+        if src is None or not hasattr(src, "shape") or not hasattr(param, "shape"):
+            continue
+        if src.shape == param.shape:
+            out[name] = src
+            continue
+        if src.dim() != param.dim():
+            continue
+        if src.dim() == 2:
+            rows = min(param.shape[0], src.shape[0])
+            cols = min(param.shape[1], src.shape[1])
+            merged = param.clone()
+            merged[:rows, :cols] = src[:rows, :cols]
+            out[name] = merged
+        elif src.dim() == 1:
+            n = min(param.shape[0], src.shape[0])
+            merged = param.clone()
+            merged[:n] = src[:n]
+            out[name] = merged
+    return out
 
 
 __all__ = ["PPOConfig", "PPOTrainer", "Rollout", "load_policy"]
