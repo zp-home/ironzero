@@ -30,7 +30,17 @@ class PPOConfig:
     epochs: int = 4
     minibatch_size: int = 256
     lr: float = 3e-4
-    gamma: float = 0.99
+    # ``gamma`` must be read against the *episode length*, not picked by habit.
+    # The real-game episode is 3600 simulated ticks / DECISION_INTERVAL(10) =
+    # 360 decisions, so the terminal +/-1.0 is discounted by gamma**360:
+    #   0.99^360  = 0.027   -> a won game is worth +0.027 in the first step,
+    #                          i.e. the policy cannot see victory at all
+    #   0.999^360 = 0.698   <- keeps the terminal signal inside the horizon
+    # The 0.99 value came from the 120-decision micro-duel task, where
+    # 0.99^120 = 0.30 was already borderline. Diagnostics on a 105-update
+    # real-game run confirmed the symptom: the terminal/potential/kills terms
+    # never entered the return, only the immediately-paid penalties did.
+    gamma: float = 0.999
     gae_lambda: float = 0.95
     clip_ratio: float = 0.2
     value_coef: float = 0.5

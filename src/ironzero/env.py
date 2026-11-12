@@ -250,13 +250,6 @@ class MicroDuelEnv:
                 }
             ]
 
-        if kind == "repair_target":
-            if target_index < len(target_ids) and target_index < len(enemies):
-                return [
-                    {"kind": "repair_target", "target_entity_id": int(target_ids[target_index])}
-                ]
-            return [{"kind": "stop", "unit_group": groups[0]}]
-
         return [{"kind": kind, "unit_group": group} for group in groups]
 
     def _target_groups(self, group_index: int) -> list[int]:

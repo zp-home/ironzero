@@ -34,7 +34,10 @@ class ActionKind(StrEnum):
     BUILD_STRUCTURE = "build_structure"
     PRODUCE_UNIT = "produce_unit"
     UPGRADE_BUILDING = "upgrade_building"
-    REPAIR_TARGET = "repair_target"
+    # ``repair_target`` was removed from the protocol: the environment looked the
+    # repair target up in the enemy list (you can only repair your own units) and
+    # the real bridge never implemented the branch, so the kind could only ever
+    # produce a rejected order. See ``engine/constants.py``.
 
 
 class ErrorCode(StrEnum):
@@ -140,12 +143,6 @@ class UpgradeBuildingAction(_ActionBase):
     building_entity_id: int = Field(ge=0)
 
 
-class RepairTargetAction(_ActionBase):
-    kind: Literal[ActionKind.REPAIR_TARGET] = ActionKind.REPAIR_TARGET
-    target_entity_id: int = Field(ge=0)
-    builder_entity_id: int | None = Field(default=None, ge=0)
-
-
 Action: TypeAlias = Annotated[
     Union[
         MoveGroupAction,
@@ -157,7 +154,6 @@ Action: TypeAlias = Annotated[
         BuildStructureAction,
         ProduceUnitAction,
         UpgradeBuildingAction,
-        RepairTargetAction,
     ],
     Field(discriminator="kind"),
 ]

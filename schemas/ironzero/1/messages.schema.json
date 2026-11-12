@@ -1375,50 +1375,6 @@
       "title": "ReceiptMessage",
       "type": "object"
     },
-    "RepairTargetAction": {
-      "additionalProperties": false,
-      "properties": {
-        "unit_group": {
-          "default": 0,
-          "maximum": 64,
-          "minimum": 0,
-          "title": "Unit Group",
-          "type": "integer"
-        },
-        "kind": {
-          "const": "repair_target",
-          "default": "repair_target",
-          "enum": [
-            "repair_target"
-          ],
-          "title": "Kind",
-          "type": "string"
-        },
-        "target_entity_id": {
-          "minimum": 0,
-          "title": "Target Entity Id",
-          "type": "integer"
-        },
-        "builder_entity_id": {
-          "anyOf": [
-            {
-              "minimum": 0,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Builder Entity Id"
-        }
-      },
-      "required": [
-        "target_entity_id"
-      ],
-      "title": "RepairTargetAction",
-      "type": "object"
-    },
     "ResetRequest": {
       "additionalProperties": false,
       "properties": {
@@ -1734,7 +1690,6 @@
                 "hold": "#/$defs/HoldAction",
                 "move_group": "#/$defs/MoveGroupAction",
                 "produce_unit": "#/$defs/ProduceUnitAction",
-                "repair_target": "#/$defs/RepairTargetAction",
                 "stop": "#/$defs/StopAction",
                 "upgrade_building": "#/$defs/UpgradeBuildingAction"
               },
@@ -1767,9 +1722,6 @@
               },
               {
                 "$ref": "#/$defs/UpgradeBuildingAction"
-              },
-              {
-                "$ref": "#/$defs/RepairTargetAction"
               }
             ]
           },

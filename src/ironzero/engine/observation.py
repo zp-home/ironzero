@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .constants import ORDER_NAMES
+from .constants import BUILDER_TYPE_ID, LAND_FACTORY_TYPE_ID, ORDER_NAMES
 from .entities import Unit
 
 
@@ -58,6 +58,14 @@ class ObservationMixin:
         }
 
     def _entity_payload(self, unit: Unit) -> dict[str, Any]:
+        # ``is_builder`` / ``is_factory`` are derived from the mock engine's own
+        # type table (builder=2, extractor=10, landFactory=11, turret=12). They
+        # are reported explicitly because the action mask trusts only these
+        # capability flags: inferring "is a builder" from a numeric type id is
+        # exactly the guess that made the real bridge open the economy with no
+        # builder on the map (see ``observation/masks.py``).
+        is_builder = unit.entity_type_id == BUILDER_TYPE_ID
+        is_factory = unit.is_building and unit.entity_type_id == LAND_FACTORY_TYPE_ID
         return {
             "entity_id": unit.entity_id,
             "entity_type_id": unit.entity_type_id,
@@ -67,6 +75,8 @@ class ObservationMixin:
             "hp": round(unit.hp, 4),
             "max_hp": unit.max_hp,
             "is_building": unit.is_building,
+            "is_builder": is_builder,
+            "is_factory": is_factory,
             "is_visible": True,
             "is_alive": unit.alive,
             "order_type": ORDER_NAMES[unit.order],

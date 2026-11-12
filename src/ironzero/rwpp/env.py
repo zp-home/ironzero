@@ -28,7 +28,7 @@ from .config import RwppGameConfig
 from .decoding import observation_to_state
 from .errors import RwppEnvError
 from .process import _ProcLike, launch_rwpp_process
-from .reward import army_distance_norm, army_hp_reference, hp_potential
+from .reward import army_distance_norm, army_hp_reference, combat_value_potential
 from .reward_shaping import compute_step_shaping
 from .session import await_observation, shutdown_game, start_game
 from .spaces import _BoxSpace, _MultiDiscreteSpace
@@ -118,7 +118,13 @@ class RwppDuelEnv:
         # unit), NOT from ``self.obs_state`` (fogged policy view), otherwise a
         # fogged episode would normalise enemy hp against the few visible units.
         self.own_max_ref, self.enemy_max_ref = army_hp_reference(self.state, self.micro)
-        self.last_potential = hp_potential(self.state, self.own_max_ref, self.enemy_max_ref)
+        # ``potential`` rewards the *combat value* difference, not the raw hp
+        # difference: units fight at full strength until destroyed, so chip
+        # damage across many units must not outscore a kill (see
+        # ``reward.combat_value``).
+        self.last_potential = combat_value_potential(
+            self.state, self.own_max_ref, self.enemy_max_ref
+        )
         self.last_distance = army_distance_norm(
             self.state, float(np.hypot(self.micro.map_width, self.micro.map_height))
         )
@@ -190,7 +196,7 @@ class RwppDuelEnv:
         distance = army_distance_norm(
             self.state, float(np.hypot(self.micro.map_width, self.micro.map_height))
         )
-        potential = hp_potential(self.state, self.own_max_ref, self.enemy_max_ref)
+        potential = combat_value_potential(self.state, self.own_max_ref, self.enemy_max_ref)
         own_alive = sum(1 for unit in self.state.get("own_entities", []) if float(unit.get("hp") or 0.0) > 0.0)
         enemy_alive = sum(
             1 for unit in self.state.get("visible_enemy_entities", []) if float(unit.get("hp") or 0.0) > 0.0

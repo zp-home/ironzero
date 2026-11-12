@@ -446,18 +446,117 @@ public final class IronZeroBridge implements ServerExtension {
         int teamId = unit.team != null && unit.team.teamId >= 0 ? unit.team.teamId : NEUTRAL_TEAM_ID;
         boolean building = unit.isBuilding();
         return "{\"entity_id\":" + unit.id
-                + ",\"entity_type_id\":" + (building ? 2 : 1) + ",\"team_id\":" + teamId
+                + ",\"entity_type_id\":" + stableTypeId(unit) + ",\"team_id\":" + teamId
                 + ",\"x\":" + fmt(unit.x) + ",\"y\":" + fmt(unit.y)
                 + ",\"hp\":" + fmt(unit.hp) + ",\"max_hp\":" + fmt(unit.maxHp)
-                + ",\"unit_type\":\"" + unit.getUnitTypeInterface().getInternalName() + "\""
+                + ",\"unit_type\":\"" + internalName(unit) + "\""
+                + ",\"movement_type\":\"" + movementType(unit) + "\""
+                + ",\"is_air_unit\":" + isAirUnit(unit)
                 + ",\"is_building\":" + building
                 + ",\"is_factory\":" + unit.isFactoryBuilding()
                 + ",\"is_builder\":" + unit.isBuilder()
                 + ",\"is_operational\":" + !unit.isNonOperational()
+                // Whether the engine would accept an ``upgrade_building`` order
+                // for this unit *right now* (a real answer, not a type guess).
+                + ",\"can_upgrade\":" + canUpgrade(unit)
                 // Action-group alignment: addOwnOrderableUnits() selects group members
                 // with id % GROUP_COUNT, so expose exactly that value to the policy.
                 + ",\"group_id\":" + (unit.id % GROUP_COUNT)
                 + ",\"is_visible\":true,\"is_alive\":true}";
+    }
+
+    /**
+     * Stable numeric type id for one unit.
+     *
+     * <p>The bridge used to emit {@code building ? 2 : 1}, i.e. every tank, every
+     * builder and every combat unit shared one id, and every building shared
+     * another. The Python side could therefore not tell an extractor from a
+     * factory (so {@code upgrade_building} always selected "no building" and
+     * degraded into {@code hold}) and could not tell a unit type from another at
+     * all. Ids for the economy units line up with the Python mock engine
+     * ({@code engine/constants.py}: tank=1, builder=2, extractor=10,
+     * landFactory=11, turret=12); every other type gets a deterministic id
+     * derived from its internal name so {@code obs} values stay identical across
+     * runs of the same map and mod set.
+     */
+    private int stableTypeId(Unit unit) {
+        String name = internalName(unit).toLowerCase(Locale.ROOT);
+        // Mods / stock content disagree on the prefix (``c_tank`` vs ``tank``),
+        // so compare on the suffix that names the unit type.
+        if (name.startsWith("c_")) {
+            name = name.substring(2);
+        }
+        switch (name) {
+            case "tank":
+                return 1;
+            case "builder":
+                return 2;
+            case "extractor":
+                return 10;
+            case "landfactory":
+                return 11;
+            case "turret":
+                return 12;
+            default:
+                // Deterministic across JVMs (String.hashCode is specified), so a
+                // checkpoint trained on a map keeps seeing the same ids.
+                return 1000 + (internalName(unit).hashCode() & 0x7fffffff) % 1000000;
+        }
+    }
+
+    /** Engine internal name of the unit's type, with a safe placeholder. */
+    private String internalName(Unit unit) {
+        try {
+            String name = unit.getUnitTypeInterface().getInternalName();
+            if (name != null && !name.isEmpty()) {
+                return name;
+            }
+        } catch (RuntimeException ignored) {
+            // Fall through with the placeholder.
+        }
+        return "?";
+    }
+
+    /** ``NONE``/``LAND``/``BUILDING``/``AIR``/``WATER``/``HOVER``/``OVER_CLIFF_WATER``... */
+    private String movementType(Unit unit) {
+        try {
+            com.corrodinggames.rts.game.units.MovementType movement = unit.getMovementType();
+            return movement == null ? "NONE" : movement.name();
+        } catch (RuntimeException ignored) {
+            return "NONE";
+        }
+    }
+
+    private boolean isAirUnit(Unit unit) {
+        try {
+            return unit.isAirUnit();
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether {@code upgrade_building} would be accepted for this unit.
+     *
+     * <p>Rusted Warfare models a tier upgrade as the building's current build
+     * action ({@code getBuildActionId}), so a real action id means "there is a
+     * next tier". Reporting the capability lets the Python side select an
+     * upgrade target by what the engine says is possible instead of matching a
+     * hard-coded type id.
+     */
+    private boolean canUpgrade(Unit unit) {
+        if (!unit.isBuilding()) {
+            return false;
+        }
+        try {
+            if (unit instanceof OrderableUnit) {
+                ActionId upgradeId = unit.getBuildActionId();
+                return upgradeId != null && SpecialAction.isRealActionId(upgradeId);
+            }
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+        return false;
     }
 
     private void sendDone(RWGameEngine engine) {
@@ -829,16 +928,6 @@ public final class IronZeroBridge implements ServerExtension {
                 long buildingId = action.getLong("building_entity_id", -1L);
                 actionOutcomes.add(upgradeBuilding(buildingId) ? null : "ACTION_MASKED");
                 continue;
-            } else if ("repair_target".equals(kind)) {
-                long targetId = action.getLong("target_entity_id", -1L);
-                Unit target = findUnitById(targetId);
-                if (target == null) {
-                    actionOutcomes.add("TARGET_INVALID");
-                    continue;
-                }
-                command = engine.commandController.createCommandForTeam(engine.playerTeam);
-                addOwnOrderableUnits(command, unitGroup);
-                command.setRepairWaypoint(target);
             } else if ("noop".equals(kind)) {
                 // Explicit "do nothing". Construction and production need many
                 // ticks of uninterrupted progress; every order cancels the

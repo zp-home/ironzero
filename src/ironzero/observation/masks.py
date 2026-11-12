@@ -80,10 +80,18 @@ def build_masks(state: dict, config: MicroDuelConfig = DEFAULT_CONFIG) -> dict[s
     kind_mask = np.zeros(cfg.action_nvec[0], dtype=bool)
     # Tactical orders are always selectable; only the economy kinds are gated
     # on affordability. Everything else is gated on having a live builder.
-    has_builder = any(
-        unit.get("is_builder") or int(unit.get("entity_type_id") or 0) == BUILDER_TYPE_ID
-        for unit in own
-    )
+    #
+    # Only ``is_builder`` is trusted. The old fallback
+    # ``entity_type_id == BUILDER_TYPE_ID(2)`` was meant for bridges that omit
+    # ``is_builder``, but the real bridge used to report ``entity_type_id`` as
+    # "2 for any building", so a lone command center made every economy kind
+    # selectable. The policy then picked ``build_extractor`` with no builder on
+    # the map, the engine rejected it, and it paid ``invalid_penalty`` every
+    # decision -- the dominant negative term in the measured run. A unit that
+    # cannot queue builds must not be treated as one that can, so the type-id
+    # guess is gone; a bridge that omits ``is_builder`` simply leaves the
+    # economy masked instead of inviting guaranteed rejections.
+    has_builder = any(unit.get("is_builder") for unit in own)
     capabilities = _reported_capabilities(state, own)
     for index, kind in enumerate(ACTION_KINDS):
         if index >= kind_mask.shape[0]:
@@ -104,8 +112,6 @@ def build_masks(state: dict, config: MicroDuelConfig = DEFAULT_CONFIG) -> dict[s
             kind_mask[index] = has_builder and buildable and affordable
         elif kind == "upgrade_building":
             kind_mask[index] = has_builder and buildable and affordable
-        elif kind == "repair_target":
-            kind_mask[index] = has_builder
         else:
             kind_mask[index] = True
     if not kind_mask.any():

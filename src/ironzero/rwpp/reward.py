@@ -54,6 +54,83 @@ def hp_fractions(
     )
 
 
+# Fraction of a unit's combat value that comes from simply being alive.
+#
+# Why not plain hp: Rusted Warfare units fight at *full* strength until they are
+# destroyed -- there is no "damaged units shoot weaker" rule. A tank left at
+# 10/210 HP still deals its whole 20 DPS. So the linear ``hp / max_hp`` model of
+# a potential function mis-teaches the policy:
+#
+#   25-vs-25 (10500 total HP), measured:
+#     focus-fire one tank dead        -> 210 HP removed  -> +0.0100 potential
+#     spread 200 damage over 5 tanks  -> 1000 HP removed -> +0.0476 potential
+#   i.e. spreading damage scored 4.8x better even though killing a tank
+#   permanently deletes a whole gun while damaging five deletes none.
+#
+# This weight makes "alive" dominate (a unit that dies loses its whole value)
+# and leaves hp as the tie-breaker between survivors: 0.85/0.15 puts a dead
+# unit at -210 and five near-dead units at -150, so focusing fire wins while a
+# genuinely weakened army still reads as weaker.
+COMBAT_ALIVE_WEIGHT = 0.85
+
+
+def combat_value(hp: float, max_hp: float) -> float:
+    """Combat value of one unit: 0 when destroyed, ~``max_hp`` while alive."""
+
+    if hp <= 0.0:
+        return 0.0
+    ceiling = max(1e-6, float(max_hp))
+    frac = max(0.0, min(1.0, float(hp) / ceiling))
+    return ceiling * (COMBAT_ALIVE_WEIGHT + (1.0 - COMBAT_ALIVE_WEIGHT) * frac)
+
+
+def combat_value_fractions(
+    state: dict[str, Any],
+    own_max_ref: float | None = None,
+    enemy_max_ref: float | None = None,
+) -> tuple[float, float]:
+    """``(own_combat_frac, enemy_combat_frac)`` in ``[0, 1]``.
+
+    Normalised by the episode-start max-hp totals (same reference as
+    :func:`hp_fractions`), so the two potentials are directly comparable.
+    """
+
+    def total(units: list[dict[str, Any]]) -> float:
+        return sum(
+            combat_value(
+                float(unit.get("hp") or 0.0),
+                float(unit.get("max_hp") or 0.0) or float(DEFAULT_CONFIG.unit_hp),
+            )
+            for unit in units
+        )
+
+    own = state.get("own_entities", [])
+    enemies = state.get("visible_enemy_entities", [])
+    own_max = sum(float(unit.get("max_hp") or 0.0) for unit in own) or 1.0
+    enemy_max = sum(float(unit.get("max_hp") or 0.0) for unit in enemies) or 1.0
+    own_ref = float(own_max_ref) if own_max_ref else own_max
+    enemy_ref = float(enemy_max_ref) if enemy_max_ref else enemy_max
+    return (
+        max(0.0, min(1.0, total(own) / max(1.0, own_ref))),
+        max(0.0, min(1.0, total(enemies) / max(1.0, enemy_ref))),
+    )
+
+
+def combat_value_potential(
+    state: dict[str, Any],
+    own_max_ref: float | None = None,
+    enemy_max_ref: float | None = None,
+) -> float:
+    """Combat-value advantage in ``[-1, 1]`` (own minus enemy).
+
+    This is the term the real-game ``potential`` reward is built from: it pays
+    for *destroying* units rather than for spreading chip damage.
+    """
+
+    own, enemy = combat_value_fractions(state, own_max_ref, enemy_max_ref)
+    return own - enemy
+
+
 def army_hp_reference(
     state: dict[str, Any],
     config: MicroDuelConfig = DEFAULT_CONFIG,
@@ -101,8 +178,12 @@ def army_distance_norm(state: dict[str, Any], map_diagonal: float) -> float:
 
 
 __all__ = [
+    "COMBAT_ALIVE_WEIGHT",
     "army_distance_norm",
     "army_hp_reference",
+    "combat_value",
+    "combat_value_fractions",
+    "combat_value_potential",
     "hp_fractions",
     "hp_potential",
 ]

@@ -29,7 +29,7 @@ _POSITION_KINDS: frozenset[str] = frozenset(
     {"move_group", "attack_move", "build_structure"}
 )
 _TARGET_KINDS: frozenset[str] = frozenset(
-    {"attack_target", "build_extractor", "produce_unit", "upgrade_building", "repair_target"}
+    {"attack_target", "build_extractor", "produce_unit", "upgrade_building"}
 )
 
 MASK_KEYS: tuple[str, ...] = ("kind", "group", "x", "y", "target")

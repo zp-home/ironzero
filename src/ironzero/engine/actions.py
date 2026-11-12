@@ -165,14 +165,6 @@ class ActionMixin:
                 return None
             return ACTION_MASKED
 
-        if kind == "repair_target":
-            target_id = action.get("target_entity_id")
-            target = self.unit_by_id(target_id) if isinstance(target_id, int) else None
-            if target is None or not target.alive or target.team != team:
-                return INVALID_MESSAGE
-            target.hp = min(target.max_hp, target.hp + 50.0)
-            return None
-
         group = action.get("unit_group")
         if not isinstance(group, int) or not 0 <= group < self.config.groups:
             return UNKNOWN_UNIT

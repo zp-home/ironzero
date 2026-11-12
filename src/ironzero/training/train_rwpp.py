@@ -45,7 +45,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--minibatch", type=int, default=64)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--gamma", type=float, default=0.99)
+    # 360 decisions per episode: 0.999^360 = 0.698 keeps the terminal reward
+    # inside the horizon (0.99^360 = 0.027 hid it completely).
+    parser.add_argument("--gamma", type=float, default=0.999)
     parser.add_argument("--lam", type=float, default=0.95)
     parser.add_argument("--entropy", type=float, default=0.01)
     parser.add_argument("--hidden", type=int, default=256)

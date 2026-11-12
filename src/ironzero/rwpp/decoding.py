@@ -140,11 +140,6 @@ def decode_action(
         building = buildings[int(target_index) % len(buildings)]
         return [{"kind": "upgrade_building", "unit_group": group,
                  "building_entity_id": int(building.get("entity_id", -1))}]
-    if kind == "repair_target":
-        if 0 <= target_index < len(enemies):
-            return [{"kind": "repair_target", "unit_group": group,
-                     "target_entity_id": int(enemies[target_index].get("entity_id", -1))}]
-        return _hold_action(state, group)
     if kind == "attack_target":
         if 0 <= target_index < len(enemies):
             return [

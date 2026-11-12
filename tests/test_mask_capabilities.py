@@ -25,7 +25,7 @@ from ironzero.observations import build_masks
 KIND_INDEX = {kind: index for index, kind in enumerate(ACTION_KINDS)}
 
 BUILDER = {"entity_id": 7, "entity_type_id": BUILDER_TYPE_ID, "hp": 170.0,
-           "max_hp": 170.0, "x": 100.0, "y": 100.0}
+           "max_hp": 170.0, "x": 100.0, "y": 100.0, "is_builder": True}
 
 
 def _state(builders=None, funds: float = 4000.0, enemies: int = 0):
@@ -86,7 +86,7 @@ def test_empty_can_build_masks_every_economy_kind() -> None:
     mask = _mask(_state(builders=[{"entity_id": 7, "unit_type": "builder",
                                    "can_build": []}]))
     assert _selectable(mask) == {"move_group", "attack_move", "attack_target",
-                                 "stop", "hold", "repair_target", "noop"}
+                                 "stop", "hold", "noop"}
 
 
 def test_affordability_still_gates_even_when_buildable() -> None:
@@ -111,6 +111,28 @@ def test_no_builder_masks_every_economy_kind() -> None:
     assert "build_structure" not in selectable
 
 
+def test_a_lone_command_center_is_not_a_builder() -> None:
+    """Regression: ``entity_type_id == 2`` used to mean "builder" in the mask.
+
+    The bridge reported every *building* as ``entity_type_id = 2``, so a base
+    with no builder on the map made all four economy kinds selectable. The
+    policy then ordered ``build_extractor``, the engine rejected it, and the
+    step paid ``invalid_penalty`` -- measured as the dominant negative term over
+    a 105-update run. Only ``is_builder`` may open the economy.
+    """
+
+    state = _state(builders=[{"entity_id": 7, "unit_type": "builder",
+                              "can_build": ["extractor", "landFactory",
+                                            "tank", "turret"]}])
+    state["own_entities"] = [
+        {"entity_id": 23, "entity_type_id": 2, "hp": 4000.0, "max_hp": 4000.0,
+         "is_building": True, "is_factory": True}
+    ]
+    selectable = _selectable(_mask(state))
+    assert selectable == {"move_group", "attack_move", "attack_target",
+                          "stop", "hold", "noop"}
+
+
 def test_mask_never_all_false() -> None:
     """Every kind gated off must still leave the tactical orders selectable."""
 
@@ -118,9 +140,9 @@ def test_mask_never_all_false() -> None:
                               "can_build": []}], funds=0.0)
     mask = _mask(state)
     assert mask.any()
-    # 5 tactical orders + repair_target (builder present, no capability needed)
-    # + noop (always available).
-    assert int(np.count_nonzero(mask)) == 7
+    # 5 tactical orders + noop (always available). ``repair_target`` used to add
+    # a seventh slot; it is gone because the bridge never implemented it.
+    assert int(np.count_nonzero(mask)) == 6
 
 
 @pytest.mark.parametrize("kind", ["build_extractor", "build_structure",

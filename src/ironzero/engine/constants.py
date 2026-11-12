@@ -28,7 +28,12 @@ ACTION_KINDS: tuple[str, ...] = (
     "build_structure",
     "produce_unit",
     "upgrade_building",
-    "repair_target",
+    # ``repair_target`` used to sit here (index 9). It was removed rather than
+    # fixed: ``rwpp/decoding.py`` looked the repair target up in
+    # ``visible_enemy_entities`` -- you cannot repair an enemy -- and the Java
+    # bridge had no repair branch at all, so on the real game the kind could
+    # only ever produce a rejected order. Removing it keeps the head honest:
+    # every kind the policy can sample is a kind the bridge can execute.
     # ``noop`` issues no order at all. It exists because construction and unit
     # production take hundreds of ticks of *uninterrupted* progress, and every
     # real order cancels the in-flight one. Without a no-op the policy has to

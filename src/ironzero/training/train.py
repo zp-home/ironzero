@@ -19,6 +19,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epochs", type=int, default=4, help="PPO epochs per update")
     parser.add_argument("--minibatch", type=int, default=256)
     parser.add_argument("--lr", type=float, default=3e-4)
+    # The micro-duel episode is 3600 ticks / decision_interval(30) = 120
+    # decisions, so 0.99^120 = 0.30 still keeps a won game visible. The real-game
+    # trainer (``train_rwpp.py``) runs 360 decisions and therefore needs 0.999;
+    # the two defaults intentionally differ.
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lam", type=float, default=0.95)
     parser.add_argument("--entropy", type=float, default=0.01)

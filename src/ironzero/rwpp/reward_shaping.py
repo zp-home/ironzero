@@ -14,12 +14,19 @@ readable on its own. Two invariants are load-bearing and must not change:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
 from ..micro_config import MicroDuelConfig
 from .config import RwppGameConfig
 from .reward import hp_fractions
+
+# ``idle_penalty`` only applies inside this multiple of the unit attack range.
+# 3x is the "already in the fight" band: our units and the enemy centroid are
+# close enough that standing still means eating damage for free, while anything
+# farther away is manoeuvring / holding ground, which must not be punished.
+ENGAGED_RANGE_MULTIPLIER = 3.0
 
 
 @dataclass
@@ -65,6 +72,20 @@ def compute_step_shaping(
     """
 
     economy_stats = message.get("global_state", {})
+    # ``idle`` only punishes "the enemy is on top of us and we are standing
+    # still". Holding a chokepoint or waiting for the opponent to commit is a
+    # standard strong play in Rusted Warfare, but the old test was "we issued
+    # stop/hold while any enemy is alive" -- which penalised exactly that play
+    # and pushed the policy into always charging. Measured on a 105-update run:
+    # the idle term accumulated -3.344 while every combat term stayed at 0.000,
+    # i.e. the only thing the policy could learn was "do not hold ground".
+    # ``distance`` is the army-centroid gap normalised by the map diagonal, so
+    # the "already engaged" radius converts back through the same diagonal.
+    map_diagonal = float(
+        math.hypot(float(micro.map_width), float(micro.map_height))
+    ) or 1.0
+    engaged_radius = float(micro.attack_range) * ENGAGED_RANGE_MULTIPLIER
+    near_enemy_in_range = (float(distance) * map_diagonal) <= engaged_radius
     # ``bonus_build`` must be paid for a *completed building*, not for an
     # accepted order. Paying per accepted receipt let a policy farm it outright:
     # re-issuing ``build_extractor`` every decision returns accepted=true each
@@ -106,7 +127,12 @@ def compute_step_shaping(
         "invalid": -float(game.invalid_penalty) * sum(1 for r in receipts if not r.get("accepted", True)),
         "idle": (
             -float(game.idle_penalty)
-            if (actions and actions[0].get("kind") in {"stop", "hold"} and enemy_alive > 0)
+            if (
+                actions
+                and actions[0].get("kind") in {"stop", "hold"}
+                and enemy_alive > 0
+                and near_enemy_in_range
+            )
             else 0.0
         ),
         "terminal": 0.0,
