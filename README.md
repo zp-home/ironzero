@@ -150,18 +150,24 @@ python -m http.server 8000 --directory site
 一条命令启动平台（宿主机另需跑真机服务）：
 
 ```powershell
-python scripts\rwpp_real_service.py --port 8300 --max-parallel 4   # 宿主机：真实 1.15 运行时 + IronZero 扩展
+python scripts\rwpp_real_service.py --port 8300 --max-parallel 10  # 宿主机：真实 1.15 运行时 + IronZero 扩展
 docker compose -f web/docker-compose.yml up -d --build
 start http://127.0.0.1:8000
 ```
 
 平台只保留两个主页面，都面向**真实《铁锈战争》1.15 无头对局**，且都带监控大屏（KPI + 曲线）：
 
-- **实机推理**：选地图（71 张）+ 策略（scripted）+ 时长 + **并发实例 1..4** → 宿主机同时拉起 N 个独立真实对局，帧实时回传；大屏显示并发任务卡、实时帧率、双方血量/存活单位曲线，大沙盘按真实地图渲染、自动跟随、可录制 `.webm`
-- **实机训练**：选地图/局数/每局 ticks + **并发线程 1..4** → 并行跑多个真实游戏进程逐局采集，大屏显示进度 KPI、每局耗时柱状图、累计帧/tick 曲线 + 产物回放（播放跳回实机推理）
+- **实机推理**：选地图（71 张）+ 策略（scripted）+ 时长 + **并发实例 1..10** → 宿主机同时拉起 N 个独立真实对局，帧实时回传；大屏显示并发任务卡、实时帧率、双方血量/存活单位曲线，大沙盘按真实地图渲染、自动跟随、可录制 `.webm`
+- **实机训练**：选地图/局数/每局 ticks + **并发线程 1..10** → 并行跑多个真实游戏进程逐局采集，大屏显示进度 KPI、每局耗时柱状图、累计帧/tick 曲线 + 产物回放（播放跳回实机推理）
 - **真机回放**：每局落盘 `ironzero.replay/1`，回放库标注「真机」，点击即可按真实 Lake 地图播放
 
-> 并发说明：每个实例是一个独立无头游戏进程（独立 bridge 端口 5130+），游戏模拟本身单线程；并发提升的是批量采集吞吐，单局时长不变。实测 2 路并发推理 / 训练 2 局 `concurrency=2` 均无冲突（`python scripts/rwpp_concurrency_check.py` 可复验）。
+> 并发说明：每个实例是一个独立无头游戏进程（独立 bridge 端口 5130+），游戏模拟本身单线程；并发提升的是批量采集吞吐，单局时长不变。上限由宿主机 `--max-parallel`（默认 **10**）决定，前端下拉框与 `/health` 的 `max_parallel` 对齐，槽位耗尽时服务返回 409。
+>
+> 实测（16 逻辑核 / RTX 4070，`audit/perf_baseline_20261112.md`）：每局固定成本约 1.75s（JVM 1.47s + 地图加载 0.28s），每进程 RSS 145–160MB（**10 路约 1.5GB**）；4 路并发吞吐 **3.74–3.81×**（近线性，单路延迟仅 +2.5%），`frame_ms=2` 下单进程平均只占约 5% 单核 —— 所以 10 路在 16 核机器上 CPU 不是瓶颈。
+>
+> **改了服务端代码必须重启宿主机服务**：并发上限与 `/ppo` 的准入校验都在进程启动时载入内存。若不重启，前端会收到与当前源码对不上的 400（例如源码已是 `envs 1..16`，旧进程仍回 `envs must be 1..8`）。用 `curl.exe -s http://127.0.0.1:8300/health` 看 `max_parallel` 是否为期望值，排查与重启步骤见 [`scripts/rwpp_service/README.md`](scripts/rwpp_service/README.md) §1.1；改过 `IronZeroBridge.java` 还需把新 jar 同步到**实际在用的**每一套 runtime（同文件 §1.2）。
+>
+> **重启不再丢训练**：任务表会落盘到 `runs/_rwpp_service/jobs/`，服务启动时（`listen()` 之前）自动接管仍在跑的 trainer 子进程，按 pid 归因、按产物判定终态（`done` / `failed` / `stale`），所以重启后大屏仍能看到进度也能点停止。想干净换配置时加 `--no-recover`。机制与判据见同文件 §1.3。
 
 ![实机推理](docs/assets/platform_real_infer.png)
 
