@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import warnings
 from dataclasses import asdict, replace
 from pathlib import Path
 from unittest import mock
@@ -20,6 +21,7 @@ import numpy as np
 import torch
 
 from ironzero.micro_config import DEFAULT_CONFIG, MicroDuelConfig
+from ironzero.mock_engine import ACTION_KINDS
 from ironzero.observations import build_masks, encode_observation
 from ironzero.rwpp_env import (
     RwppGameConfig,
@@ -133,15 +135,29 @@ def write_terrain_file(
 class MicroConfig25Tests(unittest.TestCase):
     def test_25v25_observation_and_action_contract(self) -> None:
         cfg = cfg_25()
-        # 12 global + 2 * (25 * 10) entity + 3 * 8 * 8 control grid.
-        self.assertEqual(cfg.flat_obs_dim, 12 + 500 + 192)
-        self.assertEqual(cfg.action_nvec, (5, 5, 8, 8, 26))
+        # 15 global (12 legacy + 3 economy) + 2 * (25 * 10) entity + 3 * 8 * 8 grid.
+        self.assertEqual(cfg.global_dim, 15)
+        self.assertEqual(
+            cfg.flat_obs_dim,
+            cfg.global_dim
+            + 2 * cfg.max_entities * cfg.entity_features
+            + cfg.map_channels * cfg.map_grid**2,
+        )
+        self.assertEqual(cfg.flat_obs_dim, 15 + 500 + 192)
+        # Five heads; the kind head spans the whole ACTION_KINDS vocabulary.
+        self.assertEqual(len(cfg.action_nvec), 5)
+        self.assertEqual(cfg.action_nvec, (len(ACTION_KINDS), cfg.groups + 1, 8, 8, 26))
+        self.assertEqual(cfg.action_nvec[0], 10)
         self.assertEqual(cfg.max_entities, 25)
         self.assertEqual(cfg.target_slots, 26)
 
     def test_terrain_channel_adds_one_map_grid(self) -> None:
         cfg = cfg_25(map_channels=4, terrain_path="configs/maps/IronZero25.terrain.json")
-        self.assertEqual(cfg.flat_obs_dim, 12 + 500 + 4 * 64)
+        self.assertEqual(cfg.flat_obs_dim, 15 + 500 + 4 * 64)
+        self.assertEqual(
+            cfg.flat_obs_dim,
+            cfg_25().flat_obs_dim + cfg.map_grid**2,  # exactly one extra map grid
+        )
         self.assertTrue(cfg.terrain_channel)
 
     def test_defaults_stay_legacy_8_units(self) -> None:
@@ -150,7 +166,8 @@ class MicroConfig25Tests(unittest.TestCase):
         self.assertEqual(DEFAULT_CONFIG.target_slots, 9)
         self.assertEqual(DEFAULT_CONFIG.map_channels, 3)
         self.assertFalse(DEFAULT_CONFIG.terrain_channel)
-        self.assertEqual(DEFAULT_CONFIG.flat_obs_dim, 12 + 2 * 80 + 192)
+        self.assertEqual(DEFAULT_CONFIG.global_dim, 15)
+        self.assertEqual(DEFAULT_CONFIG.flat_obs_dim, 15 + 2 * 80 + 192)
 
 
 class Observation25Tests(unittest.TestCase):
@@ -179,7 +196,14 @@ class Observation25Tests(unittest.TestCase):
         self.assertEqual(masks["target"].shape, (26,))
         self.assertEqual(int(masks["target"].sum()), 26)  # 25 enemies + no-target
         self.assertTrue(bool(masks["target"][-1]))
-        self.assertTrue(bool(masks["kind"].all()))
+        # Bridge units carry no builder and no funds, so the kind head exposes the
+        # five tactical orders and gates the four economy kinds. The mask must
+        # still be sized to the full action vocabulary.
+        self.assertEqual(masks["kind"].shape, (cfg.action_nvec[0],))
+        self.assertEqual(masks["kind"].shape, (len(ACTION_KINDS),))
+        self.assertEqual(int(masks["kind"].sum()), 5)
+        self.assertTrue(bool(masks["kind"][:5].all()))
+        self.assertFalse(bool(masks["kind"][5:].any()))
 
     def test_masks_from_mock_engine_still_derive_groups_from_group_id(self) -> None:
         # Offline mock units carry group_id: the mask must reflect only the
@@ -300,7 +324,7 @@ class TerrainChannelTests(unittest.TestCase):
             self.assertFalse(cfg.terrain_channel)
             obs = encode_observation(bridge_state(own_count=0, enemy_count=0), cfg)
             self.assertEqual(obs.shape, (cfg.flat_obs_dim,))
-            self.assertEqual(cfg.flat_obs_dim, 12 + 500 + 192)
+            self.assertEqual(cfg.flat_obs_dim, 15 + 500 + 192)
 
     def test_terrain_from_file_accepts_nested_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -349,7 +373,11 @@ class TerrainChannelTests(unittest.TestCase):
         )
         micro = game.micro_config()
         self.assertEqual(micro.map_channels, 4)
-        self.assertEqual(micro.flat_obs_dim, 768)
+        self.assertEqual(micro.flat_obs_dim, 771)
+        self.assertEqual(
+            micro.flat_obs_dim,
+            15 + 2 * 25 * 10 + 4 * 8 * 8,  # 15 global + entity blocks + 4 map grids
+        )
         # The passability prior describes the same land ratio as the raw map.
         obs = encode_observation(bridge_state(own_count=0, enemy_count=0), micro)
         offset = micro.global_dim + 2 * micro.max_entities * micro.entity_features
@@ -377,8 +405,8 @@ class RwppGameConfig25Tests(unittest.TestCase):
             self.assertEqual(micro.max_entities, 25)
             self.assertEqual(micro.target_slots, 26)
             self.assertEqual(micro.map_channels, 4)
-            self.assertEqual(micro.flat_obs_dim, 12 + 500 + 256)
-            self.assertEqual(micro.action_nvec, (5, 5, 8, 8, 26))
+            self.assertEqual(micro.flat_obs_dim, 15 + 500 + 256)
+            self.assertEqual(micro.action_nvec, (len(ACTION_KINDS), 5, 8, 8, 26))
             self.assertEqual(Path(str(micro.terrain_path)), path.resolve())
             # The contract survives a checkpoint asdict/rebuild round trip.
             rebuilt = MicroDuelConfig(**asdict(micro))
@@ -395,7 +423,7 @@ class RwppGameConfig25Tests(unittest.TestCase):
             micro = game.micro_config()
         self.assertEqual(micro.map_channels, 3)
         self.assertIsNone(micro.terrain_path)
-        self.assertEqual(micro.flat_obs_dim, 12 + 500 + 192)
+        self.assertEqual(micro.flat_obs_dim, 15 + 500 + 192)
 
     def test_target_slots_auto_and_entity_floor(self) -> None:
         # target_slots=0 -> max_entities + 1; max_entities below the army is lifted.
@@ -498,8 +526,8 @@ class TrainCliTests(unittest.TestCase):
         self.assertEqual(micro.max_entities, 25)
         self.assertEqual(micro.target_slots, 26)
         self.assertEqual(micro.map_channels, 4)
-        self.assertEqual(micro.flat_obs_dim, 768)
-        self.assertEqual(micro.action_nvec, (5, 5, 8, 8, 26))
+        self.assertEqual(micro.flat_obs_dim, 771)
+        self.assertEqual(micro.action_nvec, (len(ACTION_KINDS), 5, 8, 8, 26))
         self.assertEqual(game.win_mode, "annihilation")
         self.assertTrue(game.unlock_ai)
         self.assertTrue(micro.terrain_path)
@@ -593,7 +621,7 @@ class TrainCliTests(unittest.TestCase):
                 + 2 * micro_payload["max_entities"] * micro_payload["entity_features"]
                 + micro_payload["map_channels"] * micro_payload["map_grid"] ** 2
             )
-            self.assertEqual(obs_dim, 768)
+            self.assertEqual(obs_dim, 771)
             self.assertEqual(summary["game"]["win_mode"], "annihilation")
             self.assertTrue(summary["game"]["unlock_ai"])
             self.assertEqual(summary["best_checkpoint"], "runs/fake/checkpoint_best.pt")
@@ -633,7 +661,7 @@ class BestCheckpointTests(unittest.TestCase):
             self.assertEqual(policy.trunk[0].out_features, 64)
             self.assertEqual(micro.flat_obs_dim, DEFAULT_CONFIG.flat_obs_dim)
 
-    def test_terrain_checkpoint_rebuilds_the_768_dim_policy(self) -> None:
+    def test_terrain_checkpoint_rebuilds_the_771_dim_policy(self) -> None:
         terrain = Path(__file__).resolve().parents[1] / "configs" / "maps" / "IronZero25.terrain.json"
         if not terrain.is_file():
             self.skipTest("IronZero25 terrain not generated yet")
@@ -658,12 +686,68 @@ class BestCheckpointTests(unittest.TestCase):
                 path,
             )
             loaded, loaded_micro = load_policy(path, device="cpu")
-        self.assertEqual(loaded_micro.flat_obs_dim, 768)
-        self.assertEqual(loaded_micro.action_nvec, (5, 5, 8, 8, 26))
-        self.assertEqual(loaded.trunk[0].in_features, 768)
+        self.assertEqual(loaded_micro.flat_obs_dim, 771)
+        self.assertEqual(loaded_micro.action_nvec, (len(ACTION_KINDS), 5, 8, 8, 26))
+        self.assertEqual(loaded.trunk[0].in_features, 771)
         self.assertEqual(loaded.trunk[0].out_features, 128)
-        self.assertEqual(loaded.nvec, (5, 5, 8, 8, 26))
+        self.assertEqual(loaded.nvec, (len(ACTION_KINDS), 5, 8, 8, 26))
         self.assertEqual(loaded_micro.terrain_path, str(terrain.resolve()))
+
+    def test_legacy_768_dim_checkpoint_is_migrated_to_the_current_contract(self) -> None:
+        """An older checkpoint must load, not crash, after the contract grew."""
+
+        terrain = Path(__file__).resolve().parents[1] / "configs" / "maps" / "IronZero25.terrain.json"
+        if not terrain.is_file():
+            self.skipTest("IronZero25 terrain not generated yet")
+        micro = RwppGameConfig(
+            units_per_team=25,
+            max_entities=25,
+            target_slots=26,
+            terrain_path=terrain,
+            map_width_px=2700.0,
+            map_height_px=2500.0,
+        ).micro_config()
+        # The pre-upgrade contract: 12 global features and a 5-wide kind head.
+        # An old checkpoint does not carry the ``global_dim`` field at all, so
+        # rebuilding it falls back to today's default (15).
+        legacy_micro = replace(micro, global_dim=12)
+        self.assertEqual(legacy_micro.flat_obs_dim, 768)
+        legacy = MaskedActorCritic(
+            legacy_micro.flat_obs_dim, nvec=(5, 5, 8, 8, 26), hidden=128
+        )
+        legacy_payload = asdict(legacy_micro)
+        legacy_payload.pop("global_dim")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy.pt"
+            torch.save(
+                {
+                    "model": legacy.state_dict(),
+                    "micro_config": legacy_payload,
+                    "ppo_config": {"hidden": 128},
+                    "update": 3,
+                },
+                path,
+            )
+            # ``simplefilter("always")`` defeats Python's per-location
+            # "once" de-duplication: another test in the session may already
+            # have emitted this warning from the same source line.
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                loaded, loaded_micro = load_policy(path, device="cpu")
+        messages = [str(item.message) for item in caught]
+        self.assertTrue(
+            any("obs_dim=768" in message for message in messages),
+            f"expected an obs_dim migration warning, got {messages}",
+        )
+        self.assertEqual(loaded_micro.flat_obs_dim, 771)
+        self.assertEqual(loaded.trunk[0].in_features, 771)
+        self.assertEqual(loaded.nvec, (len(ACTION_KINDS), 5, 8, 8, 26))
+        # The migrated trunk keeps the legacy leading columns.
+        self.assertTrue(
+            torch.equal(
+                loaded.trunk[0].weight[:, :768], legacy.trunk[0].weight
+            )
+        )
 
     def test_maybe_save_best_only_on_improvement(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
