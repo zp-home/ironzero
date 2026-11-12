@@ -90,6 +90,12 @@ class VecRwppEnv:
         # ``_pending_lock`` because the futures complete on pool threads.
         self._pending: dict[int, Future] = {}
         self._pending_lock = threading.Lock()
+        # Per-slot rejection histogram. ``invalid`` is a single reward key, so a
+        # growing penalty cannot be attributed without knowing *why* orders were
+        # refused; this accumulates the reasons for the running episode.
+        self._rejection_counts: list[dict[str, int]] = [
+            {} for _ in range(self.num_envs)
+        ]
 
     # ------------------------------------------------------------------
     def reset(self) -> tuple[np.ndarray, list[dict[str, np.ndarray]], list[dict[str, Any]]]:
@@ -143,6 +149,9 @@ class VecRwppEnv:
             terminated[index] = term
             truncated[index] = trunc
             infos[index] = info
+            for reason, count in (info.get("rejection_reasons") or {}).items():
+                bucket = self._rejection_counts[index]
+                bucket[reason] = bucket.get(reason, 0) + int(count)
             if term or trunc:
                 finished.append(index)
         if finished:
@@ -187,12 +196,15 @@ class VecRwppEnv:
                 "tick": int(info.get("tick", 0)),
                 "port": int(info.get("port", 0)),
                 "components": dict(info.get("reward_components") or {}),
+                # Why the episode paid ``invalid``: {reason: count}.
+                "rejections": dict(self._rejection_counts[index]),
                 "eval": None,
             }
             self.completed_episodes.append(episode)
             infos[index]["episode"] = episode
             self.episode_returns[index] = 0.0
             self.episode_lengths[index] = 0
+            self._rejection_counts[index] = {}
             if not self.async_reset:
                 obs, reset_info = self.envs[index].reset()
                 self.masks[index] = reset_info["masks"]

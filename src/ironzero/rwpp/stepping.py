@@ -117,6 +117,9 @@ def build_step_info(env: "RwppDuelEnv", ctx: dict[str, Any]) -> dict[str, Any]:
         "distance": ctx["distance"],
         "reward_breakdown": dict(ctx["components"]),
         "reward_components": dict(env.episode_components),
+        # Why orders were refused this decision. ``invalid`` is one reward key,
+        # so without this histogram a growing penalty cannot be attributed.
+        "rejection_reasons": receipt_reasons(ctx.get("receipts") or []),
         "strategy": strategy_payload(env),
         "eval": {"own_hp_frac": own_frac, "enemy_hp_frac": enemy_frac},
         "max_refs": {
@@ -135,10 +138,29 @@ def env_fracs(env: "RwppDuelEnv") -> tuple[float, float]:
     return hp_fractions(env.state, env.own_max_ref, env.enemy_max_ref)
 
 
+def receipt_reasons(receipts: list[dict[str, Any]]) -> dict[str, int]:
+    """Histogram of rejection reasons over a list of receipts.
+
+    ``invalid`` is a single reward key, so a growing penalty says nothing about
+    *which* order was refused. Counting reasons here (and logging them) is what
+    turned "invalid went up" into an actual diagnosis. ``accepted`` receipts are
+    skipped; a receipt with no reason is bucketed as ``UNKNOWN``.
+    """
+
+    counts: dict[str, int] = {}
+    for receipt in receipts:
+        if receipt.get("accepted", True):
+            continue
+        reason = str(receipt.get("rejected_reason") or "UNKNOWN")
+        counts[reason] = counts.get(reason, 0) + 1
+    return counts
+
+
 __all__ = [
     "absorb_message",
     "build_step_info",
     "env_fracs",
+    "receipt_reasons",
     "send_step",
     "strategy_payload",
 ]

@@ -333,19 +333,40 @@ def test_restart_failure_does_not_kill_the_batch() -> None:
 # ---------------------------------------------------------------------------
 # 3. physics vs. pacing
 # ---------------------------------------------------------------------------
-def test_physics_ms_defaults_to_off() -> None:
-    """Existing runs must keep the historical "frame_ms is the physics delta"."""
+def test_physics_ms_defaults_to_real_time() -> None:
+    """``episode_ticks`` must mean game ticks, not "ticks x frame_ms".
+
+    The default used to be 0, i.e. ``frame_ms`` doubled as the engine's physics
+    delta. With the default ``frame_ms=2`` a 3600-tick episode simulated only
+    7.2 s of game time, so a 25-vs-25 battle could never finish and ``terminal``
+    measured exactly 0.000 over 100 PPO updates. Pinning the delta to 16 ms makes
+    ``episode_ticks=3600`` one real minute of game time.
+    """
 
     from ironzero.rwpp.config import RwppGameConfig
 
-    assert RwppGameConfig().physics_ms == 0
+    assert RwppGameConfig().physics_ms == 16
+
+
+def test_episode_ticks_become_real_game_seconds() -> None:
+    """16 ms/tick x 3600 ticks = 57.6 s; the old default simulated only 7.2 s."""
+
+    from ironzero.rwpp.config import RwppGameConfig
+
+    game = RwppGameConfig()
+    delta_ms = game.physics_ms or game.frame_ms
+    seconds = game.episode_ticks * delta_ms / 1000.0
+    assert seconds == pytest.approx(57.6)
+    # The point of the change: it is a *battle-length* episode, not a 7 s slice.
+    assert seconds > 30.0
+    assert game.episode_ticks * 2 / 1000.0 == 7.2  # what frame_ms=2 used to give
 
 
 def test_physics_ms_is_passed_to_the_game_only_when_requested() -> None:
     from ironzero.rwpp.process import _build_command_for_tests
 
     plain = _build_command_for_tests(physics_ms=0, frame_ms=2)
-    assert "--physics-ms" not in plain, "a default run must not change the command line"
+    assert "--physics-ms" not in plain, "physics_ms=0 keeps the legacy command line"
 
     pinned = _build_command_for_tests(physics_ms=16, frame_ms=2)
     assert "--physics-ms" in pinned
@@ -359,7 +380,8 @@ def test_train_cli_exposes_physics_ms() -> None:
 
     args = build_parser().parse_args(["--physics-ms", "16"])
     assert args.physics_ms == 16
-    assert build_parser().parse_args([]).physics_ms == 0
+    # The CLI default mirrors the config default (real-time physics).
+    assert build_parser().parse_args([]).physics_ms == 16
 
 
 # ---------------------------------------------------------------------------

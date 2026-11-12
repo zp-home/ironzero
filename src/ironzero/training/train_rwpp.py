@@ -81,9 +81,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--engagement", type=float, default=2.0, help="dense reward for closing distance to the enemy army")
     parser.add_argument("--frame-ms", type=int, default=2,
                         help="wall-clock ms per simulated frame: 16=real time, 2=~8x faster, 0=unpaced (too fast for the client)")
-    parser.add_argument("--physics-ms", type=int, default=0,
-                        help="pin the engine's simulated delta (e.g. 16) so --frame-ms only paces the wall clock; "
-                             "0 keeps the historical behaviour where --frame-ms is also the physics delta")
+    parser.add_argument("--physics-ms", type=int, default=16,
+                        help="pin the engine's simulated delta (16 = real time, so --ticks counts "
+                             "real game ticks); --frame-ms then only paces the wall clock")
     parser.add_argument("--vision-radius", type=float, default=260.0,
                         help="observation fog radius in map pixels (<=0 disables fog)")
     parser.add_argument("--runtime", default=str(DEFAULT_RUNTIME))

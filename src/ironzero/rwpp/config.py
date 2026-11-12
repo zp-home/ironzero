@@ -73,7 +73,17 @@ class RwppGameConfig:
     # historical behaviour where ``frame_ms`` is both the delta and the sleep
     # budget (16 ms = real time). Set it (e.g. 16) to keep a real-time simulation
     # delta while ``frame_ms`` paces the wall clock faster.
-    physics_ms: int = 0
+    #
+    # Default 16 (real time) rather than 0. This is a *bug fix*, not a tuning
+    # preference: with ``frame_ms = 2`` the engine advanced 2 ms per tick, so the
+    # default 3600-tick episode simulated only 3600 x 2 ms = **7.2 s** of game
+    # time. A 25-vs-25 battle cannot resolve in 7 s (measured: 24 vs 24 alive at
+    # the tick cap), so ``terminal`` was structurally unreachable -- it read
+    # exactly 0.000 over 100 PPO updates. Pinning the physics delta to real time
+    # makes ``episode_ticks`` mean what it says (3600 ticks = 57.6 s) and lets the
+    # game-over signal actually fire. ``--frame-ms`` keeps pacing the wall clock,
+    # so this costs no training throughput.
+    physics_ms: int = 16
     # Dense shaping: reward closing the distance to the enemy army (the skirmish
     # AI often starts far away, so pure hp-diff reward has no gradient early on).
     engagement_coef: float = 2.0

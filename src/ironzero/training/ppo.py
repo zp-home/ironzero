@@ -411,6 +411,15 @@ class PPOTrainer:
             for episode in completed:
                 for key, value in (episode.get("components") or {}).items():
                     components.setdefault(key, []).append(float(value))
+            # Aggregate *why* orders were refused. A non-zero ``invalid`` reward
+            # is the symptom; these counts are the diagnosis (e.g. a mask that
+            # lets the policy select a group whose units are all dead).
+            rejection_totals: dict[str, int] = {}
+            for episode in completed:
+                for reason, count in (episode.get("rejections") or {}).items():
+                    rejection_totals[reason] = (
+                        rejection_totals.get(reason, 0) + int(count)
+                    )
 
             recent_returns = [ep["return"] for ep in self._recent_episodes]
             recent_results = [ep.get("result") for ep in self._recent_episodes]
@@ -468,6 +477,7 @@ class PPOTrainer:
                 "reward_components": {
                     key: float(np.mean(values)) for key, values in components.items()
                 },
+                "rejections": rejection_totals,
                 "elapsed_s": round(time.time() - self.start_time, 2),
             }
             metrics["updates"].append(record)
@@ -494,6 +504,18 @@ class PPOTrainer:
                         elapsed_s=record["elapsed_s"],
                     )
                 )
+                if rejection_totals:
+                    # Only print when something was actually refused: a clean run
+                    # should not grow the log.
+                    print(
+                        "[train]   rejections: "
+                        + " ".join(
+                            f"{reason}={count}"
+                            for reason, count in sorted(
+                                rejection_totals.items(), key=lambda kv: -kv[1]
+                            )
+                        )
+                    )
             # ``eval_every == 0`` means "evaluate only on the final update".
             due = (
                 cfg.eval_every > 0 and update % cfg.eval_every == 0
