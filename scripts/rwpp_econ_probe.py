@@ -4,15 +4,18 @@
 Background
 ----------
 ``build_extractor`` / ``build_structure`` are implemented on the Java side via
-``CommandControllerCommand.setBuildWaypoint`` (verified: the class compiles and
-the bridge dispatches the action). Whether the *engine accepts* a build order
-depends on map/unit data that this repo does not control:
+``CommandControllerCommand.setBuildWaypoint``. Whether the *engine accepts* a
+build order depends on map/unit data:
 
-* The stock skirmish maps (e.g. ``[p2]Lake (2p)``) place the built-in ``builder``
-  unit, whose build menu does **not** include ``landFactory`` or ``extractor``.
-  Only ``combat_engineer`` lists those (see ``assets/units/combat_engineer``).
-* Therefore on a stock map an economy action is *correctly* rejected, and the
-  bridge must report that rejection honestly instead of a false "accepted".
+* Stock skirmish maps (e.g. ``[p2]Lake (2p)``) place the built-in ``builder``,
+  which **can** build ``extractor``, ``landFactory``, ``turret`` and friends --
+  see ``Builder.addSpecialActions`` in game-lib-src. An earlier revision of this
+  docstring claimed the opposite (that only ``combat_engineer`` lists them) and
+  that wrong claim led the training loop to be blamed for a bridge bug. The real
+  defect was in the bridge: it resolved ore *entities* from ``Unit.unitList``,
+  but resource pools are map terrain (``Map.resourcePoolPoints``), so
+  ``slot_id`` resolved to nothing and every build was aimed at map (0,0).
+  ``scripts/rwpp_econ_smoke.py`` now covers the accept path end to end.
 
 What this script asserts
 ------------------------
@@ -20,12 +23,12 @@ What this script asserts
    negative ``team_id``).
 2. The bridge never reports ``accepted=true`` for an order the engine then
    rejects (the "false positive receipt" bug).
-3. When the selected map *does* provide a capable builder, a build order is
+3. When the selected map provides a capable builder and ore, a build order is
    accepted end-to-end.
 
 Exit code 0 = wire protocol is clean AND receipts agree with the engine log.
-Exit code 3 = protocol clean but no capable builder on this map (expected on
-stock skirmish maps; not a failure of the bridge).
+Exit code 3 = protocol clean but the map had no usable ore/builder for the
+probes (informational, not a bridge failure).
 """
 
 from __future__ import annotations
@@ -194,10 +197,11 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         if not accepted:
-            print("ECONOMY PROBE PASS (protocol clean; no capable builder on this map)")
-            print("NOTE: stock skirmish maps place the built-in 'builder', whose build")
-            print("      menu lacks landFactory/extractor. Use a map that places")
-            print("      'combat_engineer' to exercise a successful build.")
+            print("ECONOMY PROBE PASS (protocol clean; this map offered no usable ore/build spot)")
+            print("NOTE: the built-in 'builder' on stock skirmish maps CAN build")
+            print("      extractor/landFactory. If nothing was accepted, check that the")
+            print("      bridge reports a non-empty 'resource_slots' and that a spot was")
+            print("      within building range; see scripts/rwpp_econ_smoke.py.")
             return 3
 
         print("ECONOMY PROBE PASS (build accepted end-to-end)")

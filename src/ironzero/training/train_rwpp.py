@@ -79,6 +79,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--engagement", type=float, default=2.0, help="dense reward for closing distance to the enemy army")
     parser.add_argument("--frame-ms", type=int, default=2,
                         help="wall-clock ms per simulated frame: 16=real time, 2=~8x faster, 0=unpaced (too fast for the client)")
+    parser.add_argument("--physics-ms", type=int, default=0,
+                        help="pin the engine's simulated delta (e.g. 16) so --frame-ms only paces the wall clock; "
+                             "0 keeps the historical behaviour where --frame-ms is also the physics delta")
     parser.add_argument("--vision-radius", type=float, default=260.0,
                         help="observation fog radius in map pixels (<=0 disables fog)")
     parser.add_argument("--runtime", default=str(DEFAULT_RUNTIME))
@@ -111,6 +114,7 @@ def build_game(args: argparse.Namespace) -> RwppGameConfig:
         unlock_ai=bool(args.unlock_ai),
         engagement_coef=float(args.engagement),
         frame_ms=max(0, int(args.frame_ms)),
+        physics_ms=max(0, int(args.physics_ms)),
         vision_radius=float(args.vision_radius),
     )
 
@@ -229,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
             "map_size_px": [game.map_width_px, game.map_height_px],
             "episode_ticks": game.episode_ticks,
             "frame_ms": game.frame_ms,
+            "physics_ms": game.physics_ms,
             "vision_radius": game.vision_radius,
             "units_per_team": micro.units_per_team,
             "max_entities": micro.max_entities,

@@ -9,6 +9,7 @@ import numpy as np
 
 from ironzero.env import MicroDuelEnv, MultiDiscreteSpace
 from ironzero.micro_config import DEFAULT_CONFIG
+from ironzero.mock_engine import ACTION_KINDS
 from ironzero.observations import (
     build_masks,
     encode_observation,
@@ -42,12 +43,17 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual(masks["kind"].shape, (DEFAULT_CONFIG.action_nvec[0],))
         self.assertEqual(masks["group"].shape, (DEFAULT_CONFIG.groups + 1,))
         self.assertEqual(masks["target"].shape, (DEFAULT_CONFIG.target_slots,))
-        # The five tactical orders are unconditional; the economy kinds are gated
-        # on an affordable builder, so the head is no longer all-True. The default
-        # mock army is tank-only, so exactly the tactical prefix is selectable.
+        # The five tactical orders plus ``noop`` are unconditional; the economy
+        # kinds are gated on an affordable builder, so the head is no longer
+        # all-True. The default mock army is tank-only, so exactly the tactical
+        # prefix and the trailing no-op are selectable.
         self.assertTrue(masks["kind"][:5].all())
-        self.assertEqual(int(masks["kind"].sum()), 5)
-        self.assertFalse(masks["kind"][5:].any())
+        self.assertTrue(masks["kind"][-1], "noop must always be selectable")
+        tactical = sum(1 for kind in ACTION_KINDS if kind in {
+            "move_group", "attack_move", "attack_target", "stop", "hold", "noop"
+        })
+        self.assertEqual(int(masks["kind"].sum()), tactical)
+        self.assertFalse(masks["kind"][5:-1].any())
         self.assertTrue(masks["group"].any())
         self.assertTrue(masks["target"].any())
         flat = flat_mask_vector(masks)
@@ -150,7 +156,10 @@ class EnvironmentTests(unittest.TestCase):
         for _ in range(20):
             action = sample_masked_action(info["masks"], rng)
             decoded = env.decode_action(action)
-            self.assertIn(decoded["kind"], {"move_group", "attack_move", "attack_target", "stop", "hold"})
+            self.assertIn(
+                decoded["kind"],
+                {"move_group", "attack_move", "attack_target", "stop", "hold", "noop"},
+            )
             if "unit_group" in decoded:
                 self.assertTrue(info["masks"]["group"][decoded["unit_group"]])
             _, _, terminated, truncated, info = env.step(action)

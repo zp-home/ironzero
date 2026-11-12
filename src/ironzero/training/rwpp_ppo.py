@@ -9,6 +9,7 @@ the next observation comes from the real engine.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,12 @@ class RwppPPOTrainer(PPOTrainer):
         micro = micro_config or self.game.micro_config()
         self.port_base = int(port_base)
         self.eval_port_base = int(eval_port_base)
+        # Background and final evaluation can overlap, so they must not share a
+        # bridge port. The pool must stay clear of the training envs' port range
+        # (``port_base`` .. ``port_base + num_envs``).
+        self.EVAL_PORT_POOL = 16
+        self._eval_port_cursor = 0
+        self._eval_port_lock = threading.Lock()
         cfg = config or PPOConfig()
         vec = VecRwppEnv(
             cfg.num_envs,
@@ -66,17 +73,48 @@ class RwppPPOTrainer(PPOTrainer):
     def _real_eval(self, trainer: PPOTrainer, policy: Any | None = None) -> dict[str, Any]:
         out_dir = Path(self.config.out_dir)
         pol = policy if policy is not None else trainer.policy
+        # Each evaluation gets its own block of bridge ports, one per parallel
+        # episode. Background evaluation (``async_eval``) can still be running
+        # when the final evaluation starts -- and both used to bind a single
+        # shared port. The second game then died with
+        # ``BindException: Address already in use``, the env raised
+        # "no observation from real game", and the whole run exited non-zero
+        # without writing ``rwpp_summary.json`` (this is exactly how the
+        # 2026-11-12 500-update run failed at its final evaluation).
+        episodes = max(1, int(self.config.eval_episodes))
+        port = self._reserve_eval_ports(episodes)
         return evaluate_rwpp_policy(
             pol,
             game=self.game,
-            episodes=self.config.eval_episodes,
+            episodes=episodes,
             micro_config=self.micro,
-            port_base=self.eval_port_base,
+            port_base=port,
             seed=70_000 + self.config.seed,
             device=trainer.device,
             update=getattr(self, "_current_update", None),
             report_path=out_dir / "eval_report.json",
+            parallel=episodes,
         )
+
+    def _reserve_eval_ports(self, count: int) -> int:
+        """Reserve ``count`` consecutive evaluation ports and return the first.
+
+        The cursor advances by the whole block, not by one: episodes within one
+        evaluation occupy ``first .. first+count-1``, so a +1 rotation would let
+        an overlapping background evaluation land inside the block already in
+        use by another one.
+        """
+
+        count = max(1, int(count))
+        with self._eval_port_lock:
+            if count > self.EVAL_PORT_POOL:
+                raise RuntimeError(
+                    f"eval_episodes={count} exceeds the {self.EVAL_PORT_POOL}-port "
+                    f"evaluation pool; raise EVAL_PORT_POOL or lower --eval-episodes"
+                )
+            first = self.eval_port_base + self._eval_port_cursor
+            self._eval_port_cursor = (self._eval_port_cursor + count) % self.EVAL_PORT_POOL
+            return first
 
     def close(self) -> None:
         super().close()

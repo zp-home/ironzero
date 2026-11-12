@@ -56,6 +56,8 @@ def compute_step_shaping(
     own_max_ref: float,
     enemy_max_ref: float,
     episode_components: dict[str, float],
+    previous_income_rate: float = 0.0,
+    previous_own_buildings: int = 0,
 ) -> StepShaping:
     """Build the per-step reward terms and adjudicate termination.
 
@@ -63,13 +65,44 @@ def compute_step_shaping(
     """
 
     economy_stats = message.get("global_state", {})
+    # ``bonus_build`` must be paid for a *completed building*, not for an
+    # accepted order. Paying per accepted receipt let a policy farm it outright:
+    # re-issuing ``build_extractor`` every decision returns accepted=true each
+    # time (the builder simply queues again), measured at +0.2/step over a whole
+    # episode. Counting the own-building increase instead is one-off per
+    # structure and cannot be farmed by repeating an order.
+    own_buildings = sum(
+        1 for unit in state.get("own_entities", []) if unit.get("is_building")
+    )
+    new_buildings = max(0, int(own_buildings) - int(previous_own_buildings))
+    # Income is a *rate*, and a level rate integrated over a 5000-decision
+    # episode would swamp the +/-1.0 terminal signal: at 18 credits/s the old
+    # ``extractor_reward * income/10`` paid ~0.9 every decision, i.e. ~4500 per
+    # episode. Reward the *growth* of income instead (a new extractor or an
+    # upgrade is a one-off step change in the rate), which is dense but does not
+    # accumulate, exactly like ``potential``.
+    # A terminal ``done`` message carries no ``global_state``, so a naive
+    # ``income or 0.0`` reads the rate as 0 and books a full -rate collapse on
+    # the last step (measured: -0.9 for an active extractor). Only treat the
+    # reading as real when the bridge actually reported it; otherwise carry the
+    # previous rate forward so the terminal step pays nothing for economy.
+    if "income" in economy_stats:
+        income_rate = float(economy_stats.get("income") or 0.0)
+    else:
+        income_rate = float(previous_income_rate)
+    income_delta = income_rate - float(previous_income_rate)
     components: dict[str, float] = {
         "potential": float(micro.potential_coef) * (potential - previous_potential),
         "engagement": float(game.engagement_coef) * (previous_distance - distance),
         "strategy": strategy_component,
         "kills": float(game.kill_bonus) * max(0, previous_enemy_alive - enemy_alive),
         "losses": -float(game.loss_penalty) * max(0, previous_own_alive - own_alive),
-        "income": float(micro.extractor_reward) * float(economy_stats.get("income", 0.0) / 10.0), "bonus_build": 5.0 if any(r.get("kind") in {"build_extractor", "build_structure"} and r.get("accepted", False) for r in receipts) else 0.0,
+        "income": float(micro.extractor_reward) * income_delta / 10.0,
+        # A fixed +5.0 dwarfed the +/-1.0 terminal reward, so once building
+        # actually worked the cheapest build would dominate the return and the
+        # policy would farm extractors instead of learning to win. Tie it to the
+        # game's own economy knob and keep it below a win.
+        "bonus_build": float(game.build_bonus) * float(new_buildings),
         "invalid": -float(game.invalid_penalty) * sum(1 for r in receipts if not r.get("accepted", True)),
         "idle": (
             -float(game.idle_penalty)

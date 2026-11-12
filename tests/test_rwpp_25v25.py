@@ -147,7 +147,7 @@ class MicroConfig25Tests(unittest.TestCase):
         # Five heads; the kind head spans the whole ACTION_KINDS vocabulary.
         self.assertEqual(len(cfg.action_nvec), 5)
         self.assertEqual(cfg.action_nvec, (len(ACTION_KINDS), cfg.groups + 1, 8, 8, 26))
-        self.assertEqual(cfg.action_nvec[0], 10)
+        self.assertEqual(cfg.action_nvec[0], len(ACTION_KINDS))
         self.assertEqual(cfg.max_entities, 25)
         self.assertEqual(cfg.target_slots, 26)
 
@@ -197,13 +197,14 @@ class Observation25Tests(unittest.TestCase):
         self.assertEqual(int(masks["target"].sum()), 26)  # 25 enemies + no-target
         self.assertTrue(bool(masks["target"][-1]))
         # Bridge units carry no builder and no funds, so the kind head exposes the
-        # five tactical orders and gates the four economy kinds. The mask must
-        # still be sized to the full action vocabulary.
+        # five tactical orders plus the always-available ``noop``, and gates the
+        # four economy kinds. The mask must still be sized to the full action
+        # vocabulary.
         self.assertEqual(masks["kind"].shape, (cfg.action_nvec[0],))
         self.assertEqual(masks["kind"].shape, (len(ACTION_KINDS),))
-        self.assertEqual(int(masks["kind"].sum()), 5)
         self.assertTrue(bool(masks["kind"][:5].all()))
-        self.assertFalse(bool(masks["kind"][5:].any()))
+        self.assertTrue(bool(masks["kind"][-1]), "noop must always be selectable")
+        self.assertFalse(bool(masks["kind"][5:-1].any()))
 
     def test_masks_from_mock_engine_still_derive_groups_from_group_id(self) -> None:
         # Offline mock units carry group_id: the mask must reflect only the

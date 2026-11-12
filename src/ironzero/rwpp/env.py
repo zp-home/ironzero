@@ -75,6 +75,14 @@ class RwppDuelEnv:
         self.last_tick = 0
         self.last_potential = 0.0
         self.last_distance = 0.0
+        # Previous economy rate, so the ``income`` reward term can pay for the
+        # *growth* of income (a new extractor / an upgrade) instead of paying
+        # the absolute rate on every one of thousands of decisions.
+        self.last_income_rate = 0.0
+        # Previous own-building count: the build reward is paid for a *finished*
+        # structure, never for an accepted order (which a policy can repeat
+        # every decision to farm reward).
+        self.last_own_buildings = 0
         self.previous_own_alive = 0
         self.previous_enemy_alive = 0
         self.episode_components: dict[str, float] = {}
@@ -114,6 +122,12 @@ class RwppDuelEnv:
         self.last_distance = army_distance_norm(
             self.state, float(np.hypot(self.micro.map_width, self.micro.map_height))
         )
+        self.last_income_rate = float(
+            (self.state.get("global_state") or {}).get("income") or 0.0
+        )
+        self.last_own_buildings = sum(
+            1 for unit in self.state.get("own_entities", []) if unit.get("is_building")
+        )
         self.previous_own_alive = sum(
             1 for unit in self.state.get("own_entities", []) if float(unit.get("hp") or 0.0) > 0.0
         )
@@ -151,6 +165,8 @@ class RwppDuelEnv:
         self.episode_steps += 1
         previous_potential = float(self.last_potential)
         previous_distance = float(self.last_distance)
+        previous_income_rate = float(self.last_income_rate)
+        previous_own_buildings = int(self.last_own_buildings)
         previous_own_alive = int(self.previous_own_alive)
         previous_enemy_alive = int(self.previous_enemy_alive)
         receipts_before = len(self.receipts)
@@ -211,6 +227,8 @@ class RwppDuelEnv:
             own_max_ref=self.own_max_ref,
             enemy_max_ref=self.enemy_max_ref,
             episode_components=self.episode_components,
+            previous_income_rate=previous_income_rate,
+            previous_own_buildings=previous_own_buildings,
         )
         components = shaping.components
         reward = shaping.reward
@@ -220,6 +238,15 @@ class RwppDuelEnv:
             self.last_result = shaping.last_result
         self.last_potential = potential
         self.last_distance = distance
+        # A terminal ``done`` message has no ``global_state``; keep the last
+        # known rate instead of resetting it to 0, otherwise the next step books
+        # a phantom -rate "economy collapse".
+        state_global = self.state.get("global_state") or {}
+        if "income" in state_global:
+            self.last_income_rate = float(state_global.get("income") or 0.0)
+        self.last_own_buildings = sum(
+            1 for unit in self.state.get("own_entities", []) if unit.get("is_building")
+        )
         self.previous_own_alive = own_alive
         self.previous_enemy_alive = enemy_alive
         if terminated or truncated:

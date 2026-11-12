@@ -69,6 +69,11 @@ class RwppGameConfig:
     # line only when set, so legacy invocations stay byte-identical.
     win_mode: str = ""  # e.g. "annihilation" -> --win-mode annihilation
     unlock_ai: bool = False  # -> --unlock-ai
+    # Fixed engine frame delta, independent of ``frame_ms`` pacing. ``0`` keeps the
+    # historical behaviour where ``frame_ms`` is both the delta and the sleep
+    # budget (16 ms = real time). Set it (e.g. 16) to keep a real-time simulation
+    # delta while ``frame_ms`` paces the wall clock faster.
+    physics_ms: int = 0
     # Dense shaping: reward closing the distance to the enemy army (the skirmish
     # AI often starts far away, so pure hp-diff reward has no gradient early on).
     engagement_coef: float = 2.0
@@ -81,6 +86,11 @@ class RwppGameConfig:
     loss_penalty: float = 0.25
     invalid_penalty: float = 0.05
     idle_penalty: float = 0.02
+    # One-off reward for an accepted economy build (extractor / factory). Kept
+    # well under the +/-1.0 terminal reward: an accepted build used to be worth
+    # a hard-coded +5.0, which -- once the bridge actually made building work --
+    # would pay more than winning and turn the policy into an extractor farmer.
+    build_bonus: float = 0.20
     log_dir: Path = REPO_ROOT / "runs" / "_rwpp_ppo"
     env_overrides: dict[str, str] = field(default_factory=dict)
 

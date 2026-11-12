@@ -29,6 +29,14 @@ ACTION_KINDS: tuple[str, ...] = (
     "produce_unit",
     "upgrade_building",
     "repair_target",
+    # ``noop`` issues no order at all. It exists because construction and unit
+    # production take hundreds of ticks of *uninterrupted* progress, and every
+    # real order cancels the in-flight one. Without a no-op the policy has to
+    # issue ``hold``/``stop`` between build orders and the factory is cancelled
+    # before it finishes -- measured: a landFactory completes in 191 ticks when
+    # the next decisions are no-ops, and never when they are ``hold``.
+    # Appended last so the existing head indices (and their weights) stay put.
+    "noop",
 )
 
 TANK_TYPE_ID = 1

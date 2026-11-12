@@ -8,7 +8,11 @@ import com.corrodinggames.rts.game.units.AttackMode;
 import com.corrodinggames.rts.game.units.OrderableUnit;
 import com.corrodinggames.rts.game.units.Unit;
 import com.corrodinggames.rts.game.units.UnitType;
+import com.corrodinggames.rts.game.units.UnitTypeInterface;
 import com.corrodinggames.rts.game.units.Waypoint;
+import com.corrodinggames.rts.game.units.actions.ActionId;
+import com.corrodinggames.rts.game.units.actions.SpecialAction;
+import com.corrodinggames.rts.game.units.buildings.FactoryInterface;
 import com.corrodinggames.rts.gameFramework.CommandControllerCommand;
 import com.eclipsesource.json.Json;
 import com.eclipsesource.json.JsonArray;
@@ -44,11 +48,26 @@ import java.util.Locale;
  *   --unlock-ai                      (default off: clear Unit.aiLimitedUse on the
  *       enemy AI teams and enable AI.aggressiveMode so map-placed units attack)
  *   --ticks bounds simulated frames (1 frame = 1 tick; 60 ticks = 1 s).
- *   --frame-ms is a wall-clock pacing budget only; it does not change the horizon.
+ *   --frame-ms is the wall-clock pacing budget; by default it is *also* the
+ *       engine's frame delta, so 16 = real time and 2 = ~8x faster.
+ *   --physics-ms fixes the engine delta independently of --frame-ms, so an
+ *       episode can keep a real-time simulation delta while the wall clock runs
+ *       unpaced or fast. Omitted = old behaviour (delta == frame-ms).
  */
 public final class IronZeroBridge implements ServerExtension {
     private static final int DECISION_INTERVAL = 10;
     private static final int FRAME_PERIOD_MILLIS = 16;
+    /**
+     * Engine physics delta in milliseconds; {@code 0} means "use {@code frameMs}".
+     *
+     * <p>By default the physics delta stays exactly what it has always been
+     * ({@code frameMs}), so behaviour is bit-identical to previous builds. Passing
+     * {@code --physics-ms N} decouples the two: the engine then always advances by
+     * N and {@code frameMs} only paces the wall clock. That is a <em>semantic</em>
+     * change (an episode of {@code --ticks} ticks covers a different amount of
+     * simulated game time), so it is opt-in rather than a silent default.
+     */
+    private int physicsMs = 0;
     // Annihilation win-mode grace window: the map load/spawn settles during the
     // first simulated ticks, so unit counts are not authoritative yet.
     private static final int ANNIHILATION_GRACE_TICKS = 30;
@@ -82,6 +101,8 @@ public final class IronZeroBridge implements ServerExtension {
     // factory/builder as defeated, so result detection must bypass it).
     private String winMode = "native";
     private boolean unlockAi = false;
+    /** ``--debug-build``: trace every gate that rejects a build order. */
+    private boolean debugBuild = false;
     // Game-over plumbing: the native engine knows when the battle is decided
     // (TriggerEngine win/lose objectives and Team defeat checks). The bridge
     // polls that state every frame and reports it to the RL environment; it is
@@ -128,10 +149,23 @@ public final class IronZeroBridge implements ServerExtension {
         sendHello();
         int frames = 0;
         int lastSentTick = -1;
+        // Physics vs. pacing. `frameMs` historically played three roles at once:
+        // the engine's time-scale argument, the engine's per-frame elapsed-ms
+        // argument, and the wall-clock sleep budget. Measured on IronZero25 with
+        // zero client actions, changing only this number changes the battle
+        // (own_hp 1960 at 2 ms vs 690 at 16 ms over the same 3600 ticks), so it
+        // is physics, not just speed: `--ticks` is a count of frames, and each
+        // frame advances `frameMs` milliseconds of game time.
+        // `--physics-ms` pins both engine arguments so an episode always simulates
+        // the same number of game-milliseconds, while `frameMs` only paces the
+        // wall clock.
+        final int physics = physicsMs > 0 ? physicsMs : frameMs;
+        final int physicsElapsedMs = physicsMs > 0 ? physicsMs : frameMs;
+        long nextWake = System.nanoTime();
         while (!stop && context.isRunning() && frames < maxFrames) {
             context.pump();
             try {
-                engine.updateFrameInternal(1.0f, frameMs);
+                engine.updateFrameInternal(1.0f, physicsElapsedMs);
             } catch (Throwable failure) {
                 System.out.println("[ironzero] frame error: " + failure);
                 break;
@@ -160,11 +194,21 @@ public final class IronZeroBridge implements ServerExtension {
                 break;
             }
             if (frameMs > 0) {
-                try {
-                    Thread.sleep(frameMs);
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    break;
+                // Absolute deadlines instead of a fixed sleep per frame: the sleep
+                // itself overshoots ~0.5 ms, and per-frame overshoot accumulated
+                // into the wall clock (measured +1.2 ms per 1 ms budget). Sleeping
+                // until "start + n*frameMs" keeps the average pacing honest.
+                nextWake += frameMs * 1_000_000L;
+                long waitNanos = nextWake - System.nanoTime();
+                if (waitNanos > 0L) {
+                    try {
+                        long millis = waitNanos / 1_000_000L;
+                        int nanos = (int) (waitNanos % 1_000_000L);
+                        Thread.sleep(millis, nanos);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
                 }
             }
         }
@@ -194,6 +238,10 @@ public final class IronZeroBridge implements ServerExtension {
                 // Wall-clock budget per simulated frame: 16 ms = real time (60 fps),
                 // 0-4 ms lets the headless engine run several times faster for RL.
                 frameMs = Math.max(0, Integer.parseInt(args.get(i + 1)));
+            } else if ("--physics-ms".equals(argument) && i + 1 < args.size()) {
+                // Fixed simulation delta, independent of the pacing budget.
+                // Omitted keeps the historical "delta == frameMs" behaviour.
+                physicsMs = Math.max(1, Integer.parseInt(args.get(i + 1)));
             } else if ("--win-mode".equals(argument) && i + 1 < args.size()) {
                 String requested = args.get(i + 1).trim().toLowerCase(Locale.ROOT);
                 if ("annihilation".equals(requested) || "native".equals(requested)) {
@@ -204,6 +252,8 @@ public final class IronZeroBridge implements ServerExtension {
                 }
             } else if ("--unlock-ai".equals(argument)) {
                 unlockAi = true;
+            } else if ("--debug-build".equals(argument)) {
+                debugBuild = true;
             }
         }
     }
@@ -255,6 +305,14 @@ public final class IronZeroBridge implements ServerExtension {
         int enemyAlive = 0;
         double ownHp = 0.0;
         double enemyHp = 0.0;
+        // One pass over the unit list builds the entity payloads *and* the
+        // counters. The previous version called resourceSlots() (which sorts the
+        // map's ore pools and allocates a fresh list) plus slotExtractorLevel()
+        // (another full scan) on every observation, so a 25v25 map paid several
+        // extra O(units x pools) scans ten times per decision -- pure bridge CPU
+        // that never reached the policy.
+        List<double[]> slots = resourceSlots();
+        int[] slotLevels = new int[slots.size()];
         for (Object item : Unit.unitList) {
             if (!(item instanceof Unit)) {
                 continue;
@@ -278,6 +336,12 @@ public final class IronZeroBridge implements ServerExtension {
                 own.add(payload);
                 ownAlive++;
                 ownHp += unit.hp;
+                // Fold this own building into the resource-slot occupancy the
+                // observation reports, instead of re-scanning the unit list once
+                // per slot afterwards.
+                if (slotLevels.length > 0 && unit.isBuilding() && unit.placeOnlyOnResPool()) {
+                    markSlotLevel(unit, slots, slotLevels);
+                }
             } else {
                 enemies.add(payload);
                 if (isEnemyUnit(player, unit)) {
@@ -296,7 +360,7 @@ public final class IronZeroBridge implements ServerExtension {
                 + ",\"observation_schema_version\":\"1\","
                 + "\"global_state\":{\"unit_count\":" + alive + ",\"building_count\":" + buildings + ","
                 + "\"funds\":" + fmt(player != null ? player.credits : 0.0) + ","
-                + "\"income\":0.0,"
+                + "\"income\":" + fmt(ownIncome()) + ","
                 + "\"army_value\":0.0,\"visible_enemy_value\":0.0,\"kills\":0,\"losses\":0,"
                 + "\"own_alive\":" + ownAlive + ",\"enemy_alive\":" + enemyAlive + ","
                 + "\"own_hp\":" + fmt(ownHp) + ",\"enemy_hp\":" + fmt(enemyHp) + ","
@@ -304,6 +368,7 @@ public final class IronZeroBridge implements ServerExtension {
                 + "\"own_entities\":[" + String.join(",", own) + "],"
                 + "\"visible_enemy_entities\":[" + String.join(",", enemies) + "],"
                 + "\"remembered_enemies\":[],\"local_maps\":{},"
+                + "\"resource_slots\":" + resourceSlotsJson(slots, slotLevels) + ","
                 + "\"masks\":{\"action_mask\":[],\"unit_group_mask\":[],\"target_mask\":[],\"position_mask\":[]},"
                 + "\"reward\":0.0,\"result\":" + resultJson + ",\"terminated\":" + terminated
                 + ",\"truncated\":false,"
@@ -750,6 +815,20 @@ public final class IronZeroBridge implements ServerExtension {
                 // rejections, but the first is a permanent capability gap.
                 actionOutcomes.add(built > 0 ? null : "ACTION_MASKED");
                 continue;
+            } else if ("produce_unit".equals(kind)) {
+                // Factory production. The factory is named by entity id; when the
+                // policy leaves it out (or names a dead unit) the nearest own
+                // factory in the selected group is used instead.
+                long factoryId = action.getLong("factory_entity_id", -1L);
+                String unitTypeName = action.getString("unit_type", "tank");
+                actionOutcomes.add(produceUnit(factoryId, unitTypeName) ? null : "ACTION_MASKED");
+                continue;
+            } else if ("upgrade_building".equals(kind)) {
+                // Extractor / factory tier upgrade: the engine exposes it as the
+                // building's current build action id.
+                long buildingId = action.getLong("building_entity_id", -1L);
+                actionOutcomes.add(upgradeBuilding(buildingId) ? null : "ACTION_MASKED");
+                continue;
             } else if ("repair_target".equals(kind)) {
                 long targetId = action.getLong("target_entity_id", -1L);
                 Unit target = findUnitById(targetId);
@@ -760,6 +839,14 @@ public final class IronZeroBridge implements ServerExtension {
                 command = engine.commandController.createCommandForTeam(engine.playerTeam);
                 addOwnOrderableUnits(command, unitGroup);
                 command.setRepairWaypoint(target);
+            } else if ("noop".equals(kind)) {
+                // Explicit "do nothing". Construction and production need many
+                // ticks of uninterrupted progress; every order cancels the
+                // in-flight one, so the policy must be able to skip a decision.
+                // A no-op dispatches no command at all (an empty action list is
+                // treated the same way).
+                actionOutcomes.add(null);
+                continue;
             } else {
                 // Unknown kind: name it explicitly instead of a generic mask error.
                 actionOutcomes.add("INVALID_MESSAGE");
@@ -804,19 +891,152 @@ public final class IronZeroBridge implements ServerExtension {
     }
 
     /**
-     * Resolve a policy-side unit-type name to the game's {@link UnitType}.
-     * Returns {@code null} for unknown names so the caller can reject cleanly
-     * instead of throwing inside the simulation loop.
+     * Resolve a policy-side unit-type name to the game's type descriptor.
+     *
+     * <p>Uses {@code UnitType.findUnitType}, which resolves both the built-in
+     * enum constants (case-insensitively) and units contributed by mods /
+     * custom unit definitions. The previous implementation called
+     * {@code UnitType.valueOf}, so anything that was not an exact enum constant
+     * -- including every custom unit -- resolved to {@code null} and the order
+     * was rejected before it reached the engine.
      */
-    private UnitType resolveUnitType(String name) {
+    private UnitTypeInterface resolveUnitType(String name) {
         if (name == null || name.isEmpty()) {
             return null;
         }
         try {
-            return UnitType.valueOf(name);
-        } catch (IllegalArgumentException unknown) {
+            return UnitType.findUnitType(name);
+        } catch (RuntimeException unknown) {
             return null;
         }
+    }
+
+    /**
+     * Queue one unit at an own factory ({@code produce_unit}).
+     *
+     * <p>The engine's production path is: pick the factory's
+     * {@link SpecialAction} for the requested type
+     * ({@code Factory.findActionForUnitType}), then issue it as a command whose
+     * {@code actionId} names that action. {@code Factory.executeSpecialAction}
+     * routes the command into {@code FactoryBuildQueue.queueOrCancel}, which
+     * charges the price and enqueues the build.
+     *
+     * <p>Returns false when the type is unknown, the factory is missing, or the
+     * factory cannot queue it (tech-locked, unaffordable, unit cap) so the
+     * receipt reports a rejection instead of a phantom success.
+     */
+    private boolean produceUnit(long factoryId, String unitTypeName) {
+        UnitTypeInterface unitType = resolveUnitType(unitTypeName);
+        if (unitType == null) {
+            return false;
+        }
+        OrderableUnit factory = findOwnFactory(factoryId);
+        if (factory == null) {
+            return false;
+        }
+        SpecialAction action;
+        try {
+            action = factory.findActionForUnitType(unitType);
+        } catch (RuntimeException failure) {
+            return false;
+        }
+        if (action == null) {
+            // Not in this factory's build menu (e.g. a T2 unit at a T1 factory).
+            return false;
+        }
+        try {
+            if (!action.isAvailableForUnit(factory) || !action.canAffordForUnit(factory, false)) {
+                return false;
+            }
+        } catch (RuntimeException failure) {
+            return false;
+        }
+        CommandControllerCommand command =
+                engine.commandController.createCommandForTeam(engine.playerTeam);
+        command.addUnit(factory);
+        command.setActionId(action.getActionId());
+        return true;
+    }
+
+    /**
+     * Upgrade an own building to its next tier ({@code upgrade_building}).
+     *
+     * <p>Rusted Warfare models upgrades as a build-queue item whose action id is
+     * the building's current {@code getBuildActionId()} (T1 extractor -> T2 ->
+     * T3, T1 factory -> T2). The action lives in the building's own special
+     * action list, so the same command path used for production applies.
+     */
+    private boolean upgradeBuilding(long buildingId) {
+        Unit building = findUnitById(buildingId);
+        if (building == null || !(building instanceof OrderableUnit)) {
+            return false;
+        }
+        if (building.team == null || building.team.teamId != engine.playerTeam.teamId) {
+            return false;
+        }
+        ActionId upgradeId;
+        try {
+            upgradeId = building.getBuildActionId();
+        } catch (RuntimeException failure) {
+            return false;
+        }
+        if (upgradeId == null || !SpecialAction.isRealActionId(upgradeId)) {
+            // Already at the top tier, or this building type has no upgrade.
+            return false;
+        }
+        OrderableUnit orderable = (OrderableUnit) building;
+        SpecialAction action;
+        try {
+            action = orderable.getSpecialAction(upgradeId);
+        } catch (RuntimeException failure) {
+            return false;
+        }
+        if (action == null) {
+            return false;
+        }
+        try {
+            if (!action.isAvailableForUnit(orderable) || !action.canAffordForUnit(orderable, false)) {
+                return false;
+            }
+        } catch (RuntimeException failure) {
+            return false;
+        }
+        CommandControllerCommand command =
+                engine.commandController.createCommandForTeam(engine.playerTeam);
+        command.addUnit(orderable);
+        command.setActionId(upgradeId);
+        return true;
+    }
+
+    /**
+     * Own factory for {@code factoryId}; when the id is absent or stale, the
+     * first own factory is used so a policy that only says "produce a tank" is
+     * not rejected for omitting an entity id.
+     */
+    private OrderableUnit findOwnFactory(long factoryId) {
+        OrderableUnit fallback = null;
+        for (Object item : Unit.unitList) {
+            if (!(item instanceof OrderableUnit)) {
+                continue;
+            }
+            OrderableUnit unit = (OrderableUnit) item;
+            if (unit.removed || unit.hp <= 0.0f) {
+                continue;
+            }
+            if (unit.team == null || unit.team.teamId != engine.playerTeam.teamId) {
+                continue;
+            }
+            if (!(unit instanceof FactoryInterface)) {
+                continue;
+            }
+            if (factoryId >= 0 && unit.id == factoryId) {
+                return unit;
+            }
+            if (fallback == null) {
+                fallback = unit;
+            }
+        }
+        return factoryId >= 0 ? null : fallback;
     }
 
     /**
@@ -853,12 +1073,14 @@ public final class IronZeroBridge implements ServerExtension {
      * accepted and silently dropped by the engine a frame later.
      */
     private int buildWithBuilders(int unitGroup, String unitTypeName, float x, float y) {
-        UnitType unitType = resolveUnitType(unitTypeName);
+        UnitTypeInterface unitType = resolveUnitType(unitTypeName);
         if (unitType == null) {
+            debugBuild(-1, "resolveUnitType=null", unitTypeName);
             return 0;
         }
         // A locked unit type cannot be built by anyone right now.
         if (unitType.isLocked()) {
+            debugBuild(-1, "unitType.isLocked", unitTypeName);
             return 0;
         }
         int ordered = 0;
@@ -880,24 +1102,55 @@ public final class IronZeroBridge implements ServerExtension {
                 continue;
             }
             if (!unit.canQueueAction(unitType, false)) {
+                debugBuild(unit.id, "canQueueAction=false", unitTypeName);
                 continue;
             }
-            // ``canQueueAction`` only reflects the build menu. Whether the spot
-            // itself is legal (terrain, range, occupancy) is decided by
+            // The tech level is not a constant: ``SpecialActionBuild`` for an
+            // extractor is techLevel 1, and ``getSpecialAction(type, level,
+            // ...)`` matches the level exactly. Passing 0 (the previous value)
+            // made every build waypoint fail validation, so no build ever
+            // reached the engine. Resolve the action first and reuse its level,
+            // which is exactly what the built-in AI does in ``Base.buildBuilding``.
+            SpecialAction buildAction;
+            try {
+                buildAction = unit.getSpecialAction(unitType, false);
+            } catch (RuntimeException failure) {
+                continue;
+            }
+            if (buildAction == null) {
+                continue;
+            }
+            int techLevel = buildAction.getTechLevel();
+            // ``canQueueAction`` only reflects the build menu. Whether the
+            // order is legal (availability, affordability) is decided by
             // ``isValidNewWaypoint``; without this probe the engine drops the
             // order one frame later and we would report a false "accepted".
             Waypoint probe = new Waypoint();
-            probe.setBuildTo(x, y, unitType, 0);
+            probe.setBuildTo(x, y, unitType, techLevel);
             if (!unit.isValidNewWaypoint(probe, false)) {
+                debugBuild(unit.id, "isValidNewWaypoint=false", unitTypeName);
                 continue;
             }
             CommandControllerCommand command =
                     engine.commandController.createCommandForTeam(engine.playerTeam);
             command.addUnit(unit);
-            command.setBuildWaypoint(x, y, unitType, 0);
+            command.setBuildWaypoint(x, y, unitType, techLevel);
             ordered++;
         }
+        if (ordered == 0) {
+            debugBuild(-1, "no builder passed every gate", unitTypeName);
+        } else {
+            debugBuild(-1, "ordered=" + ordered + " at (" + (int) x + "," + (int) y + ")", unitTypeName);
+        }
         return ordered;
+    }
+
+    /** Build-path tracing, enabled with ``--debug-build``. */
+    private void debugBuild(long unitId, String what, String unitTypeName) {
+        if (debugBuild) {
+            System.out.println("[ironzero] build " + unitTypeName
+                    + " unit=" + unitId + " : " + what);
+        }
     }
 
     /**
@@ -913,34 +1166,245 @@ public final class IronZeroBridge implements ServerExtension {
         return slots.get(Math.floorMod(slotId, slots.size()));
     }
 
+    /**
+     * Positions of the map's ore pools, in map pixels, ordered <b>nearest to our
+     * own base first</b> so a policy's {@code slot_id} always names a sensible
+     * spot.
+     *
+     * <p>Resource pools are <b>terrain</b> in Rusted Warfare 1.15, not units:
+     * {@code MapLayer} appends every tile carrying the {@code res_pool} property
+     * to {@code Map.resourcePoolPoints} (see {@code MapLayer.java}), and the
+     * built-in AI finds ore exclusively through that list
+     * ({@code AI.getNearestResourcePoint}). They never appear in
+     * {@code Unit.unitList}, so the earlier implementation -- which scanned
+     * units and asked {@code OrderableUnit.isResourceUnit} -- returned an empty
+     * list on every stock map. That made {@code build_extractor} fall back to
+     * map coordinate (0,0), which the engine rejects, so no build ever
+     * succeeded and the economy reward stayed at zero.
+     *
+     * <p>Ordering used to be tile-row major (smallest y first). On a north/south
+     * skirmish map that puts the <i>enemy's</i> half first -- measured on
+     * {@code [p2]Lake (2p)}: our base sits at (990, 2010) while slot 0 was
+     * (1130, 390), next to the enemy base at (1230, 210). A policy that emitted
+     * {@code slot_id = 0} therefore marched its builder across the map into the
+     * enemy base and lost it. Sorting by distance to our own base keeps the
+     * order stable (both the map and our starting base are fixed) while making
+     * {@code slot_id = 0} the pool right next to home.
+     */
     private java.util.List<double[]> resourceSlots() {
         java.util.List<double[]> slots = new java.util.ArrayList<>();
-        OrderableUnit probe = firstOwnBuilder();
+        if (engine == null || engine.map == null) {
+            return slots;
+        }
         try {
-            for (Object item : Unit.unitList) {
-                if (!(item instanceof Unit)) {
-                    continue;
-                }
-                Unit unit = (Unit) item;
-                if (unit.removed || unit.hp <= 0.0f) {
-                    continue;
-                }
-                if (unit.team != null || unit instanceof OrderableUnit) {
-                    continue;
-                }
-                // Trees/rocks are also unowned map features, so an ownership
-                // test alone is not enough: ask the game whether this entity is
-                // actually reclaimable ore. Without a builder we cannot ask, and
-                // we refuse to guess rather than sending builders at trees.
-                if (probe == null || !probe.isResourceUnit(unit)) {
-                    continue;
-                }
-                slots.add(new double[]{unit.x, unit.y});
+            java.util.List<android.graphics.Point> points = engine.map.resourcePoolPoints;
+            if (points == null || points.isEmpty()) {
+                return slots;
+            }
+            for (android.graphics.Point tile : points) {
+                // Centred pixel coordinate of the tile: the extractor must sit on
+                // the pool, and tileToPixelCoordsCentered is the engine's own
+                // convention for "the point inside this tile".
+                engine.map.tileToPixelCoordsCentered(tile.x, tile.y);
+                slots.add(new double[]{engine.map.fogRevealTileX, engine.map.fogRevealTileY});
+            }
+            double[] anchor = ownBaseAnchor();
+            if (anchor != null) {
+                // Stable sort on a static map with a static base: the same map
+                // always yields the same slot ids, so masks and rewards stay
+                // consistent across decisions and episodes.
+                java.util.Collections.sort(slots, (left, right) -> Double.compare(
+                        distanceSquared(left, anchor), distanceSquared(right, anchor)));
+            } else {
+                // No own base yet (pre-spawn observation): keep the previous
+                // deterministic order instead of an arbitrary one.
+                java.util.Collections.sort(slots, (left, right) -> {
+                    int byY = Double.compare(left[1], right[1]);
+                    return byY != 0 ? byY : Double.compare(left[0], right[0]);
+                });
             }
         } catch (RuntimeException ignored) {
             return slots;
         }
         return slots;
+    }
+
+    private static double distanceSquared(double[] point, double[] anchor) {
+        double dx = point[0] - anchor[0];
+        double dy = point[1] - anchor[1];
+        return dx * dx + dy * dy;
+    }
+
+    /**
+     * Our own base position: the first own factory building (the command centre
+     * reports {@code isFactoryBuilding()}), else the centroid of our units.
+     * Returns {@code null} when we own nothing yet.
+     */
+    private double[] ownBaseAnchor() {
+        double sumX = 0.0;
+        double sumY = 0.0;
+        int count = 0;
+        for (Object item : Unit.unitList) {
+            if (!(item instanceof Unit)) {
+                continue;
+            }
+            Unit unit = (Unit) item;
+            if (unit.removed || unit.hp <= 0.0f) {
+                continue;
+            }
+            if (unit.team == null || unit.team.teamId != engine.playerTeam.teamId) {
+                continue;
+            }
+            if (unit.isFactoryBuilding()) {
+                // The command centre is unique: prefer it outright so the anchor
+                // never drifts as outlying factories get built.
+                return new double[]{unit.x, unit.y};
+            }
+            sumX += unit.x;
+            sumY += unit.y;
+            count++;
+        }
+        return count > 0 ? new double[]{sumX / count, sumY / count} : null;
+    }
+
+    /**
+     * True when an own extractor already sits on this pool, so the policy is not
+     * rewarded twice for the same spot and the reported occupancy is honest.
+     */
+    private int slotExtractorLevel(double[] slot) {
+        if (slot == null) {
+            return 0;
+        }
+        for (Object item : Unit.unitList) {
+            if (!(item instanceof Unit)) {
+                continue;
+            }
+            Unit unit = (Unit) item;
+            if (unit.removed || unit.hp <= 0.0f || !unit.isBuilding()) {
+                continue;
+            }
+            if (unit.team == null || unit.team.teamId != engine.playerTeam.teamId) {
+                continue;
+            }
+            if (!unit.placeOnlyOnResPool()) {
+                continue;
+            }
+            double dx = unit.x - slot[0];
+            double dy = unit.y - slot[1];
+            if (dx * dx + dy * dy <= 40.0 * 40.0) {
+                try {
+                    return Math.max(1, Math.min(3, unit.getTechLevel()));
+                } catch (RuntimeException ignored) {
+                    return 1;
+                }
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * {@code resource_slots} array for the observation message.
+     *
+     * <p>Without this the policy cannot know where it is allowed to mine, and the
+     * Python encoder's {@code extractor_slots_owned} feature stays 0 forever.
+     * {@code owner_team} is only emitted for an occupied slot: claiming team 0 on
+     * an empty pool would read as "somebody already built here".
+     */
+    private String resourceSlotsJson() {
+        java.util.List<double[]> slots = resourceSlots();
+        int[] levels = new int[slots.size()];
+        for (int index = 0; index < slots.size(); index++) {
+            levels[index] = slotExtractorLevel(slots.get(index));
+        }
+        return resourceSlotsJson(slots, levels);
+    }
+
+    /**
+     * Serialise already-collected slots/occupancy levels. {@code sendObservation}
+     * uses this overload so the per-observation work stays one unit scan.
+     */
+    private String resourceSlotsJson(java.util.List<double[]> slots, int[] levels) {
+        StringBuilder out = new StringBuilder(256);
+        out.append('[');
+        for (int index = 0; index < slots.size(); index++) {
+            double[] slot = slots.get(index);
+            if (index > 0) {
+                out.append(',');
+            }
+            int level = index < levels.length ? levels[index] : 0;
+            out.append("{\"slot_id\":").append(index)
+                    .append(",\"x\":").append(fmt(slot[0]))
+                    .append(",\"y\":").append(fmt(slot[1]))
+                    .append(",\"occupied\":").append(level > 0)
+                    .append(",\"extractor_level\":").append(level);
+            if (level > 0) {
+                out.append(",\"owner_team\":").append(engine.playerTeam.teamId);
+            }
+            out.append('}');
+        }
+        out.append(']');
+        return out.toString();
+    }
+
+    /**
+     * Record that a own extractor sits on one of {@code slots}.
+     *
+     * <p>Same radius/threshold rule as {@link #slotExtractorLevel}: the occupancy
+     * reported for a pool must mean exactly what the single-slot scan meant, so
+     * the reward path (which pays once per occupied pool) cannot double-count.
+     */
+    private void markSlotLevel(Unit unit, java.util.List<double[]> slots, int[] levels) {
+        int level;
+        try {
+            level = Math.max(1, Math.min(3, unit.getTechLevel()));
+        } catch (RuntimeException ignored) {
+            level = 1;
+        }
+        for (int index = 0; index < slots.size() && index < levels.length; index++) {
+            double[] slot = slots.get(index);
+            double dx = unit.x - slot[0];
+            double dy = unit.y - slot[1];
+            if (dx * dx + dy * dy <= 40.0 * 40.0) {
+                if (level > levels[index]) {
+                    levels[index] = level;
+                }
+                return;
+            }
+        }
+    }
+
+    /**
+     * Income per second for the controlled team, summed from the units that
+     * actually generate credits.
+     *
+     * <p>{@code global_state.income} used to be the literal {@code 0.0}, so the
+     * encoder's {@code income} feature (normalised by
+     * {@code MicroDuelConfig.income_scale = 40}) and the {@code income} reward
+     * term were dead inputs. {@code Unit.getGenerationCredits()} is the engine's
+     * own figure and is already a rate, so it is reported as-is; multiplying it
+     * by 60 would push an active extractor past the scale and saturate the
+     * feature at 1.0.
+     */
+    private double ownIncome() {
+        double income = 0.0;
+        for (Object item : Unit.unitList) {
+            if (!(item instanceof Unit)) {
+                continue;
+            }
+            Unit unit = (Unit) item;
+            if (unit.removed || unit.hp <= 0.0f) {
+                continue;
+            }
+            if (unit.team == null || unit.team.teamId != engine.playerTeam.teamId) {
+                continue;
+            }
+            try {
+                income += unit.getGenerationCredits();
+            } catch (RuntimeException ignored) {
+                // A unit type that does not report generation simply adds nothing.
+            }
+        }
+        return income;
     }
 
     private OrderableUnit firstOwnBuilder() {
@@ -962,7 +1426,8 @@ public final class IronZeroBridge implements ServerExtension {
         return null;
     }
 
-    private void addOwnOrderableUnits(CommandControllerCommand command, int unitGroup) {        for (Object item : Unit.unitList) {
+    private void addOwnOrderableUnits(CommandControllerCommand command, int unitGroup) {
+        for (Object item : Unit.unitList) {
             if (!(item instanceof OrderableUnit)) {
                 continue;
             }

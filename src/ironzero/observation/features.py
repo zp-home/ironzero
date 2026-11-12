@@ -15,7 +15,41 @@ from ..mock_engine import ORDER_IDS
 
 GROUP_DIM = 4  # matches the four unit groups in the micro-duel scenario
 
-__all__ = ["GROUP_DIM", "_cell", "_entity_features", "_nearest", "_unit_group"]
+__all__ = [
+    "GROUP_DIM",
+    "_cell",
+    "_entity_features",
+    "_nearest",
+    "_unit_group",
+    "prioritise_own",
+]
+
+
+def prioritise_own(units: list[dict]) -> list[dict]:
+    """Order own entities so a small slot budget keeps the useful units.
+
+    Buildings (factories first, since they produce units) and builders come
+    before combat units: on an economy map they are what makes every non-combat
+    action possible, and with ``max_entities`` slots the tail of the bridge
+    stream is dropped. ``sorted`` is stable, so equal-ranked units keep their
+    stream order and behaviour stays deterministic.
+
+    Only the *own* block is reordered. The enemy block keeps the bridge's stream
+    order because the target head indexes it: sorting enemies by distance would
+    change which enemy slot *i* names as our own units move, and the policy
+    could never learn a stable slot -> target mapping.
+    """
+
+    def rank(unit: dict) -> int:
+        if unit.get("is_factory") or unit.get("is_factory_building"):
+            return 0
+        if unit.get("is_building"):
+            return 1
+        if unit.get("is_builder"):
+            return 2
+        return 3
+
+    return sorted(units, key=rank)
 
 
 def _entity_features(

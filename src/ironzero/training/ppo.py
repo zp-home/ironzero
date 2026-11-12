@@ -118,6 +118,9 @@ class PPOTrainer:
         self._eval_thread: threading.Thread | None = None
         self._eval_lock = threading.Lock()
         self._in_flight_eval_update: int | None = None
+        # Highest update whose evaluation came due while a worker was busy.
+        # Drained on the next opportunity instead of being skipped forever.
+        self._pending_eval_update: int | None = None
 
     # ------------------------------------------------------------------
     # Live event stream (dashboard)
@@ -143,6 +146,33 @@ class PPOTrainer:
     # ------------------------------------------------------------------
     # Baseline / evaluation hooks (offline defaults, real game overrides)
     # ------------------------------------------------------------------
+    def _claim_eval_slot(self, update: int) -> int | None:
+        """Decide which update to evaluate now, or ``None`` to defer.
+
+        A due evaluation used to be *dropped* whenever the background worker was
+        still busy (measured: a 4-episode real-game evaluation took ~112 s while
+        the 10 updates it gated took ~15 s, so 3 of every 4 due evaluations never
+        ran). Deferring instead means an update that came due is always
+        evaluated eventually -- immediately if the worker is free, otherwise as
+        soon as it finishes.
+
+        Returns the update number whose weights should be evaluated, or ``None``
+        if this call was deferred.
+        """
+
+        if self._eval_thread is not None and self._eval_thread.is_alive():
+            self._pending_eval_update = max(
+                int(self._pending_eval_update or 0), int(update)
+            )
+            print(
+                f"[eval ] update {update:03d} queued: update {self._in_flight_eval_update} "
+                f"is still evaluating in background"
+            )
+            return None
+        pending = self._pending_eval_update
+        self._pending_eval_update = None
+        return int(pending) if pending else int(update)
+
     def baseline(self) -> dict[str, Any]:
         if self._baseline_fn is not None:
             return self._baseline_fn()
@@ -460,13 +490,12 @@ class PPOTrainer:
             ) or update == cfg.total_updates
             if due:
                 if cfg.async_eval and update < cfg.total_updates:
-                    if self._eval_thread is not None and self._eval_thread.is_alive():
-                        print(
-                            f"[eval ] update {update:03d} skipped: update {self._in_flight_eval_update} is still evaluating in background"
-                        )
+                    target_update = self._claim_eval_slot(update)
+                    if target_update is None:
+                        pass  # deferred: a worker is still running
                     else:
                         weights = {k: v.cpu().clone() for k, v in self.policy.state_dict().items()}
-                        self._in_flight_eval_update = update
+                        self._in_flight_eval_update = target_update
 
                         def _eval_worker(upd: int, state_dict: dict[str, torch.Tensor]) -> None:
                             try:
@@ -501,7 +530,7 @@ class PPOTrainer:
                                         self._in_flight_eval_update = None
 
                         self._eval_thread = threading.Thread(
-                            target=_eval_worker, args=(update, weights), daemon=True
+                            target=_eval_worker, args=(target_update, weights), daemon=True
                         )
                         self._eval_thread.start()
                 else:
@@ -524,6 +553,33 @@ class PPOTrainer:
         if self._eval_thread is not None and self._eval_thread.is_alive():
             print(f"[train] waiting for in-flight background evaluation (update {self._in_flight_eval_update}) to finish...")
             self._eval_thread.join()
+        # An evaluation that came due while a worker was busy was deferred, not
+        # dropped. Run the last deferred one now so the run reports at least one
+        # real measurement for the updates it actually reached.
+        deferred = self._pending_eval_update
+        self._pending_eval_update = None
+        if deferred is not None:
+            already = any(
+                ev.get("update") == deferred for ev in metrics.get("evaluations", [])
+            )
+            if not already:
+                try:
+                    evaluation = self.evaluate(int(deferred))
+                    evaluations = {"update": int(deferred), **evaluation}
+                    with self._eval_lock:
+                        best = self.maybe_save_best(
+                            out_dir, int(deferred), evaluation, metrics
+                        )
+                        evaluations["is_best"] = bool(best)
+                        metrics["evaluations"].append(evaluations)
+                        self._emit("eval", evaluations)
+                        print(
+                            f"[eval ] deferred update {int(deferred):03d} "
+                            f"win={float(evaluation.get('win_rate', 0.0)):.2f} "
+                            f"timeout={float(evaluation.get('timeout_rate', 0.0)):.2f}"
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[eval ] deferred evaluation {deferred} failed: {exc}")
 
         has_final = any(ev.get("update") == cfg.total_updates for ev in metrics.get("evaluations", []))
         if not has_final and (cfg.eval_every > 0 or cfg.total_updates > 0):

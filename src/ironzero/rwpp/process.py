@@ -62,21 +62,14 @@ def effective_frame_ms(frame_ms: int) -> int:
     return 1
 
 
-def launch_rwpp_process(game: RwppGameConfig, port: int) -> _ProcLike:
-    """Start the pinned RWPP headless runtime with the IronZero bridge."""
+def _bridge_command(launcher: Path, port: int, game: RwppGameConfig) -> list[str]:
+    """Build the rwpp-server command line (pure; no process, no filesystem).
 
-    runtime = Path(game.runtime)
-    java_home = Path(game.java_home)
-    launcher = runtime / "bin" / "rwpp-server.bat"
-    if not launcher.exists():
-        raise RwppEnvError(f"RWPP runtime not found: {launcher}")
-    game.log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = game.log_dir / f"game-{port}-{int(time.time() * 1000) % 100000}.log"
-    env = dict(os.environ)
-    env["JAVA_HOME"] = str(java_home)
-    env["PATH"] = str(java_home / "bin") + os.pathsep + env.get("PATH", "")
-    env.update(game.env_overrides)
-    handle = open(log_path, "w", encoding="utf-8", errors="replace")
+    Split out so the argument contract can be asserted without launching a game:
+    ``--physics-ms`` in particular must appear only when explicitly requested,
+    because it changes what an episode simulates.
+    """
+
     command = [
         str(launcher),
         "--no-console",
@@ -95,6 +88,40 @@ def launch_rwpp_process(game: RwppGameConfig, port: int) -> _ProcLike:
         command.extend(["--win-mode", str(game.win_mode)])
     if game.unlock_ai:
         command.append("--unlock-ai")
+    if int(getattr(game, "physics_ms", 0) or 0) > 0:
+        # Pin the simulation delta so the wall-clock pacing (``--frame-ms``) can
+        # be lowered without changing what an episode simulates. Only sent when
+        # explicitly requested, so a default run's command line is unchanged.
+        command.extend(["--physics-ms", str(int(game.physics_ms))])
+    return command
+
+
+def _build_command_for_tests(*, physics_ms: int = 0, frame_ms: int = 2) -> list[str]:
+    """The bridge command line for one trivial config (test helper)."""
+
+    return _bridge_command(
+        Path("rwpp-server.bat"),
+        5130,
+        RwppGameConfig(frame_ms=frame_ms, physics_ms=physics_ms),
+    )
+
+
+def launch_rwpp_process(game: RwppGameConfig, port: int) -> _ProcLike:
+    """Start the pinned RWPP headless runtime with the IronZero bridge."""
+
+    runtime = Path(game.runtime)
+    java_home = Path(game.java_home)
+    launcher = runtime / "bin" / "rwpp-server.bat"
+    if not launcher.exists():
+        raise RwppEnvError(f"RWPP runtime not found: {launcher}")
+    game.log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = game.log_dir / f"game-{port}-{int(time.time() * 1000) % 100000}.log"
+    env = dict(os.environ)
+    env["JAVA_HOME"] = str(java_home)
+    env["PATH"] = str(java_home / "bin") + os.pathsep + env.get("PATH", "")
+    env.update(game.env_overrides)
+    handle = open(log_path, "w", encoding="utf-8", errors="replace")
+    command = _bridge_command(launcher, port, game)
     try:
         process = subprocess.Popen(
             command,
@@ -115,6 +142,8 @@ def launch_rwpp_process(game: RwppGameConfig, port: int) -> _ProcLike:
 __all__ = [
     "FRAME_MS_WARNED",
     "_ProcLike",
+    "_bridge_command",
+    "_build_command_for_tests",
     "effective_frame_ms",
     "launch_rwpp_process",
 ]
