@@ -269,6 +269,10 @@ class RwppDuelEnv:
                 "enemy_alive": enemy_alive,
                 "distance": distance,
                 "components": components,
+                # This decision's receipts only. The rejection histogram in
+                # ``build_step_info`` reads it, and it is the only way to tell
+                # *why* ``invalid`` was paid (see ``reward_shaping``).
+                "receipts": receipts_this_step,
             },
         )
         return obs, reward, terminated, truncated, info

@@ -557,3 +557,51 @@ def _method_body(source: str, name: str) -> str:
             if depth == 0:
                 return source[brace : index + 1]
     raise AssertionError(f"unbalanced braces while reading {name}")
+
+
+# ---------------------------------------------------------------------------
+# 7. Rejection reasons must be observable, not just a number in the reward.
+# ---------------------------------------------------------------------------
+def test_receipt_reasons_histograms_only_rejections() -> None:
+    """``invalid`` is one reward key; the histogram is what makes it diagnosable."""
+
+    from ironzero.rwpp.stepping import receipt_reasons
+
+    counts = receipt_reasons(
+        [
+            {"accepted": True},
+            {"accepted": False, "rejected_reason": "ACTION_MASKED"},
+            {"accepted": False, "rejected_reason": "ACTION_MASKED"},
+            {"accepted": False, "rejected_reason": "TARGET_INVALID"},
+        ]
+    )
+    assert counts == {"ACTION_MASKED": 2, "TARGET_INVALID": 1}
+    assert receipt_reasons([]) == {}
+    # A rejection with no reason is still a rejection: never silently dropped.
+    assert receipt_reasons([{"accepted": False}]) == {"UNKNOWN": 1}
+
+
+def test_step_info_carries_this_decisions_receipts() -> None:
+    """The ``receipts`` key fed to ``build_step_info`` must exist.
+
+    Regression guard: the rejection histogram was added to ``build_step_info``
+    but ``RwppDuelEnv.step`` never passed ``receipts`` in its ``ctx``, so the
+    histogram was permanently empty -- the diagnostic silently reported "no
+    rejections" while the reward kept paying ``invalid_penalty``.
+    """
+
+    import inspect
+
+    from ironzero.rwpp.env import RwppDuelEnv
+
+    source = inspect.getsource(RwppDuelEnv.step)
+    ctx_start = source.find("build_step_info(")
+    assert ctx_start >= 0, "step() no longer builds step info"
+    ctx = source[ctx_start:]
+    assert '"receipts"' in ctx, (
+        "step() must pass this decision's receipts to build_step_info, "
+        "otherwise info['rejection_reasons'] is always empty"
+    )
+    assert "receipts_this_step" in ctx, (
+        "the receipts passed must be this step's slice, not the episode total"
+    )
