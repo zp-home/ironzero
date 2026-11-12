@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .paths import APP_VERSION, FRONTEND_DIR
-from .routers import checkpoints, infer, maps, replays, rwpp, runs
+from .routers import checkpoints, infer, maps, models, replays, rwpp, runs
 from .routers import system
 
 
@@ -34,6 +34,10 @@ def create_app() -> FastAPI:
     application.include_router(infer.router)
     application.include_router(replays.router)
     application.include_router(checkpoints.router)
+    # ``models`` declares ``DELETE /api/models/job/{path}`` before
+    # ``DELETE /api/models/{path}``; FastAPI matches in declaration order, so the
+    # more specific job route wins inside that router.
+    application.include_router(models.router)
     application.include_router(maps.router)
     application.include_router(rwpp.router)
 

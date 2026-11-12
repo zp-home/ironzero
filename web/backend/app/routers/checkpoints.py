@@ -13,12 +13,15 @@ router = APIRouter()
 
 
 @router.get("/api/checkpoints")
-def list_checkpoints() -> list[dict[str, Any]]:
+def list_checkpoints(force: bool = False) -> list[dict[str, Any]]:
     """List available policy checkpoints under the configured roots.
 
     Delegates to ``_find_checkpoints`` so the search paths stay portable
     (``IRONZERO_CHECKPOINT_ROOTS`` / repo-relative) instead of the previous
     hard-coded ``/app/runs`` container path.
+
+    ``force=true`` bypasses the in-process scan cache, so the dashboard's
+    "refresh weights" button always sees a checkpoint a run just wrote.
     """
 
-    return _find_checkpoints()
+    return _find_checkpoints(force=force)

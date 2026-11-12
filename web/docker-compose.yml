@@ -21,6 +21,11 @@ services:
     environment:
       IRONZERO_RUNS: /app/runs/platform
       IRONZERO_CHECKPOINT_ROOTS: /app/runs
+      # Root the model-management API resolves its ``path`` against. Set explicitly
+      # instead of relying on the "parent of a category dir" inference in
+      # web/backend/app/routers/models.py, so deleting from experiments/ or
+      # archive/ keeps working if IRONZERO_RUNS ever moves.
+      IRONZERO_MODELS_ROOT: /app/runs
       IRONZERO_GAME_ASSETS: /app/game_cache
       IRONZERO_RWPP_SERVICE: http://host.docker.internal:8300
       PYTHONUNBUFFERED: "1"

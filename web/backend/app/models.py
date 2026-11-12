@@ -50,7 +50,11 @@ class RwppRecordRequest(BaseModel):
     map_width: float = Field(default=2600.0, gt=0.0, le=20000.0)
     map_height: float = Field(default=2600.0, gt=0.0, le=20000.0)
     episodes: int = Field(default=1, ge=1, le=50)
-    concurrency: int = Field(default=1, ge=1, le=4)
+    # Concurrent headless game processes. The host-side service is the real
+    # authority (``--max-parallel``, default 10, enforced with a 400 for a
+    # larger value); this bound only has to be wide enough not to reject a
+    # legitimate request before it reaches that check.
+    concurrency: int = Field(default=1, ge=1, le=16)
     vision_radius: float = Field(default=0.0, ge=0.0, le=2000.0)
 
 
@@ -58,7 +62,7 @@ class RwppPpoRequest(BaseModel):
     """Strategy-in-the-loop PPO training on real games."""
 
     updates: int = Field(default=4, ge=1, le=500)
-    envs: int = Field(default=2, ge=1, le=8)
+    envs: int = Field(default=2, ge=1, le=16)
     rollout_steps: int = Field(default=20, ge=1, le=512)
     episode_ticks: int = Field(default=3600, ge=120, le=216000)
     device: str = Field(default="auto", pattern="^(auto|cpu|cuda)$")
