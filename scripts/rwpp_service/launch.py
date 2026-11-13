@@ -33,6 +33,21 @@ _PPO_CHECKS = (
 )
 
 
+def _optional_int(value, default: int | None) -> int | None:
+    """把 payload 里的可选整数收敛成 ``int``；缺失/空值/非法值一律回退 ``default``。
+
+    ``/ppo`` 的 payload 来自 JS，字段常常是 ``null``、``""`` 或者字符串数字，
+    直接 ``int()`` 会抛 ``ValueError`` 把整个请求打成 500。
+    """
+
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def ppo_bounds_error(values: dict) -> str | None:
     """按原顺序校验 PPO 数值区间；``device`` 单独校验以保持原始次序。"""
 
@@ -56,10 +71,15 @@ class StartMixin:
         map_width = float(payload.get("map_width") or 2700.0)
         map_height = float(payload.get("map_height") or 2500.0)
         frame_ms = int(payload.get("frame_ms", 2))
+        physics_ms = _optional_int(payload.get("physics_ms"), 16)
         vision_radius = float(payload.get("vision_radius", 260.0))
         eval_every = int(payload.get("eval_every", 0))
         eval_episodes = int(payload.get("eval_episodes", 1))
         use_llm = bool(payload.get("use_llm", False))
+        ai_pilot = bool(payload.get("ai_pilot", False))
+        record_ai_orders = bool(payload.get("record_ai_orders", False))
+        ai_difficulty = _optional_int(payload.get("ai_difficulty"), None)
+        enemy_ai_difficulty = _optional_int(payload.get("enemy_ai_difficulty"), None)
         preset = resolve_preset(payload, map_name, map_path)
         map_name = preset["map_name"]
         map_path = preset["map_path"]
@@ -84,6 +104,15 @@ class StartMixin:
         )
         if error:
             self._send({"error": error}, 400)
+            return
+        if not 0 <= physics_ms <= 100:
+            self._send({"error": "physics_ms must be 0..100"}, 400)
+            return
+        if ai_difficulty is not None and not -2 <= ai_difficulty <= 3:
+            self._send({"error": "ai_difficulty must be -2..3"}, 400)
+            return
+        if enemy_ai_difficulty is not None and not -2 <= enemy_ai_difficulty <= 3:
+            self._send({"error": "enemy_ai_difficulty must be -2..3"}, 400)
             return
         if device not in {"auto", "cpu", "cuda"}:
             self._send({"error": "device must be auto/cpu/cuda"}, 400)
@@ -120,10 +149,15 @@ class StartMixin:
                 "map_name": map_name,
                 "map_path": map_path,
                 "frame_ms": frame_ms,
+                "physics_ms": physics_ms,
                 "vision_radius": vision_radius,
                 "eval_every": eval_every,
                 "eval_episodes": eval_episodes,
                 "use_llm": use_llm,
+                "ai_pilot": ai_pilot,
+                "record_ai_orders": record_ai_orders,
+                "ai_difficulty": ai_difficulty,
+                "enemy_ai_difficulty": enemy_ai_difficulty,
                 "arena": arena,
                 "units_per_team": units_per_team,
                 "max_entities": max_entities,
@@ -159,6 +193,7 @@ class StartMixin:
                 map_width=map_width,
                 map_height=map_height,
                 frame_ms=frame_ms,
+                physics_ms=physics_ms,
                 vision_radius=vision_radius,
                 eval_every=eval_every,
                 eval_episodes=eval_episodes,
@@ -169,6 +204,10 @@ class StartMixin:
                 terrain=terrain,
                 win_mode=win_mode,
                 unlock_ai=unlock_ai,
+                ai_pilot=ai_pilot,
+                record_ai_orders=record_ai_orders,
+                ai_difficulty=ai_difficulty,
+                enemy_ai_difficulty=enemy_ai_difficulty,
                 init_checkpoint=init_checkpoint,
             )
 

@@ -86,6 +86,12 @@ class RwppGameConfig:
     # the teacher plays with no bonus at all. ``None`` keeps that resolution order;
     # an int pins every AI team via ``aiDifficultyLocked``.
     ai_difficulty: int | None = None
+    # Enemy-only difficulty override. Set this when the teacher and the opponent
+    # must differ: measured, two AIs at the *same* level mirror each other and never
+    # fight, so the teacher only ever demonstrates "build up and wait". A stronger
+    # enemy creates the pressure that makes the teacher actually manoeuvre.
+    # Requires ``ai_difficulty`` to be set as well (it is the teacher's level).
+    enemy_ai_difficulty: int | None = None
     # Fixed engine frame delta, independent of ``frame_ms`` pacing. ``0`` keeps the
     # historical behaviour where ``frame_ms`` is both the delta and the sleep
     # budget (16 ms = real time). Set it (e.g. 16) to keep a real-time simulation

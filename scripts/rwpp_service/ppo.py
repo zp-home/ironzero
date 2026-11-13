@@ -69,7 +69,7 @@ def run_ppo(
     map_width: float,
     map_height: float,
     frame_ms: int = 2,
-    physics_ms: int = 0,
+    physics_ms: int = 16,
     vision_radius: float = 260.0,
     eval_every: int = 0,
     eval_episodes: int = 1,
@@ -80,6 +80,10 @@ def run_ppo(
     terrain: str | None = None,
     win_mode: str = "",
     unlock_ai: bool = False,
+    ai_pilot: bool = False,
+    record_ai_orders: bool = False,
+    ai_difficulty: int | None = None,
+    enemy_ai_difficulty: int | None = None,
     init_checkpoint: str | None = None,
 ) -> None:
     job_dir = RUNS / f"rwpp-ppo-{job_id}"
@@ -122,10 +126,11 @@ def run_ppo(
         "--eval-episodes",
         str(max(1, int(eval_episodes))),
     ]
-    if int(physics_ms) > 0:
-        # Pin the simulation delta so the wall-clock pacing (``--frame-ms``) can
-        # be lowered without changing what one episode simulates.
-        command.extend(["--physics-ms", str(int(physics_ms))])
+    # Always pin the simulation delta explicitly: the trainer's own default has
+    # already moved twice, and a web-launched run must not silently inherit it.
+    # ``--physics-ms`` fixes what one episode simulates, so ``--frame-ms`` is free
+    # to only pace the wall clock (2 ms pacing + 16 ms physics ≈ 8x real time).
+    command.extend(["--physics-ms", str(max(0, int(physics_ms)))])
     if use_llm:
         command.append("--use-llm")
     # Arena scenarios (e.g. the 25-vs-25 IronZero25 map) need the wider
@@ -143,6 +148,18 @@ def run_ppo(
         command.extend(["--win-mode", str(win_mode)])
     if unlock_ai:
         command.append("--unlock-ai")
+    # AI teacher / opponent. ``--ai-pilot`` hands the controlled team to the
+    # built-in AI so it can be behaviour-cloned; ``--enemy-ai-difficulty`` pins
+    # only the other side so the teacher faces real pressure (measured: two AIs
+    # at the same level mirror each other and never fight).
+    if ai_pilot or record_ai_orders:
+        command.append("--ai-pilot")
+    if record_ai_orders:
+        command.append("--record-ai-orders")
+    if ai_difficulty is not None:
+        command.extend(["--ai-difficulty", str(int(ai_difficulty))])
+    if enemy_ai_difficulty is not None:
+        command.extend(["--enemy-ai-difficulty", str(int(enemy_ai_difficulty))])
     if init_checkpoint:
         command.extend(["--init-checkpoint", str(init_checkpoint)])
     started = time.time()

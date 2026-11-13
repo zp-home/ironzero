@@ -19,7 +19,13 @@ from __future__ import annotations
 import numpy as np
 
 from ..micro_config import DEFAULT_CONFIG, MicroDuelConfig
-from .features import _cell, _entity_features, _nearest, prioritise_own
+from .features import (
+    _cell,
+    _entity_features,
+    _entity_type_features,
+    _nearest,
+    prioritise_own,
+)
 from .terrain_channel import terrain_passable_channel
 
 __all__ = ["encode_observation"]
@@ -152,6 +158,21 @@ def encode_observation(state: dict, config: MicroDuelConfig = DEFAULT_CONFIG) ->
     grid[:army_channels] /= max(1.0, cfg.units_per_team)
     vector[offset : offset + grid.size] = grid.reshape(-1)
     offset += grid.size
+
+    # --- identity block (own then enemy, same slot order) -----------------
+    # Written *after* the grid so every previously-existing column keeps its
+    # offset: an older checkpoint reads exactly the same prefix it was trained
+    # on and only the new tail starts at zero influence. See
+    # ``MicroDuelConfig.type_features`` for why this block exists at all.
+    own_identity = own_ordered
+    enemy_identity = enemies
+    for source in (own_identity, enemy_identity):
+        for slot in range(cfg.max_entities):
+            feats = np.zeros(cfg.type_features, dtype=np.float32)
+            if slot < len(source):
+                feats = _entity_type_features(source[slot])
+            vector[offset : offset + cfg.type_features] = feats
+            offset += cfg.type_features
 
     assert offset == cfg.flat_obs_dim
     return vector

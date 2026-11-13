@@ -50,6 +50,13 @@ def observation_to_state(message: dict[str, Any]) -> dict[str, Any]:
         # only selectable when the game would actually accept it; without this
         # the policy keeps picking extractor orders that the map cannot honour.
         "builders": list((info or {}).get("builders") or []) if isinstance(info, dict) else [],
+        # ``info.factories`` is the engine's own answer to "which unit types can
+        # our factories produce". ``produce_unit`` is a *factory* action, so the
+        # mask gates it on this rather than on the builder's build menu (they are
+        # different capabilities: on a stock map the builder's menu is just
+        # ``['landFactory']``, which contains no ``tank``). Without it the kind
+        # was permanently masked and the agent could never field a combat unit.
+        "factories": list((info or {}).get("factories") or []) if isinstance(info, dict) else [],
         # Behaviour-cloning labels: the expert's current order per own unit
         # (``--ai-pilot --record-ai-orders``). Kept verbatim -- this is the target
         # the supervised phase trains against, and ``None`` when the bridge is not
@@ -138,6 +145,55 @@ def decode_action(
                  "structure_type": "land_factory",
                  "x": round(float(x), 2), "y": round(float(y), 2)}]
     if kind == "produce_unit":
+        # Production is a *factory* action: pick the factory, then ask the game
+        # which unit types it can actually queue here. ``"tank"`` used to be
+        # hard-coded, which silently asked every factory for a tank -- wrong on
+        # any map whose factory cannot make one (a Lake start's commandCenter can
+        # only make a scout), and the order then either got rejected or produced
+        # something the policy never chose. Falls back to ``"tank"`` only when the
+        # bridge reports no factory capabilities at all.
+        factories = state.get("factories") or []
+        reported = [
+            entry
+            for entry in factories
+            if isinstance(entry, dict) and isinstance(entry.get("can_produce"), list)
+        ]
+        if reported:
+            # Prefer a factory that offers a *combat* unit. The list is in the
+            # engine's unit order, which puts the command center first, and a
+            # command center only makes builders -- so taking ``target_index``
+            # raw would spend the whole economy on builders even with a real
+            # factory standing.
+            combat_factories = [
+                entry
+                for entry in reported
+                if any(
+                    str(name).lower() != "builder"
+                    for name in (entry.get("can_produce") or [])
+                )
+            ]
+            pool = combat_factories or reported
+            factory = pool[int(target_index) % len(pool)]
+            producible = [str(name) for name in factory.get("can_produce") or []]
+            if not producible:
+                return _hold_action(state, group)
+            # The group head is not a unit-type head, so one deterministic pick
+            # is made per factory. Prefer a *combat* unit: a factory's menu is
+            # reported in engine registry order and can put ``builder`` (or
+            # ``hoverTank``) first, and always picking the first entry would
+            # spend the whole economy on builders. Falling back to the first
+            # entry keeps every menu usable, including one that only offers
+            # builders (a Lake command center).
+            combat = [name for name in producible if name.lower() != "builder"]
+            unit_type = combat[0] if combat else producible[0]
+            return [
+                {
+                    "kind": "produce_unit",
+                    "unit_group": group,
+                    "factory_entity_id": int(factory.get("entity_id", -1)),
+                    "unit_type": unit_type,
+                }
+            ]
         factories = [u for u in own if u.get("is_factory") or u.get("is_factory_building")]
         if not factories:
             return _hold_action(state, group)

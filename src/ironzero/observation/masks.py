@@ -16,17 +16,34 @@ from ..mock_engine import ACTION_KINDS
 
 __all__ = ["build_masks", "flat_mask_vector", "masks_as_lists"]
 
-# Which ``info.builders[].can_build`` entry each economy kind needs. The real
-# game decides what a builder may queue; the mask has to agree with it, or the
-# policy learns "these kinds are selectable" and then pays ``invalid_penalty``
-# on every attempt the engine rejects. On stock skirmish maps the built-in
-# ``builder`` reports only ``landFactory``, so extractor/upgrade/tank stay
-# masked until the map actually offers them.
+# Which ``info.builders[].can_build`` entry each *builder* economy kind needs.
+# The real game decides what a builder may queue; the mask has to agree with it,
+# or the policy learns "these kinds are selectable" and then pays
+# ``invalid_penalty`` on every attempt the engine rejects. On stock skirmish maps
+# the built-in ``builder`` reports only ``landFactory``, so extractor and factory
+# stay masked until the map actually offers them.
+#
+# ``produce_unit`` is deliberately *not* in this table: it is a **factory**
+# action, not a builder action. Gating it on the builder's build menu made it
+# permanently unreachable -- measured on Lake, ``produce_unit`` stayed masked at
+# reset *and* after a landFactory had been standing for 1800 ticks, because
+# ``"tank" not in builder.can_build`` (that map's builder menu is
+# ``['landFactory']``). The policy could therefore never queue a tank at all, no
+# matter what it built, which is exactly the "never builds anything" symptom.
 _KIND_REQUIRED_BUILDABLE: dict[str, str] = {
     "build_extractor": "extractor",
     "build_structure": "landFactory",
-    "produce_unit": "tank",
 }
+
+# Which ``info.factories[].can_produce`` entry ``produce_unit`` needs.
+#
+# Deliberately empty: there is **no** unit name that is universally producible.
+# Measured on Lake, a ``landFactory`` offers ``['builder', 'hoverTank']`` -- no
+# ``tank`` at all -- while the base ``commandCenter`` offers only ``['builder']``.
+# Requiring a hard-coded ``"tank"`` therefore kept ``produce_unit`` masked on the
+# very map being trained, even with a finished factory standing. The honest gate
+# is "some factory reports a non-empty menu (or reports nothing at all)".
+_KIND_REQUIRED_PRODUCIBLE: dict[str, str] = {}
 
 # Which ``MicroDuelConfig`` attribute prices each economy kind.
 _KIND_COST_ATTR: dict[str, str] = {
@@ -59,6 +76,25 @@ def _reported_capabilities(state: dict, own: list[dict]) -> set[str] | None:
             continue
         reported = True
         allowed |= {str(name) for name in can_build}
+    return allowed if reported else None
+
+
+def _reported_producibles(state: dict) -> set[str] | None:
+    """Unit types our *factories* say they can produce, or ``None`` if unreported."""
+
+    factories = state.get("factories")
+    if not isinstance(factories, list) or not factories:
+        return None
+    reported = False
+    allowed: set[str] = set()
+    for entry in factories:
+        if not isinstance(entry, dict):
+            continue
+        can_produce = entry.get("can_produce")
+        if not isinstance(can_produce, list):
+            continue
+        reported = True
+        allowed |= {str(name) for name in can_produce}
     return allowed if reported else None
 
 
@@ -104,6 +140,22 @@ def build_masks(state: dict, config: MicroDuelConfig = DEFAULT_CONFIG) -> dict[s
     else:
         has_upgradable = has_builder and any(unit.get("is_building") for unit in own)
     capabilities = _reported_capabilities(state, own)
+    # ``produce_unit`` is gated on a *factory*, not on the builder's menu. The
+    # two are unrelated capabilities: on a stock skirmish map the builder's menu
+    # is ``['landFactory']`` (no ``tank``), while the factory is exactly what can
+    # make tanks. Binding production to the builder made the kind permanently
+    # unreachable and the agent could never field a combat unit.
+    factories = [
+        unit
+        for unit in own
+        if unit.get("is_factory") or unit.get("is_factory_building")
+    ]
+    producibles = _reported_producibles(state)
+    # A reported but *empty* menu means the engine itself says "this factory can
+    # queue nothing right now" (still under construction, tech-locked). That is a
+    # real answer and must mask the kind; only unreported capabilities fall back
+    # to "we own a factory".
+    producible = producibles is None or len(producibles) > 0
     for index, kind in enumerate(ACTION_KINDS):
         if index >= kind_mask.shape[0]:
             break
@@ -111,6 +163,9 @@ def build_masks(state: dict, config: MicroDuelConfig = DEFAULT_CONFIG) -> dict[s
         buildable = (
             required is None or capabilities is None or required in capabilities
         )
+        needed_unit = _KIND_REQUIRED_PRODUCIBLE.get(kind)
+        if needed_unit is not None:
+            producible = producibles is None or needed_unit in producibles
         cost_attr = _KIND_COST_ATTR.get(kind)
         affordable = (
             float(getattr(cfg, cost_attr, 0.0)) <= funds if cost_attr else True
@@ -120,7 +175,7 @@ def build_masks(state: dict, config: MicroDuelConfig = DEFAULT_CONFIG) -> dict[s
         elif kind == "build_structure":
             kind_mask[index] = has_builder and buildable and affordable
         elif kind == "produce_unit":
-            kind_mask[index] = has_builder and buildable and affordable
+            kind_mask[index] = bool(factories) and producible and affordable
         elif kind == "upgrade_building":
             kind_mask[index] = has_upgradable and affordable
         else:

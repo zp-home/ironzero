@@ -85,6 +85,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ai-difficulty", type=int, default=None, choices=[-2, -1, 0, 1, 2, 3],
                         help="pin every AI team's difficulty (-2..3); omitted keeps the engine "
                              "default, which is 0 (正常, x1.00 income, no AI cheat bonus)")
+    parser.add_argument("--enemy-ai-difficulty", type=int, default=None, choices=[-2, -1, 0, 1, 2, 3],
+                        help="pin only the enemy teams' difficulty, leaving the player/teacher side "
+                             "alone; use it to give the BC teacher real pressure to react to")
     parser.add_argument("--engagement", type=float, default=2.0, help="dense reward for closing distance to the enemy army")
     parser.add_argument("--frame-ms", type=int, default=2,
                         help="wall-clock ms per simulated frame: 16=real time, 2=~8x faster, 0=unpaced (too fast for the client)")
@@ -124,6 +127,9 @@ def build_game(args: argparse.Namespace) -> RwppGameConfig:
         ai_pilot=bool(args.ai_pilot) or bool(args.record_ai_orders),
         record_ai_orders=bool(args.record_ai_orders),
         ai_difficulty=(int(args.ai_difficulty) if args.ai_difficulty is not None else None),
+        enemy_ai_difficulty=(
+            int(args.enemy_ai_difficulty) if args.enemy_ai_difficulty is not None else None
+        ),
         engagement_coef=float(args.engagement),
         frame_ms=max(0, int(args.frame_ms)),
         physics_ms=max(0, int(args.physics_ms)),
@@ -256,6 +262,7 @@ def main(argv: list[str] | None = None) -> int:
             "ai_pilot": bool(game.ai_pilot),
             "record_ai_orders": bool(game.record_ai_orders),
             "ai_difficulty": game.ai_difficulty,
+            "enemy_ai_difficulty": game.enemy_ai_difficulty,
             "runtime": str(game.runtime),
         },
         "micro": asdict(micro),

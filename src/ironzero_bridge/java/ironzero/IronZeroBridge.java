@@ -91,6 +91,28 @@ public final class IronZeroBridge implements ServerExtension {
         UnitType.tank,
     };
 
+    /**
+     * Unit types reported in ``info.factories[].can_produce``.
+     *
+     * <p>Kept only as a fast path. The authoritative answer is the engine's own
+     * registry scan in {@link #producibleNamesFor(OrderableUnit)}: a factory's
+     * menu is not derivable from a fixed type list (on Lake a
+     * {@code landFactory} does *not* offer {@code tank}, while the
+     * {@code commandCenter} offers {@code builder}), so probing a hard-coded
+     * handful of names reported an empty menu and left {@code produce_unit}
+     * permanently masked.
+     *
+     * <p>Separate from {@link #BUILDABLE_PROBE} because the two menus belong to
+     * different units and are not interchangeable: on a stock skirmish map the
+     * builder can queue only {@code landFactory} while the factory is precisely
+     * what produces combat units.
+     */
+    private static final UnitType[] PRODUCIBLE_PROBE = {
+        UnitType.tank,
+        UnitType.artillery,
+        UnitType.builder,
+    };
+
     private volatile boolean stop = false;
     private ServerSocket serverSocket;
     private Socket client;
@@ -155,6 +177,16 @@ public final class IronZeroBridge implements ServerExtension {
      * so the value actually reaches {@code getAIDifficultyIncomeMultiplier()}.
      */
     private Integer aiDifficulty = null;
+    /**
+     * ``--enemy-ai-difficulty N``: override {@link #aiDifficulty} for the enemy
+     * teams only, so teacher and opponent can be set independently.
+     *
+     * <p>Motivated by a measurement, not preference: with both sides on the same
+     * level the two AIs mirror each other and never fight, so the recorded teacher
+     * behaviour is "economy only". Raising only the enemy makes the teacher
+     * respond to actual pressure.
+     */
+    private Integer enemyAiDifficulty = null;
     // Game-over plumbing: the native engine knows when the battle is decided
     // (TriggerEngine win/lose objectives and Team defeat checks). The bridge
     // polls that state every frame and reports it to the RL environment; it is
@@ -198,10 +230,15 @@ public final class IronZeroBridge implements ServerExtension {
             // be recorded as a behaviour-cloning teacher (``--record-ai-orders``).
             installAiPilot();
         }
-        if (aiDifficulty != null) {
+        if (aiDifficulty != null || enemyAiDifficulty != null) {
             // Must run after the map finished loading (teams exist) and after the
             // pilot replaced the player team, otherwise the pilot would inherit the
             // old team's difficulty.
+            if (aiDifficulty == null) {
+                // Only an enemy override was given: leave the player side on the
+                // engine's own resolution and pin the enemies.
+                aiDifficulty = Integer.valueOf(defaultPlayerAiDifficulty());
+            }
             applyAiDifficulty();
         }
         System.out.println("[ironzero] world ready: mapLoaded="
@@ -330,6 +367,14 @@ public final class IronZeroBridge implements ServerExtension {
                     System.out.println("[ironzero] ignoring non-numeric --ai-difficulty: "
                             + args.get(i + 1));
                 }
+            } else if ("--enemy-ai-difficulty".equals(argument) && i + 1 < args.size()) {
+                try {
+                    enemyAiDifficulty = Integer.valueOf(
+                            Integer.parseInt(args.get(i + 1).trim()));
+                } catch (NumberFormatException ignored) {
+                    System.out.println("[ironzero] ignoring non-numeric "
+                            + "--enemy-ai-difficulty: " + args.get(i + 1));
+                }
             } else if ("--debug-build".equals(argument)) {
                 debugBuild = true;
             }
@@ -456,6 +501,7 @@ public final class IronZeroBridge implements ServerExtension {
                 + ",\"ai_difficulty\":" + ownAiDifficulty()
                 + ",\"ai_teams\":" + aiTeamsJson()
                 + ",\"builders\":" + buildersJson()
+                + ",\"factories\":" + factoriesJson()
                 // Behaviour-cloning labels: the orders the expert (built-in AI)
                 // is executing right now. Absent unless --record-ai-orders.
                 + (recordAiOrders ? ",\"ai_orders\":" + aiOrdersJson() : "")
@@ -523,6 +569,121 @@ public final class IronZeroBridge implements ServerExtension {
         return out.toString();
     }
 
+    /**
+     * Cache of "which unit types can this factory type make", keyed by the
+     * factory's internal unit-type name.
+     *
+     * <p>Rescanning {@code UnitType.values()} per factory per frame would be
+     * wasteful: the observation is emitted every 10 ticks and there can be
+     * several factories. The menu only depends on the factory's *type* and its
+     * tech level, and a type never changes tier mid-game on the maps used here,
+     * so caching by type name is safe. Cleared on reset.
+     */
+    private final java.util.HashMap<String, java.util.List<String>> producibleCache =
+            new java.util.HashMap<>();
+
+    /**
+     * Unit type names this factory can queue, in engine registry order.
+     *
+     * <p>This is the authoritative answer and is deliberately a registry scan,
+     * not a probe of a fixed list. A factory's menu is data, not something the
+     * bridge can infer: measured on Lake, {@code landFactory} offers
+     * ``builder`` (and no ``tank``), while {@code commandCenter} offers
+     * ``builder`` too. Hard-coding candidate names therefore reported an empty
+     * menu on the very map being trained and left production masked forever.
+     *
+     * <p>{@code findActionForUnitType} is exactly the lookup
+     * {@link #produceUnit} uses to dispatch, so the reported menu and the
+     * dispatchable set agree by construction.
+     */
+    private java.util.List<String> producibleNamesFor(OrderableUnit factory) {
+        String key;
+        try {
+            key = factory.getUnitTypeInterface().getInternalName();
+        } catch (RuntimeException ignored) {
+            key = "?";
+        }
+        java.util.List<String> cached = producibleCache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        java.util.List<String> names = new java.util.ArrayList<>();
+        UnitType[] types;
+        try {
+            types = UnitType.values();
+        } catch (RuntimeException ignored) {
+            types = new UnitType[] {};
+        }
+        for (UnitType candidate : types) {
+            if (candidate == null || candidate.isLocked()) {
+                continue;
+            }
+            try {
+                SpecialAction action = factory.findActionForUnitType(candidate);
+                if (action != null && action.isAvailableForUnit(factory)) {
+                    names.add(candidate.getInternalName());
+                }
+            } catch (RuntimeException ignored) {
+                // Unqueryable candidate: not part of this factory's menu.
+            }
+        }
+        producibleCache.put(key, names);
+        return names;
+    }
+
+    /**
+     * Report, for each own factory, which unit types it can queue right now.
+     *
+     * <p>This is what makes {@code produce_unit} selectable: the Python mask
+     * gates that kind on a factory, and asks the game -- not a hard-coded guess
+     * -- which unit types are actually available. Reported separately from
+     * {@link #buildersJson()} because a builder's menu and a factory's menu are
+     * different capabilities.
+     */
+    private String factoriesJson() {
+        StringBuilder out = new StringBuilder(256);
+        out.append('[');
+        boolean first = true;
+        for (Object item : Unit.unitList) {
+            if (!(item instanceof OrderableUnit)) {
+                continue;
+            }
+            OrderableUnit unit = (OrderableUnit) item;
+            if (unit.removed || unit.hp <= 0.0f || unit.team == null) {
+                continue;
+            }
+            if (unit.team.teamId != engine.playerTeam.teamId) {
+                continue;
+            }
+            if (!unit.isFactoryBuilding()) {
+                continue;
+            }
+            if (!first) {
+                out.append(',');
+            }
+            first = false;
+            String typeName = "?";
+            try {
+                typeName = unit.getUnitTypeInterface().getInternalName();
+            } catch (RuntimeException ignored) {
+                // Fall through with the placeholder name.
+            }
+            out.append("{\"entity_id\":").append(unit.id)
+                    .append(",\"unit_type\":\"").append(typeName)
+                    .append("\",\"can_produce\":[");
+            java.util.List<String> names = producibleNamesFor(unit);
+            for (int index = 0; index < names.size(); index++) {
+                if (index > 0) {
+                    out.append(',');
+                }
+                out.append('"').append(names.get(index)).append('"');
+            }
+            out.append("]}");
+        }
+        out.append(']');
+        return out.toString();
+    }
+
     private String entityJson(Unit unit) {
         // ``protocol.Entity.team_id`` requires >= 0. Unowned map features (trees,
         // rocks) either have a null team or carry the "-1 neutral" marker which
@@ -541,6 +702,12 @@ public final class IronZeroBridge implements ServerExtension {
                 + ",\"is_factory\":" + unit.isFactoryBuilding()
                 + ",\"is_builder\":" + unit.isBuilder()
                 + ",\"is_operational\":" + !unit.isNonOperational()
+                // Completion fraction of a building under construction (1.0 for a
+                // finished unit). Without it neither the observation nor the
+                // reward can tell "a factory is going up" from "no factory yet",
+                // and a policy that starts a build and then gets distracted has
+                // no way to see that its structure is still half-built.
+                + ",\"build_progress\":" + fmt(buildProgress(unit))
                 // Whether the engine would accept an ``upgrade_building`` order
                 // for this unit *right now* (a real answer, not a type guess).
                 + ",\"can_upgrade\":" + canUpgrade(unit)
@@ -586,6 +753,28 @@ public final class IronZeroBridge implements ServerExtension {
                 // Deterministic across JVMs (String.hashCode is specified), so a
                 // checkpoint trained on a map keeps seeing the same ids.
                 return 1000 + (internalName(unit).hashCode() & 0x7fffffff) % 1000000;
+        }
+    }
+
+    /**
+     * Completion fraction of a unit, clamped to {@code [0, 1]}.
+     *
+     * <p>A finished unit reports {@code 1.0}; a structure that is still being
+     * placed reports the engine's own {@code buildProgress}. Anything the engine
+     * cannot answer falls back to 1.0 so "unknown" never reads as "just started".
+     */
+    private float buildProgress(Unit unit) {
+        try {
+            if (!unit.isBuilding()) {
+                return 1.0f;
+            }
+            float progress = unit.buildProgress;
+            if (!Float.isFinite(progress) || progress <= 0.0f) {
+                return 1.0f;
+            }
+            return Math.min(1.0f, progress);
+        } catch (RuntimeException ignored) {
+            return 1.0f;
         }
     }
 
@@ -936,6 +1125,25 @@ public final class IronZeroBridge implements ServerExtension {
     }
 
     /**
+     * The engine's own difficulty for the controlled team, used when only
+     * ``--enemy-ai-difficulty`` is requested.
+     *
+     * <p>Reads the value the engine already resolved instead of assuming a level,
+     * so "pin the enemies, leave my teacher alone" really means leave it alone.
+     */
+    private int defaultPlayerAiDifficulty() {
+        Team player = engine != null ? engine.playerTeam : null;
+        if (player == null) {
+            return 0;
+        }
+        try {
+            return player.getEffectiveAIDifficulty();
+        } catch (RuntimeException ignored) {
+            return 0;
+        }
+    }
+
+    /**
      * ``--ai-difficulty N``: pin the AI difficulty of every AI team on the map.
      *
      * <p>Rusted Warfare has six levels ({@code -2..3}, i.e. 非常简单 / 简单 / 正常 /
@@ -954,6 +1162,12 @@ public final class IronZeroBridge implements ServerExtension {
      */
     private void applyAiDifficulty() {
         int requested = aiDifficulty.intValue();
+        // ``--enemy-ai-difficulty`` overrides the enemy side only, so the teacher
+        // and the opponent can differ. This is not tuning for taste: the built-in
+        // AI plays *entirely differently* under pressure, and a BC teacher that
+        // never gets attacked only ever demonstrates "build up and wait".
+        Integer enemyRequested = enemyAiDifficulty;
+        Team player = engine != null ? engine.playerTeam : null;
         int applied = 0;
         int skipped = 0;
         for (Object item : Team.getTeams()) {
@@ -970,10 +1184,14 @@ public final class IronZeroBridge implements ServerExtension {
                 skipped++;
                 continue;
             }
+            int level = requested;
+            if (enemyRequested != null && team != player) {
+                level = enemyRequested.intValue();
+            }
             try {
-                team.aiDifficulty = requested;
+                team.aiDifficulty = level;
                 team.aiDifficultyLocked = true;
-                team.aiDifficultyOverride = Integer.valueOf(requested);
+                team.aiDifficultyOverride = Integer.valueOf(level);
                 applied++;
             } catch (RuntimeException failure) {
                 System.out.println("[ironzero] ai-difficulty: failed on team "
@@ -981,6 +1199,7 @@ public final class IronZeroBridge implements ServerExtension {
             }
         }
         System.out.println("[ironzero] ai-difficulty: requested=" + requested
+                + (enemyRequested != null ? " enemy=" + enemyRequested : "")
                 + " appliedTeams=" + applied + " nonAiTeams=" + skipped
                 + " incomeMultiplier=x" + fmt(incomeMultiplierFor(requested)));
     }

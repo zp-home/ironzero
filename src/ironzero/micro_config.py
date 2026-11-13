@@ -66,6 +66,25 @@ class MicroDuelConfig:
     # They are appended to the original 12 so the layout stays a superset.
     global_dim: int = 15
     entity_features: int = 10
+    # Per-entity *identity* features, written as a **separate block after the
+    # control grid** rather than inside ``entity_features``.
+    #
+    # The ten ``entity_features`` are geometric (position / hp fraction / order /
+    # distance) and contain no type information at all, so two completely
+    # different situations encode to a bit-identical vector. Measured (see
+    # ``runs/_scratch/probe_obs_type_blind.py``): "commandCenter 4000HP + builder
+    # 170HP" and "tank 4000HP + scout 170HP" both produce the *same* 367-float
+    # observation, max per-element difference 0.0. The policy therefore could not
+    # tell a building from a vehicle, a factory from an extractor, or a builder
+    # from a tank -- which is why "build something" was never learnable.
+    #
+    # Layout choice matters for checkpoints: appending the block at the tail
+    # means the global / own / enemy / grid columns keep their exact previous
+    # offsets, so ``_migrate_state_dict``'s "keep the leading columns" rule
+    # preserves the *entire* old meaning and only the new tail starts from zero
+    # influence. Inserting the new features inside each entity's stride would
+    # have shifted every later column and silently scrambled an old checkpoint.
+    type_features: int = 7
     # Normalisation denominators for the economy features. Fixed constants (not
     # derived from the scenario) so a checkpoint stays valid across maps.
     funds_scale: float = 5000.0
@@ -132,7 +151,18 @@ class MicroDuelConfig:
     def flat_obs_dim(self) -> int:
         entity_block = self.max_entities * self.entity_features
         grid_block = self.map_channels * self.map_grid * self.map_grid
-        return self.global_dim + 2 * entity_block + grid_block
+        type_block = 2 * self.max_entities * self.type_features
+        return self.global_dim + 2 * entity_block + grid_block + type_block
+
+    @property
+    def type_block_offset(self) -> int:
+        """Start offset of the per-entity identity block (after the control grid)."""
+
+        return (
+            self.global_dim
+            + 2 * self.max_entities * self.entity_features
+            + self.map_channels * self.map_grid * self.map_grid
+        )
 
     @property
     def terrain_channel(self) -> bool:
