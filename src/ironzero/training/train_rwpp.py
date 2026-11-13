@@ -40,8 +40,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--updates", type=int, default=4, help="PPO updates")
     parser.add_argument("--envs", type=int, default=2, help="parallel real game instances")
     parser.add_argument("--rollout-steps", type=int, default=8, help="decisions per env per update")
-    parser.add_argument("--episode-ticks", type=int, default=3600,
-                        help="simulated ticks per real-game episode (3600 = 60 s; a decided battle ends earlier)")
+    parser.add_argument("--episode-ticks", type=int, default=0,
+                        help="simulated-tick cap per episode; 0 (default) derives it from the "
+                             "map diagonal and player count via recommended_episode_ticks(). "
+                             "This is a safety fuse, not the win condition -- the engine decides "
+                             "the result, and reaching the cap instead pays timeout_penalty")
+    parser.add_argument("--timeout-penalty", type=float,
+                        default=RwppGameConfig().timeout_penalty,
+                        help="penalty for hitting the tick cap without the engine deciding "
+                             "the match; keeps stalling from being free")
+    parser.add_argument("--num-teams", type=int, default=RwppGameConfig().num_teams,
+                        help="team count used to size a derived --episode-ticks cap")
     parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--minibatch", type=int, default=64)
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -119,6 +128,8 @@ def build_game(args: argparse.Namespace) -> RwppGameConfig:
         map_relative=args.map,
         map_name=args.map_name,
         episode_ticks=int(args.episode_ticks),
+        timeout_penalty=float(args.timeout_penalty),
+        num_teams=max(1, int(args.num_teams)),
         map_width_px=float(args.map_width),
         map_height_px=float(args.map_height),
         units_per_team=int(args.units_per_team),
@@ -193,7 +204,8 @@ def main(argv: list[str] | None = None) -> int:
                 "device": str(trainer.device),
                 "gpu": _gpu_name(),
                 "envs": args.envs,
-                "episode_ticks": args.episode_ticks,
+                "episode_ticks": game.resolved_episode_ticks(),
+                "episode_ticks_explicit": args.episode_ticks,
                 "units_per_team": micro.units_per_team,
                 "max_entities": micro.max_entities,
                 "target_slots": micro.target_slots,
@@ -252,7 +264,10 @@ def main(argv: list[str] | None = None) -> int:
             "map": game.map_name,
             "map_path": game.map_relative,
             "map_size_px": [game.map_width_px, game.map_height_px],
-            "episode_ticks": game.episode_ticks,
+            "episode_ticks": game.resolved_episode_ticks(),
+            "episode_ticks_explicit": game.episode_ticks,
+            "timeout_penalty": game.timeout_penalty,
+            "num_teams": game.num_teams,
             "frame_ms": game.frame_ms,
             "physics_ms": game.physics_ms,
             "vision_radius": game.vision_radius,

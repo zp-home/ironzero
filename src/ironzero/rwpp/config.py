@@ -9,10 +9,13 @@ this module so the config object stays trivially inspectable.
 
 from __future__ import annotations
 
+import math
 import os
 import warnings
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+
+import numpy as np
 
 from ..micro_config import DEFAULT_CONFIG, MicroDuelConfig
 
@@ -33,6 +36,54 @@ DEFAULT_MAP_PX_H = 2500.0
 DECISION_TICKS = 10
 
 
+# Rusted Warfare's fixed loop runs at 60 ticks/s, and a ground unit moves at
+# ~66 px/s (``unit_speed`` in ``micro_config``: 1.1 units/tick * 60).
+TICKS_PER_SECOND = 60
+UNIT_SPEED_PX_PER_SECOND = 66.0
+
+# How many "map traversals" an episode is given.
+#
+# One traversal is only the approach. A real match needs: build up, approach,
+# fight, replace losses, and push the base -- so the budget is several
+# traversals, not one. 6 was chosen so that on Lake (3677 px diagonal) the cap
+# lands at ~20000 ticks (≈335 s of game time), which is comfortably longer than
+# the measured 39000-tick run that never resolved *because the AI never attacked*
+# -- the cap must not be the thing that decides a game the engine could decide.
+TRAVERSALS_PER_EPISODE = 6.0
+
+
+def recommended_episode_ticks(
+    map_width_px: float,
+    map_height_px: float,
+    num_teams: int = 2,
+) -> int:
+    """Tick cap sized from the map and the number of players, not a constant.
+
+    A fixed cap cannot be right for both a 1600 px duel and a 25-player epic:
+    too small and a decided game is cut off mid-fight, too large and every
+    timeout episode wastes minutes of simulation on a stalemate. The cap only has
+    to be an *upper bound that a real game never reaches* -- the engine decides
+    the result (see ``reward_shaping``); this is the safety fuse.
+
+    Derivation: crossing the map takes ``diagonal / speed`` seconds; a match needs
+    several traversals (approach, fight, rebuild, push); each additional team
+    multiplies the number of pushes needed. Rounded to whole seconds, then
+    clamped to the range the trainer and the web UI both accept (120..
+    216000 ticks, i.e. 2 s .. 1 h of game time).
+    """
+
+    diagonal = float(np.hypot(float(map_width_px), float(map_height_px)))
+    if not np.isfinite(diagonal) or diagonal <= 0.0:
+        diagonal = 1600.0
+    traversal_seconds = diagonal / UNIT_SPEED_PX_PER_SECOND
+    teams = max(1, int(num_teams))
+    # sqrt: 4 players do not need 3x the time of 2, because their pushes overlap.
+    team_factor = float(np.sqrt(max(1.0, teams - 1)))
+    seconds = traversal_seconds * TRAVERSALS_PER_EPISODE * team_factor
+    ticks = int(round(seconds * TICKS_PER_SECOND))
+    return max(120, min(216000, ticks))
+
+
 @dataclass
 class RwppGameConfig:
     """Everything needed to start one headless real-game instance."""
@@ -41,10 +92,18 @@ class RwppGameConfig:
     java_home: Path = DEFAULT_JAVA_HOME
     map_relative: str = DEFAULT_MAP
     map_name: str = DEFAULT_MAP_NAME
-    # Simulated-tick cap per episode. 3600 ticks = 60 s of game time: enough for a
-    # 22-vs-25 battle to resolve, while the native game-over signal ends decided
-    # battles early (a defeat typically arrives well before the cap).
-    episode_ticks: int = 3600
+    # Simulated-tick cap per episode: the **safety fuse**, not the win condition.
+    #
+    # The engine decides the match (``victoryScreenShown`` / ``defeatScreenShown``
+    # / ``wipedOut``); this is only the upper bound past which the episode is cut
+    # off and the policy pays ``timeout_penalty`` for failing to finish. It is
+    # sized from the map geometry and player count via
+    # :func:`recommended_episode_ticks` (see ``resolved_episode_ticks``) instead
+    # of being a fixed constant, because no single number is right for both a
+    # 1600 px duel and a large team map.
+    #
+    # ``0`` (the default) means "derive it from the map and player count".
+    episode_ticks: int = 0
     map_width_px: float = DEFAULT_MAP_PX_W
     map_height_px: float = DEFAULT_MAP_PX_H
     start_timeout: float = 180.0
@@ -152,8 +211,49 @@ class RwppGameConfig:
     # real value is the capability it unlocks (production / income). Small enough
     # that retreating to save a factory never outweighs fighting for the win.
     building_loss_penalty: float = 0.30
+    # Penalty for hitting the tick cap without the engine deciding the match.
+    #
+    # This replaces the old *heuristic* adjudication (``_decide_by_army``
+    # comparing surviving-unit ratios). Two measured facts made the heuristic the
+    # wrong tool:
+    #
+    # 1. The engine already knows who won. It reports ``victoryScreenShown`` /
+    #    ``defeatScreenShown`` / ``wipedOut`` and the bridge forwards that as
+    #    ``result``; the Python side was second-guessing it with a "who has more
+    #    units left" rule, which needed patch after patch (an absolute hp gap, then
+    #    a unit-count ratio, then a disconnected carve-out) and still recorded a
+    #    2-vs-8 loss as a draw.
+    # 2. When the heuristic fired, it was almost always describing a *stalemate*,
+    #    not a decided game: a 39000-tick Lake run ended with the enemy at 22
+    #    units and us at 1, yet the engine never declared a result because the AI
+    #    never actually attacked. Awarding "defeat" there was a guess; the honest
+    #    statement is "you did not win in the time allowed".
+    #
+    # So: the engine decides the result. If the cap is reached first, the episode
+    # is a timeout and pays this penalty. Negative so that "never finish" is worse
+    # than a clean loss's *shape* on the shaping terms, but small enough that a
+    # policy is never encouraged to lose faster than to keep playing.
+    timeout_penalty: float = 0.20
+    # Team count used by ``recommended_episode_ticks`` when ``episode_ticks`` is
+    # left at 0 (derive the cap). Two on every stock skirmish map.
+    num_teams: int = 2
     log_dir: Path = REPO_ROOT / "runs" / "_rwpp_ppo"
     env_overrides: dict[str, str] = field(default_factory=dict)
+
+    def resolved_episode_ticks(self) -> int:
+        """The tick cap actually used: explicit ``episode_ticks`` or a derived one.
+
+        Deriving it from :func:`recommended_episode_ticks` (map diagonal + player
+        count) is what makes the fuse meaningful across maps instead of pretending
+        one constant fits a 1600 px duel and a 25-player epic alike.
+        """
+
+        explicit = int(self.episode_ticks or 0)
+        if explicit > 0:
+            return explicit
+        return recommended_episode_ticks(
+            self.map_width_px, self.map_height_px, self.num_teams
+        )
 
     def resolved_max_entities(self) -> int:
         """Entity slots per block; never fewer than one full army."""
@@ -197,7 +297,7 @@ class RwppGameConfig:
             DEFAULT_CONFIG,
             map_width=float(self.map_width_px),
             map_height=float(self.map_height_px),
-            episode_ticks=int(self.episode_ticks),
+            episode_ticks=int(self.resolved_episode_ticks()),
             vision_radius=float(self.vision_radius or 0.0),
             units_per_team=int(self.units_per_team),
             max_entities=self.resolved_max_entities(),

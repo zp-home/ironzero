@@ -1,91 +1,57 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Truncation adjudication: a clearly-won tick-capped battle must be a win.
+"""The engine decides the match; the tick cap is only a safety fuse.
 
-Regression guard for a real measurement: a probe episode ended with 4 own units
-alive against 1 enemy and was recorded as ``timeout`` with ``terminal = 0.0``.
-The old rule required an absolute HP-fraction gap of 0.08, but the fractions are
-normalised by the *starting* army totals, so in a long battle both sides shrink
-towards zero (0.046 vs 0.040 here, a gap of 0.006) and the threshold became
-unreachable exactly when the battle was decided. Every such episode paid the
-policy nothing for winning, which is indistinguishable from losing.
+This file replaces an earlier one whose central premise was wrong.
 
-The fix decides on surviving units first (annihilation is a win) and only falls
-back to a relative-strength comparison for equal-sized armies.
+The old design inferred a winner on truncation from surviving-army ratios
+(``_decide_by_army``). That heuristic had to be patched three times -- an
+absolute hp-fraction gap, then a unit-count ratio, then a ``disconnected``
+carve-out -- and still recorded a 2-vs-8 loss as a draw. Two measurements showed
+the whole approach was the wrong tool:
+
+1. **The engine already knows the result.** It reports ``victoryScreenShown`` /
+   ``defeatScreenShown`` / ``wipedOut`` and the bridge forwards that as
+   ``result``. The heuristic was second-guessing an authoritative signal.
+2. **When the heuristic fired, it was describing a stalemate.** A 39000-tick
+   Lake run ended with the enemy holding 22 units against our 1, and the engine
+   reported *nothing* -- because the built-in AI never left its base. Calling
+   that "defeat" was a guess dressed up as a verdict.
+
+So the rule is now: engine verdict wins; anything else is a ``timeout``, and a
+timeout costs ``timeout_penalty`` (because "ran out of time" must not be free).
+The cap itself is derived from map size and player count
+(``recommended_episode_ticks``) rather than being a fixed constant.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from ironzero.rwpp.reward_shaping import (
-    TIMEOUT_TERMINAL_SCALE,
-    _decide_by_army,
-    compute_step_shaping,
+from ironzero.rwpp.config import (
+    RwppGameConfig,
+    recommended_episode_ticks,
 )
-from ironzero.rwpp.config import RwppGameConfig
+from ironzero.rwpp.reward_shaping import compute_step_shaping
 
 
-@pytest.mark.parametrize(
-    "own_alive,enemy_alive,own_frac,enemy_frac,expected",
-    [
-        # Annihilation is decisive regardless of hp.
-        (25, 0, 1.00, 0.00, "victory"),
-        (0, 25, 0.00, 1.00, "defeat"),
-        (0, 0, 0.0, 0.0, "timeout"),
-        # The measured regression: 4 vs 1, both armies badly damaged. The old
-        # rule read the hp gap (0.046 - 0.040 = 0.006) against an absolute 0.08
-        # and called a 4-vs-1 win a timeout.
-        (4, 1, 0.046, 0.040, "victory"),
-        (4, 1, 0.160, 0.040, "victory"),
-        # A materially larger surviving army wins...
-        (8, 6, 0.320, 0.240, "victory"),
-        (2, 1, 0.080, 0.040, "victory"),
-        (24, 18, 0.80, 0.70, "victory"),
-        # ...and a materially smaller one loses.
-        (4, 14, 0.160, 0.560, "defeat"),
-        (18, 24, 0.70, 0.80, "defeat"),
-        # Armies of comparable size are a draw even if hp differs: nothing was
-        # decided. This is the case a naive "more units wins" rule got wrong
-        # (21 vs 23 was scored as a defeat).
-        (13, 13, 0.520, 0.520, "timeout"),
-        (19, 19, 0.300, 0.250, "timeout"),
-        (21, 23, 0.40, 0.55, "timeout"),
-        (23, 21, 0.55, 0.40, "timeout"),
-        # Half the units is decisive even when the survivors are healthier: the
-        # rule is about surviving *army size*, not about who has more hp left.
-        (1, 2, 0.200, 0.100, "defeat"),
-        (2, 1, 0.100, 0.200, "victory"),
-    ],
-)
-def test_battle_adjudication(
-    own_alive: int,
-    enemy_alive: int,
-    own_frac: float,
-    enemy_frac: float,
-    expected: str,
-) -> None:
-    assert (
-        _decide_by_army(
-            own_alive=own_alive,
-            enemy_alive=enemy_alive,
-            own_frac=own_frac,
-            enemy_frac=enemy_frac,
-        )
-        == expected
+def _shaping(
+    *,
+    bridge_result: str | None = None,
+    own_alive: int = 6,
+    enemy_alive: int = 1,
+    tick: int = 3600,
+    disconnected: bool = False,
+    done: bool = False,
+    episode_ticks: int = 3600,
+):
+    game = RwppGameConfig(
+        win_mode="native", units_per_team=8, episode_ticks=episode_ticks
     )
-
-
-def _truncated(own_hps: list[float], enemy_hps: list[float]):
-    """Run one truncating shaping step for the given surviving armies."""
-
-    game = RwppGameConfig(win_mode="annihilation", units_per_team=25, episode_ticks=3600)
     micro = game.micro_config()
-    own = [{"hp": hp, "max_hp": 210.0} for hp in own_hps]
-    enemies = [{"hp": hp, "max_hp": 210.0} for hp in enemy_hps]
     state = {
-        "tick": 3600,
-        "own_entities": own,
-        "visible_enemy_entities": enemies,
+        "tick": tick,
+        "own_entities": [{"hp": 210.0, "max_hp": 210.0}] * own_alive,
+        "visible_enemy_entities": [{"hp": 210.0, "max_hp": 210.0}] * enemy_alive,
         "global_state": {},
     }
     return compute_step_shaping(
@@ -95,136 +61,210 @@ def _truncated(own_hps: list[float], enemy_hps: list[float]):
         actions=[],
         receipts=[],
         message={"global_state": {}},
-        bridge_result=None,
+        bridge_result=bridge_result,
         potential=0.0,
         previous_potential=0.0,
         distance=0.5,
         previous_distance=0.5,
-        own_alive=len(own),
-        enemy_alive=len(enemies),
-        previous_own_alive=len(own),
-        previous_enemy_alive=len(enemies),
+        own_alive=own_alive,
+        enemy_alive=enemy_alive,
+        previous_own_alive=own_alive,
+        previous_enemy_alive=enemy_alive,
         strategy_component=0.0,
-        disconnected=False,
-        done=True,
+        disconnected=disconnected,
+        done=done,
         own_max_ref=5250.0,
         enemy_max_ref=5250.0,
         episode_components={},
     )
 
 
-def test_a_clearly_won_truncated_battle_pays_the_win() -> None:
-    """The exact measured case: 4 badly-damaged units left vs 1."""
-
-    shaping = _truncated([60.0] * 4, [210.0])
+# ---------------------------------------------------------------------------
+# 1. The engine's verdict is used verbatim.
+# ---------------------------------------------------------------------------
+def test_a_native_victory_is_a_terminated_win() -> None:
+    shaping = _shaping(bridge_result="victory")
+    assert shaping.terminated
+    assert not shaping.truncated
     assert shaping.last_result == "victory"
-    assert shaping.components["terminal"] == pytest.approx(
-        1.0 * TIMEOUT_TERMINAL_SCALE
-    )
-    assert shaping.truncated is True
+    assert shaping.components["terminal"] == pytest.approx(1.0)
 
 
-def test_a_clearly_lost_truncated_battle_pays_the_loss() -> None:
-    shaping = _truncated([60.0] * 2, [210.0] * 12)
+def test_a_native_defeat_is_a_terminated_loss() -> None:
+    shaping = _shaping(bridge_result="defeat")
+    assert shaping.terminated
+    assert not shaping.truncated
     assert shaping.last_result == "defeat"
-    assert shaping.components["terminal"] == pytest.approx(
-        -1.0 * TIMEOUT_TERMINAL_SCALE
-    )
+    assert shaping.components["terminal"] == pytest.approx(-1.0)
 
 
-def test_an_even_truncated_battle_pays_nothing() -> None:
-    shaping = _truncated([210.0] * 5, [210.0] * 5)
-    assert shaping.last_result == "timeout"
-    assert shaping.components["terminal"] == 0.0
+def test_the_engine_verdict_beats_the_army_counts() -> None:
+    """A declared victory is a victory even if we have fewer units left.
 
-
-def test_a_disconnect_never_awards_a_win() -> None:
-    """A dead connection must not be adjudicated as a victory."""
-
-    game = RwppGameConfig(win_mode="annihilation", units_per_team=25, episode_ticks=3600)
-    micro = game.micro_config()
-    state = {
-        "tick": 3600,
-        "own_entities": [{"hp": 210.0, "max_hp": 210.0}] * 6,
-        "visible_enemy_entities": [{"hp": 210.0, "max_hp": 210.0}],
-        "global_state": {},
-    }
-    shaping = compute_step_shaping(
-        micro=micro,
-        game=game,
-        state=state,
-        actions=[],
-        receipts=[],
-        message={"global_state": {}},
-        bridge_result=None,
-        potential=0.0,
-        previous_potential=0.0,
-        distance=0.5,
-        previous_distance=0.5,
-        own_alive=6,
-        enemy_alive=1,
-        previous_own_alive=6,
-        previous_enemy_alive=1,
-        strategy_component=0.0,
-        disconnected=True,
-        done=True,
-        own_max_ref=5250.0,
-        enemy_max_ref=5250.0,
-        episode_components={},
-    )
-    assert shaping.last_result == "timeout"
-    assert shaping.components["terminal"] == 0.0
-
-
-def test_a_disconnect_does_award_a_defeat() -> None:
-    """But a wipe-out is unambiguous even when the stream stops.
-
-    The asymmetry is deliberate. Our own units are always fully visible (they are
-    ours), so seeing them gone is real evidence -- whereas "our army looks bigger
-    right now" is not evidence that the enemy is beaten (they may just be out of
-    sight). Awarding defeat on missing data is honest; awarding victory is a false
-    positive that corrupts the win rate.
-
-    Why this matters on the real game: a 60-update run reported every eval episode
-    as ``result=timeout`` with ``own_alive=2, enemy_alive=8`` at ``ticks=5351``
-    against a 6000 cap -- the bridge had stopped before the cap, and obvious
-    defeats were being paid ``terminal=0.0``.
+    The engine knows about objectives, buildings and team elimination; a raw unit
+    count does not. This is the case the old heuristic got wrong.
     """
 
-    game = RwppGameConfig(win_mode="native", units_per_team=8, episode_ticks=6000,
-                          map_relative="maps/skirmish/[p2]Lake (2p).tmx")
-    micro = game.micro_config()
-    state = {
-        "tick": 5351,
-        "own_entities": [{"hp": 4000.0, "max_hp": 4000.0}] * 2,
-        "visible_enemy_entities": [{"hp": 210.0, "max_hp": 210.0}] * 8,
-        "global_state": {},
-    }
-    shaping = compute_step_shaping(
-        micro=micro,
-        game=game,
-        state=state,
-        actions=[],
-        receipts=[],
-        message={"global_state": {}},
-        bridge_result=None,
-        potential=0.0,
-        previous_potential=0.0,
-        distance=0.5,
-        previous_distance=0.5,
-        own_alive=2,
-        enemy_alive=8,
-        previous_own_alive=2,
-        previous_enemy_alive=8,
-        strategy_component=0.0,
-        disconnected=True,
-        done=False,
-        own_max_ref=4170.0,
-        enemy_max_ref=4170.0,
-        episode_components={},
-    )
-    assert shaping.truncated
+    shaping = _shaping(bridge_result="victory", own_alive=1, enemy_alive=6)
+    assert shaping.last_result == "victory"
+    assert shaping.components["terminal"] == pytest.approx(1.0)
+
+
+def test_the_engine_verdict_is_not_awarded_a_win_bonus_on_defeat() -> None:
+    shaping = _shaping(bridge_result="defeat", own_alive=6, enemy_alive=1)
     assert shaping.last_result == "defeat"
-    assert shaping.components["terminal"] == pytest.approx(
-        -1.0 * TIMEOUT_TERMINAL_SCALE
+    assert shaping.components["terminal"] == pytest.approx(-1.0)
+
+
+# ---------------------------------------------------------------------------
+# 2. No engine verdict => timeout, and a timeout costs something.
+# ---------------------------------------------------------------------------
+def test_reaching_the_tick_cap_without_a_verdict_is_a_timeout() -> None:
+    shaping = _shaping(tick=3600, episode_ticks=3600)
+    assert shaping.truncated
+    assert not shaping.terminated
+    assert shaping.last_result == "timeout"
+
+
+def test_a_timeout_pays_the_configured_penalty() -> None:
+    shaping = _shaping(tick=3600, episode_ticks=3600)
+    assert shaping.components["timeout"] == pytest.approx(
+        -RwppGameConfig().timeout_penalty
     )
+    assert shaping.components["timeout"] < 0.0
+
+
+def test_a_timeout_pays_nothing_into_terminal() -> None:
+    """Only the *engine* may move ``terminal``. No verdict, no terminal value."""
+
+    shaping = _shaping(tick=3600, episode_ticks=3600)
+    assert shaping.components["terminal"] == 0.0
+
+
+@pytest.mark.parametrize(
+    "own_alive,enemy_alive",
+    [
+        (6, 1),   # looks like a clear win  -> still a timeout now
+        (1, 6),   # looks like a clear loss -> still a timeout now
+        (2, 8),   # the measured 60-update run
+        (13, 13),  # even
+        (25, 0),  # enemy wiped but no verdict (legacy bridge path handles it)
+    ],
+)
+def test_army_counts_alone_never_decide_a_timeout(
+    own_alive: int, enemy_alive: int
+) -> None:
+    """The ratio heuristic is gone: unit counts no longer imply a winner."""
+
+    shaping = _shaping(
+        own_alive=own_alive, enemy_alive=enemy_alive, tick=3600, episode_ticks=3600
+    )
+    if own_alive > 0 and enemy_alive > 0:
+        assert shaping.last_result == "timeout"
+        assert shaping.components["terminal"] == 0.0
+
+
+def test_a_stalemate_pays_less_than_resolving_the_match() -> None:
+    """Sitting still for the whole cap must cost more than a decided game.
+
+    The assertion is on the *timeout* term specifically, not on the total reward:
+    a neutral step can still earn dense shaping (``bonus_build`` for a structure
+    that finished, ``potential`` for ground gained), and conflating the two would
+    make this test depend on unrelated reward terms.
+    """
+
+    stalling = _shaping(tick=3600, episode_ticks=3600)
+    decided = _shaping(bridge_result="victory")
+    assert stalling.components["timeout"] < 0.0
+    assert decided.components["timeout"] == 0.0
+    assert stalling.components["timeout"] < decided.components["terminal"]
+
+
+# ---------------------------------------------------------------------------
+# 3. Disconnects are truncations too, and never invent a verdict.
+# ---------------------------------------------------------------------------
+def test_a_disconnect_never_awards_a_win() -> None:
+    shaping = _shaping(disconnected=True, done=True, own_alive=6, enemy_alive=1)
+    assert shaping.last_result == "timeout"
+    assert shaping.components["terminal"] == 0.0
+
+
+def test_a_disconnect_never_awards_a_defeat_either() -> None:
+    """A dropped stream is missing data, not evidence.
+
+    The previous revision carved out an asymmetry ("defeat is allowed, victory is
+    not") to rescue obvious losses. With the engine as the source of truth that
+    carve-out is unnecessary: if we really lost, the engine says so *before* the
+    socket dies. A disconnect with no verdict is simply a timeout.
+    """
+
+    shaping = _shaping(disconnected=True, done=False, own_alive=2, enemy_alive=8)
+    assert shaping.last_result == "timeout"
+    assert shaping.components["terminal"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# 4. The cap is sized from geometry, not hard-coded.
+# ---------------------------------------------------------------------------
+def test_recommended_cap_scales_with_map_size() -> None:
+    small = recommended_episode_ticks(1000.0, 1000.0, 2)
+    large = recommended_episode_ticks(4000.0, 4000.0, 2)
+    assert large > small
+
+
+def test_recommended_cap_scales_with_player_count() -> None:
+    two = recommended_episode_ticks(2600.0, 2600.0, 2)
+    four = recommended_episode_ticks(2600.0, 2600.0, 4)
+    assert four > two
+    # ...but sub-linearly: overlapping pushes mean 4 players do not need 3x.
+    assert four < 2 * two
+
+
+def test_recommended_cap_is_inside_the_accepted_range() -> None:
+    for width, height in [(200.0, 200.0), (2600.0, 2600.0), (20000.0, 20000.0)]:
+        ticks = recommended_episode_ticks(width, height, 2)
+        assert 120 <= ticks <= 216000
+
+
+def test_recommended_cap_is_long_enough_for_a_real_match() -> None:
+    """A Lake-sized map must allow far more than one approach.
+
+    Measured reference: a 39000-tick Lake episode never resolved because the AI
+    never attacked. The cap must not be the thing that ends a game the engine
+    could have decided, so it has to be generous for the map being trained.
+    """
+
+    tick_cap = recommended_episode_ticks(2600.0, 2600.0, 2)
+    assert tick_cap >= 15000
+
+
+def test_zero_episode_ticks_derives_the_cap() -> None:
+    game = RwppGameConfig(map_width_px=2600.0, map_height_px=2600.0)
+    assert game.episode_ticks == 0
+    assert game.resolved_episode_ticks() == recommended_episode_ticks(
+        2600.0, 2600.0, game.num_teams
+    )
+
+
+def test_explicit_episode_ticks_is_respected() -> None:
+    game = RwppGameConfig(episode_ticks=4321)
+    assert game.resolved_episode_ticks() == 4321
+
+
+def test_micro_config_carries_the_resolved_cap() -> None:
+    game = RwppGameConfig(
+        map_width_px=2600.0, map_height_px=2600.0, units_per_team=8
+    )
+    assert game.micro_config().episode_ticks == game.resolved_episode_ticks()
+
+
+def test_timeout_penalty_is_smaller_than_a_lost_game() -> None:
+    """Stalling must not be *preferable* to losing outright.
+
+    If a timeout cost more than a defeat, a policy near the cap would be pushed to
+    lose on purpose rather than risk running out of time.
+    """
+
+    game = RwppGameConfig()
+    micro = game.micro_config()
+    assert game.timeout_penalty < abs(micro.loss_reward)

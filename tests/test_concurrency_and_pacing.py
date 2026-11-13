@@ -349,17 +349,37 @@ def test_physics_ms_defaults_to_real_time() -> None:
 
 
 def test_episode_ticks_become_real_game_seconds() -> None:
-    """16 ms/tick x 3600 ticks = 57.6 s; the old default simulated only 7.2 s."""
+    """The cap must be a *battle-length* episode, not a 7 s slice.
+
+    ``episode_ticks`` now defaults to 0 = "derive from the map", so the resolved
+    value is what has to be checked. The invariant this test protects is
+    unchanged and still the important one: one tick is 16 ms of simulated time,
+    so N ticks means N*16 ms of game time -- the old ``frame_ms=2`` default made
+    a 3600-tick episode simulate only 7.2 s.
+    """
 
     from ironzero.rwpp.config import RwppGameConfig
 
     game = RwppGameConfig()
+    assert game.episode_ticks == 0, "0 means 'derive it from the map geometry'"
+    resolved = game.resolved_episode_ticks()
     delta_ms = game.physics_ms or game.frame_ms
-    seconds = game.episode_ticks * delta_ms / 1000.0
-    assert seconds == pytest.approx(57.6)
-    # The point of the change: it is a *battle-length* episode, not a 7 s slice.
+    seconds = resolved * delta_ms / 1000.0
+    # The point of the change: it is a battle-length episode, not a 7 s slice.
     assert seconds > 30.0
-    assert game.episode_ticks * 2 / 1000.0 == 7.2  # what frame_ms=2 used to give
+    # What the old ``frame_ms=2`` default actually simulated for 3600 ticks.
+    assert 3600 * 2 / 1000.0 == pytest.approx(7.2)
+
+
+def test_an_explicit_cap_still_maps_to_real_game_seconds() -> None:
+    """An operator override keeps the original 1 tick = 16 ms contract."""
+
+    from ironzero.rwpp.config import RwppGameConfig
+
+    game = RwppGameConfig(episode_ticks=3600)
+    assert game.resolved_episode_ticks() == 3600
+    delta_ms = game.physics_ms or game.frame_ms
+    assert 3600 * delta_ms / 1000.0 == pytest.approx(57.6)
 
 
 def test_physics_ms_is_passed_to_the_game_only_when_requested() -> None:

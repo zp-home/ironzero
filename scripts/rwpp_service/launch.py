@@ -29,7 +29,10 @@ _PPO_CHECKS = (
     ("updates must be 1..500", lambda v: 1 <= v["updates"] <= 500),
     ("envs must be 1..16", lambda v: 1 <= v["envs"] <= 16),
     ("rollout_steps must be 1..512", lambda v: 1 <= v["rollout_steps"] <= 512),
-    ("episode_ticks must be 120..216000", lambda v: 120 <= v["episode_ticks"] <= 216000),
+    # 0 means "derive the cap from the map diagonal and player count"
+    # (``recommended_episode_ticks``); anything else is an explicit override.
+    ("episode_ticks must be 0 or 120..216000",
+     lambda v: v["episode_ticks"] == 0 or 120 <= v["episode_ticks"] <= 216000),
 )
 
 
@@ -64,7 +67,7 @@ class StartMixin:
         updates = int(payload.get("updates", 4))
         envs = int(payload.get("envs", 2))
         rollout_steps = int(payload.get("rollout_steps", 20))
-        episode_ticks = int(payload.get("episode_ticks", 3600))
+        episode_ticks = int(payload.get("episode_ticks", 0))
         device = str(payload.get("device", "auto"))
         map_name = str(payload.get("map_name") or "Artillery")
         map_path = str(payload.get("map_path") or "maps/challenge/Artillery.tmx")

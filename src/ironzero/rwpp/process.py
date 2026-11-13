@@ -77,7 +77,10 @@ def _bridge_command(launcher: Path, port: int, game: RwppGameConfig) -> list[str
         "--bridge-port",
         str(port),
         "--ticks",
-        str(int(game.episode_ticks)),
+        # The bridge's own frame cap: send the *resolved* value, because
+        # ``episode_ticks`` may be 0 ("derive from the map") and a literal 0 would
+        # make the bridge exit immediately with a zero-tick episode.
+        str(int(game.resolved_episode_ticks())),
         "--map",
         game.map_relative,
         "--frame-ms",

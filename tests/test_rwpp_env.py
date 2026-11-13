@@ -468,15 +468,13 @@ class RwppBridgeLoopTests(unittest.TestCase):
             elapsed = time.time() - started
             self.assertFalse(terminated)
             self.assertTrue(truncated)
-            # A dropped connection is adjudicated on the army we can still see
-            # (2 own vs 3 enemy here -> a defeat), not written off as a draw.
-            # It used to report ``timeout`` purely because the stream stopped,
-            # which on the real game turned obvious losses into 0-reward draws.
-            self.assertEqual(info["result"], "defeat")
+            # A dropped connection carries no verdict, so it is a timeout -- not
+            # an invented win and not an invented loss. The engine is the only
+            # authority on the result; when the stream dies we did not see one.
+            self.assertEqual(info["result"], "timeout")
             self.assertTrue(info["disconnected"])
-            # But a disconnect must never *award a win*: see
-            # ``test_a_disconnect_never_awards_a_win``.
-            self.assertNotEqual(info["result"], "victory")
+            # A timeout is not free: stalling must cost the policy something.
+            self.assertLess(info["reward_components"]["timeout"], 0.0)
             # The old code spun for the full 60 s obs_timeout here.
             self.assertLess(elapsed, 5.0)
         finally:

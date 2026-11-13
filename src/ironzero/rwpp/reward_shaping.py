@@ -28,21 +28,20 @@ from .reward import hp_fractions
 # farther away is manoeuvring / holding ground, which must not be punished.
 ENGAGED_RANGE_MULTIPLIER = 3.0
 
-# A battle decided by the tick cap is worth slightly less than one won outright
-# (the win is real, but it was not a clean sweep).
+# A battle decided by the tick cap is worth slightly less than one won outright.
+#
+# DEPRECATED: no longer used. The tick cap no longer awards a win or a loss at
+# all -- it pays ``timeout_penalty`` -- because the engine's own verdict is
+# authoritative. Kept exported only so existing imports keep resolving.
 TIMEOUT_TERMINAL_SCALE = 0.8
 
-# How much larger a surviving army must be to count as the winner when the tick
-# cap ends the battle.
+# How much larger a surviving army had to be to be declared the winner by the
+# old heuristic.
 #
-# The old rule compared hp *fractions* against an absolute 0.08 gap. Those
-# fractions are normalised by the episode-start totals, so late in a long battle
-# both sides shrink towards zero and the gap became smaller than the threshold
-# exactly when the battle was decided: a measured 4-vs-1 finish (0.046 vs 0.040)
-# was recorded as a `timeout` and paid terminal 0.0.
-#
-# Unit count is the honest primary signal (destroying units is the objective),
-# with a ratio so that "21 vs 23" is still a draw rather than a defeat.
+# DEPRECATED along with ``_decide_by_army``. See the module docstring of
+# ``tests/test_timeout_adjudication.py`` and ``RwppGameConfig.timeout_penalty``
+# for why the heuristic was removed: the engine already reports the result, and
+# every case the heuristic actually fired on was a stalemate.
 TIMEOUT_DECISIVE_RATIO = 1.25
 
 
@@ -53,12 +52,16 @@ def _decide_by_army(
     own_frac: float,
     enemy_frac: float,
 ) -> str:
-    """Adjudicate a tick-capped battle: ``victory`` / ``defeat`` / ``timeout``.
+    """DEPRECATED: surviving-army heuristic for a tick-capped battle.
 
-    ``own_frac`` / ``enemy_frac`` are hp fractions against the episode-start
-    totals; they are only used as a tie-breaker, because their absolute scale
-    shrinks over a long battle. The primary signal is the surviving unit count:
-    a battle that ends with a materially larger army left is not a draw.
+    No longer used by the reward path. The engine decides the match (see
+    ``RwppGameConfig.timeout_penalty``); this function remains only because
+    external tooling and older tests import it, and because its *documented*
+    behaviour is still a useful description of what a stalemate looks like.
+
+    Do not reintroduce it as the source of truth: it was patched three times (an
+    absolute hp gap, then a unit-count ratio, then a disconnected carve-out) and
+    still recorded a 2-vs-8 loss as a draw.
     """
 
     if enemy_alive == 0 and own_alive > 0:
@@ -72,9 +75,6 @@ def _decide_by_army(
         return "victory"
     if enemy_alive >= own_alive * ratio:
         return "defeat"
-    # Neither side holds a decisive unit advantage. Only an army that is both
-    # the same size and clearly healthier breaks the tie; anything close stays a
-    # timeout, because nothing was actually decided.
     return "timeout"
 
 
@@ -242,69 +242,36 @@ def compute_step_shaping(
     reward = float(sum(components.values()))
     for key, value in components.items():
         episode_components[key] = episode_components.get(key, 0.0) + float(value)
-    # A bridge-declared timeout (tick cap) or a dead connection truncates the
-    # episode; a decided battle terminates it.
+    # The engine decides the match; the tick cap is only a safety fuse.
+    #
+    # ``bridge_result`` is the game's own verdict (``victoryScreenShown`` /
+    # ``defeatScreenShown`` / ``wipedOut`` forwarded by the bridge). When it is
+    # present, it is used verbatim and nothing else may override it.
+    #
+    # When it is absent and the episode ends, the honest outcome is ``timeout``:
+    # we did not win inside the allowed time. This deliberately replaces the old
+    # ``_decide_by_army`` heuristic, which inferred a winner from surviving-unit
+    # ratios. Two measurements showed the heuristic was the wrong tool:
+    #
+    # * the engine already knows the result, so the rule was second-guessing it;
+    # * when it fired it was describing a stalemate, not a decision -- a
+    #   39000-tick Lake episode ended with the enemy holding 22 units against our
+    #   1 and the engine still reported *nothing*, because the built-in AI never
+    #   left its base. Calling that "defeat" was a guess dressed as a verdict.
     truncated = (not terminated) and (
         done
         or disconnected
-        or int(state.get("tick", 0)) >= int(game.episode_ticks)
+        or int(state.get("tick", 0)) >= int(game.resolved_episode_ticks())
     )
     if truncated:
-        own_frac, enemy_frac = hp_fractions(state, own_max_ref, enemy_max_ref)
-        # In annihilation battles or micro duels that reach the tick limit, decide by
-        # army survival / HP advantage rather than writing off clear-cut wins as
-        # 0-win timeouts (matches standard RTS tournament rules).
-        is_micro_battle = (
-            game.win_mode == "annihilation"
-            or "ironzero" in str(game.map_relative).lower()
-            or "ironzero" in str(game.map_name).lower()
-            or micro.units_per_team > 0
-        )
-        # Adjudicate on the army we can actually see, regardless of *why* the
-        # episode ended -- with one deliberate asymmetry.
-        #
-        # The old condition was ``is_micro_battle and not disconnected``, which
-        # wrote a bare ``timeout`` whenever the connection dropped. On the real
-        # game that happens routinely before the tick cap (the bridge stops, the
-        # engine tears down, the socket closes). Measured over a 60-update run:
-        # every eval episode reported ``result=timeout`` with
-        # ``own_alive=2, enemy_alive=8`` and ``ticks=5351`` against a 6000 cap --
-        # an obvious defeat recorded as a draw and paid ``terminal=0.0``.
-        # ``_decide_by_army`` on those exact numbers returns ``defeat``. A
-        # disconnected rollout therefore taught the policy nothing about having
-        # lost.
-        #
-        # Why the asymmetry: a *win* is only awarded when the bridge itself
-        # declared one, because "our army is bigger right now" is not the same as
-        # "the enemy is beaten" -- if the connection died mid-fight the enemy may
-        # simply have been out of sight. A *loss* is different: our own units are
-        # always fully visible (they are ours), so a wipe-out is unambiguous
-        # evidence even when the stream stops. Awarding defeat without data is
-        # honest; awarding victory without data is a false positive that directly
-        # corrupts the win rate.
-        if is_micro_battle:
-            winner = _decide_by_army(
-                own_alive=own_alive,
-                enemy_alive=enemy_alive,
-                own_frac=own_frac,
-                enemy_frac=enemy_frac,
-            )
-            # Never award a *win* on missing data. See the comment above.
-            if disconnected and winner == "victory":
-                winner = "timeout"
-            if winner == "victory":
-                last_result = "victory"
-                components["terminal"] = float(micro.win_reward) * TIMEOUT_TERMINAL_SCALE
-            elif winner == "defeat":
-                last_result = "defeat"
-                components["terminal"] = float(micro.loss_reward) * TIMEOUT_TERMINAL_SCALE
-            else:
-                last_result = "timeout"
-        else:
-            last_result = "timeout"
+        # A truncation without a native verdict is a timeout, and a timeout costs
+        # the policy something: "ran out of time" must not be free, or the agent
+        # learns that stalling is as good as winning.
+        last_result = "timeout"
+        components["timeout"] = -float(game.timeout_penalty)
         reward = float(sum(components.values()))
-        episode_components["terminal"] = float(
-            episode_components.get("terminal", 0.0) + components["terminal"]
+        episode_components["timeout"] = float(
+            episode_components.get("timeout", 0.0) + components["timeout"]
         )
     return StepShaping(
         components=components,
