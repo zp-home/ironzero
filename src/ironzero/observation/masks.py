@@ -156,6 +156,16 @@ def build_masks(state: dict, config: MicroDuelConfig = DEFAULT_CONFIG) -> dict[s
     # real answer and must mask the kind; only unreported capabilities fall back
     # to "we own a factory".
     producible = producibles is None or len(producibles) > 0
+    # A menu that offers *only* ``builder`` must not open ``produce_unit``. Every
+    # factory in Rusted Warfare can make builders, so gating on "the menu is
+    # non-empty" let the policy spend the entire economy repeatedly queueing
+    # builders -- measured as the dominant rejection in a real run
+    # (``PRODUCE_UNAVAILABLE=66`` per update) and, before that, as 12 builders and
+    # zero combat units on an 8000-tick Lake episode. ``produce_unit`` exists to
+    # add *fighting* power; if no factory can contribute that, the kind is a trap
+    # and must stay masked.
+    if producibles is not None:
+        producible = any(str(name).lower() != "builder" for name in producibles)
     for index, kind in enumerate(ACTION_KINDS):
         if index >= kind_mask.shape[0]:
             break

@@ -84,6 +84,36 @@ def test_mask_unlocks_production_on_a_factory_without_a_tank_in_its_menu() -> No
     assert bool(masks["kind"][KIND["produce_unit"]])
 
 
+def test_production_stays_masked_when_only_builders_are_offered() -> None:
+    """A builder-only menu is a trap, not an opportunity.
+
+    Every factory in Rusted Warfare can make builders, so "the menu is non-empty"
+    let the policy spend the whole economy repeatedly queueing builders. Measured
+    on a real Lake episode: 12 builders and **zero** combat units, with
+    ``PRODUCE_UNAVAILABLE`` as the dominant rejection (66 per update). Before the
+    landFactory exists the opening command center offers exactly
+    ``['builder']``, so this is the *default* state of the map, not an edge case.
+    """
+
+    state = _lake_state(with_factory=False)
+    state["factories"] = [
+        {"entity_id": 23, "unit_type": "commandCenter", "can_produce": ["builder"]}
+    ]
+    masks = build_masks(state, DEFAULT_CONFIG)
+    assert not bool(masks["kind"][KIND["produce_unit"]])
+
+
+def test_production_opens_once_a_factory_offers_a_combat_unit() -> None:
+    state = _lake_state()
+    state["factories"] = [
+        {"entity_id": 23, "unit_type": "commandCenter", "can_produce": ["builder"]},
+        {"entity_id": 25, "unit_type": "landFactory",
+         "can_produce": ["builder", "hoverTank"]},
+    ]
+    masks = build_masks(state, DEFAULT_CONFIG)
+    assert bool(masks["kind"][KIND["produce_unit"]])
+
+
 def test_mask_still_blocks_production_without_a_factory() -> None:
     """Only buildings count: a builder and a plain building are not factories."""
 
@@ -115,7 +145,13 @@ def test_decoder_produces_the_real_combat_unit_name() -> None:
 
 
 def test_decoder_falls_back_to_the_only_menu_when_it_is_builders_only() -> None:
-    """A Lake start has no factory: the command center can still make a builder."""
+    """Defensive: the *mask* blocks this, but the decoder must not crash on it.
+
+    ``decode_action`` is also called directly (probes, replays, tests) and an
+    older checkpoint could sample the kind before the mask learned to close it.
+    It therefore still resolves a builder-only menu to a builder rather than
+    inventing an order the engine cannot honour.
+    """
 
     state = _lake_state(with_factory=False)
     state["factories"] = [

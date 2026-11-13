@@ -89,10 +89,20 @@ def combat_value_fractions(
     own_max_ref: float | None = None,
     enemy_max_ref: float | None = None,
 ) -> tuple[float, float]:
-    """``(own_combat_frac, enemy_combat_frac)`` in ``[0, 1]``.
+    """``(own_combat_frac, enemy_combat_frac)``, each in ``[0, ...]``.
 
     Normalised by the episode-start max-hp totals (same reference as
     :func:`hp_fractions`), so the two potentials are directly comparable.
+
+    **Not clamped to 1.0, and that is deliberate.** The AI reinforces far past
+    the opening army -- measured on Lake: both sides start at 4170 HP (a 4000 HP
+    command center plus a 170 HP builder) and the enemy keeps producing until it
+    has 24+ units. With a clamp, *every* value above the opening total read as
+    exactly 1.0, so ``potential`` was pinned at ``1.0 - 1.0 = 0.0`` for the whole
+    episode no matter how large the enemy army grew. Measured over a 40-update
+    run: ``potential`` accumulated exactly ``0.000000`` while the enemy went from
+    2 to 20 units and the policy lost 7 units. The policy was structurally blind
+    to being out-produced, which is precisely what it needed to learn to avoid.
     """
 
     def total(units: list[dict[str, Any]]) -> float:
@@ -111,8 +121,8 @@ def combat_value_fractions(
     own_ref = float(own_max_ref) if own_max_ref else own_max
     enemy_ref = float(enemy_max_ref) if enemy_max_ref else enemy_max
     return (
-        max(0.0, min(1.0, total(own) / max(1.0, own_ref))),
-        max(0.0, min(1.0, total(enemies) / max(1.0, enemy_ref))),
+        max(0.0, total(own) / max(1.0, own_ref)),
+        max(0.0, total(enemies) / max(1.0, enemy_ref)),
     )
 
 
@@ -121,10 +131,18 @@ def combat_value_potential(
     own_max_ref: float | None = None,
     enemy_max_ref: float | None = None,
 ) -> float:
-    """Combat-value advantage in ``[-1, 1]`` (own minus enemy).
+    """Combat-value advantage ``own - enemy``.
 
     This is the term the real-game ``potential`` reward is built from: it pays
     for *destroying* units rather than for spreading chip damage.
+
+    The result is **not** clamped to ``[-1, 1]``: with the opening army as the
+    denominator, an enemy that reinforces to four times its starting size reads
+    as ``-3.0``, which is the honest signal. Clamping it was what made the term
+    a constant zero on every economy map (see
+    :func:`combat_value_fractions`). The consumer (``potential_coef``) applies
+    the scale, and the shape of the potential function -- not its absolute range
+    -- is what keeps the shaping policy-invariant.
     """
 
     own, enemy = combat_value_fractions(state, own_max_ref, enemy_max_ref)

@@ -1641,7 +1641,7 @@ public final class IronZeroBridge implements ServerExtension {
                 // Distinguish "no builder can build this at all" from
                 // "builders exist but are out of range / busy". Both are
                 // rejections, but the first is a permanent capability gap.
-                actionOutcomes.add(built > 0 ? null : "ACTION_MASKED");
+                actionOutcomes.add(built > 0 ? null : "BUILD_UNAVAILABLE");
                 continue;
             } else if ("produce_unit".equals(kind)) {
                 // Factory production. The factory is named by entity id; when the
@@ -1649,13 +1649,13 @@ public final class IronZeroBridge implements ServerExtension {
                 // factory in the selected group is used instead.
                 long factoryId = action.getLong("factory_entity_id", -1L);
                 String unitTypeName = action.getString("unit_type", "tank");
-                actionOutcomes.add(produceUnit(factoryId, unitTypeName) ? null : "ACTION_MASKED");
+                actionOutcomes.add(produceUnit(factoryId, unitTypeName) ? null : "PRODUCE_UNAVAILABLE");
                 continue;
             } else if ("upgrade_building".equals(kind)) {
                 // Extractor / factory tier upgrade: the engine exposes it as the
                 // building's current build action id.
                 long buildingId = action.getLong("building_entity_id", -1L);
-                actionOutcomes.add(upgradeBuilding(buildingId) ? null : "ACTION_MASKED");
+                actionOutcomes.add(upgradeBuilding(buildingId) ? null : "UPGRADE_UNAVAILABLE");
                 continue;
             } else if ("noop".equals(kind)) {
                 // Explicit "do nothing". Construction and production need many
@@ -1831,9 +1831,16 @@ public final class IronZeroBridge implements ServerExtension {
     }
 
     /**
-     * Own factory for {@code factoryId}; when the id is absent or stale, the
-     * first own factory is used so a policy that only says "produce a tank" is
-     * not rejected for omitting an entity id.
+     * Own factory for {@code factoryId}; when the id is absent <em>or stale</em>,
+     * the first own factory is used so a policy that only says "produce a tank"
+     * is not rejected for omitting an entity id -- or for naming one that died
+     * between the observation and the order.
+     *
+     * <p>The old last line was {@code factoryId >= 0 ? null : fallback}, i.e. a
+     * named-but-missing factory returned {@code null} instead of the fallback,
+     * which directly contradicts this method's own docstring. That turned every
+     * order naming a just-destroyed factory into a failure even when another own
+     * factory could have served it.
      */
     private OrderableUnit findOwnFactory(long factoryId) {
         OrderableUnit fallback = null;
@@ -1858,7 +1865,7 @@ public final class IronZeroBridge implements ServerExtension {
                 fallback = unit;
             }
         }
-        return factoryId >= 0 ? null : fallback;
+        return fallback;
     }
 
     /**
