@@ -15,7 +15,18 @@ from ..mock_engine import ORDER_IDS
 
 GROUP_DIM = 4  # matches the four unit groups in the micro-duel scenario
 
+#: Denominator for the ``attack_range`` identity column.
+#:
+#: A *fixed* constant, not ``cfg.map_width``: the map width is a scenario
+#: property, and normalising by it would make the same tank read 0.130 on the
+#: 1000 px micro arena but 0.050 on Lake (2600 px), i.e. the feature would mean
+#: a different thing per map and a checkpoint would not transfer. 1000 px spans
+#: the whole stock 1.15 range ladder (tank 130, artillery 290, turrets < 400),
+#: and anything longer is clamped to 1.0 so the block keeps its [0, 1] contract.
+ATTACK_RANGE_SCALE = 1000.0
+
 __all__ = [
+    "ATTACK_RANGE_SCALE",
     "GROUP_DIM",
     "TYPE_ONE_HOT_NAMES",
     "_cell",
@@ -139,7 +150,7 @@ def _type_id(unit: dict) -> int:
 
 
 def _entity_type_features(unit: dict) -> np.ndarray:
-    """Identity features: what *kind* of thing this entity is.
+    """Identity features: what *kind* of thing this entity is, and can it shoot.
 
     The geometric ``_entity_features`` block is type-blind by construction: it
     encodes position, hp fraction, order and distance only, so a command center
@@ -148,7 +159,7 @@ def _entity_type_features(unit: dict) -> np.ndarray:
     observe that it owned a factory, that a builder was still alive, or that an
     enemy turret was a turret.
 
-    Layout (``MicroDuelConfig.type_features`` = 7):
+    Layout (``MicroDuelConfig.type_features`` = 9):
 
     ===== =========================================================
     0     occupancy (mirrors the geometric block, so a padded slot
@@ -159,7 +170,21 @@ def _entity_type_features(unit: dict) -> np.ndarray:
     4     ``is_air_unit``        -- 空中单位
     5     ``build_progress``     -- 在建进度 (1.0 = 已完工)
     6     hashed type id         -- 其余类型之间的区分
+    7     ``can_attack``         -- 能不能打 (0/1)
+    8     ``attack_range`` / 1000 -- 打多远 (clamp 到 [0, 1])
     ===== =========================================================
+
+    Columns 7 and 8 exist because the block could describe *where* an entity was
+    and *how much hp* it had, but not whether walking into range of it is fatal.
+    The policy therefore had to induce "the thing with hash 0.236 kills me" from
+    reward alone -- which is why a builder was observed walking straight into the
+    enemy base to die. The two columns are appended at the **tail** so the first
+    seven keep their exact meaning for an older checkpoint (see
+    ``MicroDuelConfig.type_features``).
+
+    A payload that omits the fields reads as "cannot attack, range 0", which is
+    the safe default: the mock engine has no weapon model, and a missing field
+    must never turn into a fake threat.
 
     Everything is in ``[0, 1]`` so this block obeys the same normalisation
     contract as the rest of the observation.
@@ -184,8 +209,20 @@ def _entity_type_features(unit: dict) -> np.ndarray:
     # monotone-free: we only need "different types look different".
     type_id = _type_id(unit)
     hashed = ((type_id * 2654435761) & 0xFFFFFFFF) / 0xFFFFFFFF
+    can_attack = 1.0 if unit.get("can_attack") else 0.0
+    # ``attack_range`` is a world-pixel distance from the engine. Anything
+    # unparseable / non-finite / negative reads as 0 (no reach) rather than as a
+    # NaN that would poison the whole vector; the upper end is clamped so a mod
+    # with a 5000 px artillery cannot break the [0, 1] contract.
+    try:
+        attack_range = float(unit.get("attack_range", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        attack_range = 0.0
+    if not np.isfinite(attack_range) or attack_range < 0.0:
+        attack_range = 0.0
+    attack_range = float(min(1.0, attack_range / ATTACK_RANGE_SCALE))
     return np.array(
-        [1.0, building, factory, builder, air, progress, hashed],
+        [1.0, building, factory, builder, air, progress, hashed, can_attack, attack_range],
         dtype=np.float32,
     )
 

@@ -130,6 +130,23 @@ def decode_action(
         raise ValueError(
             f"action must have {expected_heads} heads, got {vector.shape[0]}"
         )
+    return _decode_heads(vector, state, config)
+
+
+def _decode_heads(
+    vector: np.ndarray,
+    state: dict[str, Any],
+    config: MicroDuelConfig,
+) -> list[dict[str, Any]]:
+    """Decode exactly one 5-head slot (``kind, group, x, y, target``).
+
+    Split out of :func:`decode_action` so the two-slot decoder
+    (:func:`decode_action_multi`) can reuse the *identical* per-kind translation
+    instead of maintaining a second copy of it. It deliberately does **not**
+    validate the vector length against ``config.action_nvec``: it is called with
+    one slot of a possibly doubled head layout.
+    """
+
     kind = ACTION_KINDS[int(vector[0]) % len(ACTION_KINDS)]
     group = int(vector[1])
     gx = int(np.clip(vector[2], 0, config.position_grid - 1))
@@ -280,6 +297,212 @@ def _hold_action(state: dict[str, Any], group: int = 4) -> list[dict[str, Any]]:
     return [{"kind": "hold", "unit_group": int(group)}]
 
 
+# ----------------------------------------------------------------------
+# Two-slot ("economic + tactical") decoding
+# ----------------------------------------------------------------------
+# Why this exists
+# ---------------
+# One decision used to produce exactly one order, chosen from a single flat kind
+# head. The builder is a *dual-purpose* unit -- an economy unit (it queues
+# extractors / factories) and a mobile unit (it belongs to a ``unit.id % 4``
+# group like everything else). A single order therefore cannot say "keep
+# building AND do not walk anywhere": picking ``build_*`` implicitly stops it
+# from moving, while ``hold``/``stop`` cancels the in-flight construction,
+# because *every* real order cancels the previous one (that is why ``noop``
+# exists in ``ACTION_KINDS``).
+#
+# Measured on ``[p2]Lake (2p)``: the map-placed builder is unit 24 (group 0) and
+# the command center is unit 23 (group 3), so while the builder was the only
+# mover, the tactical options and the economic options competed for the same
+# single slot. The policy had to alternate -- build, cancel, hold, build -- and
+# a structure needs ~140 uninterrupted ticks, so nothing finished; the observed
+# symptom was "the builder finishes the extractor, then charges the enemy base
+# and dies".
+#
+# The fix is a *second slot in the same decision*: an economy order and a
+# tactical order are decoded independently, and an empty tactical slot emits
+# nothing at all. Two orders per decision is exactly what the bridge already
+# supports (``applyStep`` iterates the whole ``actions`` array, dispatches once
+# and emits one receipt per entry -- verified, no Java change needed).
+
+#: Kinds the **economy** slot may select, in an order that is a **contract**: the
+#: policy's economy head indexes this tuple, so appending is safe but reordering
+#: or removing silently re-maps every trained weight.
+#:
+#: The trailing ``noop`` is the "no economic order this decision" entry (see
+#: :data:`ECONOMY_EMPTY_INDEX`). It is not decoration: an agent that has just
+#: queued an extractor must be able to spend the next ~140 decisions *not
+#: re-issuing the order*. Re-issuing is not harmless -- it re-queues, and the
+#: measured "accepted = true every single decision" pattern in
+#: ``reward_shaping.compute_step_shaping`` is exactly what that looks like.
+ECONOMY_ACTION_KINDS: tuple[str, ...] = (
+    "build_extractor",
+    "build_structure",
+    "produce_unit",
+    "upgrade_building",
+    "noop",
+)
+#: Index of the economy slot's "do nothing" entry.
+ECONOMY_EMPTY_INDEX = len(ECONOMY_ACTION_KINDS) - 1
+
+#: Kinds the **tactical** slot may select, ending with its own "no tactical
+#: order" entry. This empty entry is the *load-bearing* part of the whole design:
+#: it emits no order at all, so the builder's in-flight construction is not
+#: cancelled while the policy is thinking about the army.
+TACTICAL_ACTION_KINDS: tuple[str, ...] = (
+    "move_group",
+    "attack_move",
+    "attack_target",
+    "hold",
+    "stop",
+    "noop",
+)
+#: Index of the tactical slot's "no tactical order" entry.
+TACTICAL_EMPTY_INDEX = len(TACTICAL_ACTION_KINDS) - 1
+
+#: Number of action heads per slot (``kind, group, x, y, target``).
+SLOT_HEADS = 5
+
+
+def multi_action_nvec(config: MicroDuelConfig) -> tuple[int, ...]:
+    """Per-head cardinalities of the two-slot action layout.
+
+    Layout (10 heads, economy first)::
+
+        economy:  [len(ECONOMY_ACTION_KINDS), groups+1, P, P, target_slots]
+        tactical: [len(TACTICAL_ACTION_KINDS), groups+1, P, P, target_slots]
+
+    The group / position / target widths are the **same numbers** the
+    single-slot ``action_nvec`` uses, so "target slot 3" and "group 4" mean the
+    same thing in both layouts and a mask or a checkpoint explaining one layout
+    still explains the other. Only the two ``kind`` heads differ, because each
+    slot is restricted to its own vocabulary.
+
+    This is a function rather than a ``MicroDuelConfig.action_nvec`` variant on
+    purpose: ``action_nvec`` is read by PPO, the env spaces, the mask builder and
+    the checkpoint loader, all of which assume one slot. Flipping its meaning
+    behind a config flag would change what an existing checkpoint means without
+    touching any of those call sites. The Lead merges the flag (see the report's
+    "micro_config merge checklist"); until then this stays an explicit call.
+
+    Example, default micro-duel config::
+
+        >>> multi_action_nvec(DEFAULT_CONFIG)
+        (5, 5, 8, 8, 9, 6, 5, 8, 8, 9)
+    """
+
+    group = int(config.groups) + 1
+    grid = int(config.position_grid)
+    target = int(config.target_slots)
+    economy = (len(ECONOMY_ACTION_KINDS), group, grid, grid, target)
+    tactical = (len(TACTICAL_ACTION_KINDS), group, grid, grid, target)
+    return economy + tactical
+
+
+def decode_action_multi(
+    action: np.ndarray,
+    state: dict[str, Any],
+    config: MicroDuelConfig,
+) -> list[dict[str, Any]]:
+    """Decode one two-slot decision into **at most two** ``ironzero/1`` orders.
+
+    The first ``SLOT_HEADS`` entries are the economy slot, the last
+    ``SLOT_HEADS`` are the tactical slot. Each slot is decoded by the *same*
+    per-kind translation :func:`decode_action` uses (``_decode_heads``), so the
+    two paths cannot drift.
+
+    The contract that makes this useful:
+
+    * an economy slot outside :data:`ECONOMY_ACTION_KINDS` decodes as **nothing**
+      (not a fallback ``hold`` -- a fallback would cancel the very construction
+      the slot exists to protect);
+    * a tactical slot whose kind is one of the empty entries decodes as
+      **nothing**;
+    * therefore ``decode_action_multi`` returns ``[]``, ``[econ]``, ``[tac]`` or
+      ``[econ, tac]`` and never a synthesised order the policy did not choose.
+
+    Empty economy + empty tactical is the historical ``noop``: the bridge
+    receives an empty ``actions`` array, dispatches no command and reports one
+    acceptance (see ``applyStep``), so construction keeps running.
+
+    Order matters: the economy order is emitted first. The bridge dispatches
+    every queued command once, at the end of ``applyStep``, and the two slots
+    address different units -- the economy slot broadcasts to whichever builder
+    can queue the build, the tactical slot addresses one numbered group. When
+    they *do* overlap (a tactical order aimed at the builder's own group) the
+    later command wins the unit, which is the same "last order wins" rule a
+    human player sees. Emitting the economy order first makes the policy's
+    explicit tactical choice the one that sticks, and leaves the
+    no-tactical-order case exactly as it was.
+    """
+
+    vector = np.asarray(action, dtype=np.int64).reshape(-1)
+    expected = 2 * SLOT_HEADS
+    if vector.shape[0] != expected:
+        raise ValueError(
+            f"multi-action vector must have {expected} heads "
+            f"(2 slots x {SLOT_HEADS}), got {vector.shape[0]}"
+        )
+
+    economy_vector = vector[:SLOT_HEADS]
+    tactical_vector = vector[SLOT_HEADS:]
+
+    orders: list[dict[str, Any]] = []
+
+    economy_kind = _slot_kind(
+        economy_vector[0], ECONOMY_ACTION_KINDS, ECONOMY_EMPTY_INDEX
+    )
+    if economy_kind is not None:
+        orders.extend(_decode_slot(economy_vector, economy_kind, state, config))
+
+    tactical_kind = _slot_kind(
+        tactical_vector[0], TACTICAL_ACTION_KINDS, TACTICAL_EMPTY_INDEX
+    )
+    if tactical_kind is not None:
+        orders.extend(_decode_slot(tactical_vector, tactical_kind, state, config))
+
+    return orders
+
+
+def _slot_kind(index: int, vocabulary: tuple[str, ...], empty_index: int) -> str | None:
+    """Map a slot's kind index onto a kind name, or ``None`` for "do nothing".
+
+    ``empty_index`` is the caller's explicit "this slot issues nothing" entry
+    (``ECONOMY_EMPTY_INDEX`` / ``TACTICAL_EMPTY_INDEX``), passed in rather than
+    guessed so a future vocabulary edit cannot silently turn a real order into a
+    no-op or vice versa.
+
+    The index is folded with ``%``: the policy heads are ``Categorical`` over
+    exactly ``len(vocabulary)`` logits so a sampled index is always in range, but
+    hand-built test arrays and older checkpoints can carry anything.
+    """
+
+    position = int(index) % len(vocabulary)
+    if position == empty_index:
+        return None
+    return vocabulary[position]
+
+
+def _decode_slot(
+    vector: np.ndarray,
+    kind: str,
+    state: dict[str, Any],
+    config: MicroDuelConfig,
+) -> list[dict[str, Any]]:
+    """Decode one slot with ``kind`` already resolved, reusing ``_decode_heads``.
+
+    ``_decode_heads`` reads the kind from vector[0], so the slot's own kind name
+    is substituted back into the head vector. That keeps a single translation
+    table for *both* decoders: a new build/produce rule added to ``_decode_heads``
+    automatically applies to the two-slot layout, and the two cannot disagree
+    about e.g. which resource pool a ``build_extractor`` names.
+    """
+
+    head = np.array(vector, dtype=np.int64).reshape(-1).copy()
+    head[0] = ACTION_KINDS.index(kind)
+    return _decode_heads(head, state, config)
+
+
 def merge_done_message(state: dict[str, Any], message: dict[str, Any]) -> dict[str, Any]:
     """Fold a ``done`` message into the previous state (terminal-observation path).
 
@@ -320,8 +543,15 @@ def merge_done_message(state: dict[str, Any], message: dict[str, Any]) -> dict[s
 
 
 __all__ = [
+    "ECONOMY_ACTION_KINDS",
+    "ECONOMY_EMPTY_INDEX",
+    "SLOT_HEADS",
+    "TACTICAL_ACTION_KINDS",
+    "TACTICAL_EMPTY_INDEX",
     "_hold_action",
     "decode_action",
+    "decode_action_multi",
     "merge_done_message",
+    "multi_action_nvec",
     "observation_to_state",
 ]

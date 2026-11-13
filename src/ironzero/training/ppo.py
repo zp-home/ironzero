@@ -9,7 +9,7 @@ import threading
 import time
 import warnings
 from collections import deque
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Callable
 
@@ -683,14 +683,45 @@ class PPOTrainer:
         return path
 
 
+#: Fields of :class:`MicroDuelConfig` that describe the *observation/action
+#: layout* rather than the scenario. They must always come from the running code,
+#: never from a checkpoint: these are exactly the constants that grew between
+#: releases (``global_dim`` 12 -> 15, ``type_features`` 0 -> 7), and a checkpoint
+#: carries the values that were current when it was saved. Rebuilding the network
+#: from the saved values produces a policy whose input width disagrees with what
+#: the live encoder writes, which then fails at ``encode_observation``'s
+#: ``assert g.shape[0] == cfg.global_dim`` — an AssertionError with no message,
+#: several call frames away from the real cause.
+_LAYOUT_FIELDS: tuple[str, ...] = (
+    "global_dim",
+    "entity_features",
+    "type_features",
+    "position_grid",
+    "map_grid",
+    "funds_scale",
+    "income_scale",
+)
+
+
+def _config_from_saved(raw: dict) -> MicroDuelConfig:
+    """Rebuild the checkpoint's own config, ignoring fields this code no longer has.
+
+    Used only to *describe* the saved layout for weight re-mapping; the policy is
+    always built against the current config.
+    """
+
+    known = {item.name for item in fields(MicroDuelConfig)}
+    return MicroDuelConfig(**{key: value for key, value in raw.items() if key in known})
+
+
 def load_policy(path: str | Path, device: str | torch.device = "cpu") -> tuple[MaskedActorCritic, MicroDuelConfig]:
     """Rebuild a policy from a checkpoint.
 
-    The network architecture (observation dim, action heads, hidden width) is
-    taken from the checkpoint itself - ``micro_config`` for the task contract
-    and ``ppo_config`` for the trunk width - so a checkpoint trained with a
-    non-default ``--hidden`` or a 25-vs-25 / terrain observation loads without
-    the caller having to know those numbers.
+    The *scenario* (units per team, entity slots, map channels, map size) comes
+    from the checkpoint's ``micro_config`` — a 10v10 weight must keep its 10 units.
+    The *layout* comes from the current code (see :data:`_LAYOUT_FIELDS`), so an
+    older checkpoint loads against today's encoder instead of a stale one; the
+    weights are then migrated by :func:`_migrate_state_dict`.
     """
 
     payload = torch.load(Path(path), map_location=device, weights_only=False)
@@ -708,21 +739,26 @@ def load_policy(path: str | Path, device: str | torch.device = "cpu") -> tuple[M
 
     # The observation/action contract can grow between releases (the global
     # feature block and the kind head both did). Rebuild against the *current*
-    # contract and migrate the weights, instead of rebuilding a stale config
-    # that then disagrees with what the live environment produces.
+    # layout and migrate the weights, instead of rebuilding a stale config that
+    # then disagrees with what the live environment produces.
+    source_micro = _config_from_saved(raw_micro)
+    for name in _LAYOUT_FIELDS:
+        raw_micro.pop(name, None)
     micro = MicroDuelConfig(**raw_micro)
     target_obs_dim = micro.flat_obs_dim
     target_nvec = micro.action_nvec
     saved_obs_dim = state_dict[trunk_key].shape[1] if trunk_key in state_dict else target_obs_dim
 
     policy = MaskedActorCritic(target_obs_dim, nvec=target_nvec, hidden=hidden)
-    migrated = _migrate_state_dict(policy.state_dict(), state_dict)
+    migrated = _migrate_state_dict(
+        policy.state_dict(), state_dict, source_layout=source_micro, target_layout=micro
+    )
     policy.load_state_dict(migrated)
     if saved_obs_dim != target_obs_dim:
         warnings.warn(
             f"checkpoint was trained with obs_dim={saved_obs_dim} but the current "
             f"contract produces {target_obs_dim}; the trunk input was migrated "
-            f"(leading weights kept, new features start from zero influence).",
+            f"(shared feature blocks re-mapped, new features start from zero influence).",
             RuntimeWarning,
             stacklevel=2,
         )
@@ -731,15 +767,28 @@ def load_policy(path: str | Path, device: str | torch.device = "cpu") -> tuple[M
     return policy, micro
 
 
-def _migrate_state_dict(target: dict, saved: dict) -> dict:
+def _migrate_state_dict(target: dict, saved: dict, source_layout: dict | None = None,
+                        target_layout: dict | None = None) -> dict:
     """Copy every tensor whose shape still matches; pad/truncate the rest.
 
     A head or trunk layer whose width changed keeps its shared leading block and
     leaves the new rows/columns at their freshly-initialised values. This makes
     old checkpoints usable after an action-space or observation-space change.
+
+    ``trunk.0.weight`` is special: "keep the leading columns" is only correct when
+    the *new* observation vector starts with the old one. A block inserted in the
+    middle (``global_dim`` 12 -> 15 pushed every entity/grid column three places
+    right) breaks that, and a plain prefix copy then binds each kept weight to a
+    different feature than it was trained on — the policy loads without a single
+    warning and behaves like noise. When both layouts are supplied the columns are
+    therefore re-mapped block by block (:func:`_column_source`), so a weight keeps
+    the feature it was trained for and only genuinely new features start at zero.
     """
 
     out = dict(target)
+    remap = None
+    if source_layout and target_layout:
+        remap = _column_source(source_layout, target_layout)
     for name, param in target.items():
         src = saved.get(name)
         if src is None or not hasattr(src, "shape") or not hasattr(param, "shape"):
@@ -751,9 +800,24 @@ def _migrate_state_dict(target: dict, saved: dict) -> dict:
             continue
         if src.dim() == 2:
             rows = min(param.shape[0], src.shape[0])
-            cols = min(param.shape[1], src.shape[1])
             merged = param.clone()
-            merged[:rows, :cols] = src[:rows, :cols]
+            if remap is not None and name == "trunk.0.weight":
+                # Re-map block by block and *zero* the columns this checkpoint
+                # never saw, so the trunk's output on a historical observation is
+                # bit-identical to what the checkpoint produced before. Random
+                # init there would inject noise into every head the moment the
+                # new features became non-zero, which is exactly the "loads fine,
+                # behaves like noise" failure this function exists to prevent.
+                for dest_col, source_col in enumerate(remap):
+                    if dest_col >= param.shape[1]:
+                        break
+                    if source_col is not None and source_col < src.shape[1]:
+                        merged[:rows, dest_col] = src[:rows, source_col]
+                    else:
+                        merged[:rows, dest_col] = 0.0
+            else:
+                cols = min(param.shape[1], src.shape[1])
+                merged[:rows, :cols] = src[:rows, :cols]
             out[name] = merged
         elif src.dim() == 1:
             n = min(param.shape[0], src.shape[0])
@@ -761,6 +825,135 @@ def _migrate_state_dict(target: dict, saved: dict) -> dict:
             merged[:n] = src[:n]
             out[name] = merged
     return out
+
+
+def _layout_dict(layout) -> dict:
+    """Accept either a :class:`MicroDuelConfig` or an already-flattened dict."""
+
+    if layout is None:
+        return {}
+    if isinstance(layout, dict):
+        return layout
+    return {item.name: getattr(layout, item.name) for item in fields(layout)}
+
+
+def _layout_blocks(layout) -> list[tuple[str, int, int]]:
+    """``[(block_name, start, length), ...]`` for one observation layout.
+
+    Mirrors ``observation.encoding.encode_observation``'s write order exactly:
+    global, own entities, enemy entities, control grid, own type block, enemy
+    type block. A block whose length is 0 (e.g. ``type_features=0``) is dropped.
+    """
+
+    layout = _layout_dict(layout)
+    global_dim = int(layout.get("global_dim") or 0)
+    entities = int(layout.get("max_entities") or 0) * int(layout.get("entity_features") or 0)
+    grid = int(layout.get("map_channels") or 0) * int(layout.get("map_grid") or 0) ** 2
+    types = int(layout.get("max_entities") or 0) * int(layout.get("type_features") or 0)
+    blocks: list[tuple[str, int, int]] = []
+    offset = 0
+    for name, length in (
+        ("global", global_dim),
+        ("own", entities),
+        ("enemy", entities),
+        ("grid", grid),
+        ("type_own", types),
+        ("type_enemy", types),
+    ):
+        if length > 0:
+            blocks.append((name, offset, length))
+        offset += length
+    return blocks
+
+
+def _column_source(source_layout, target_layout) -> list[int | None] | None:
+    """For each column of the *new* observation, which *old* column it came from.
+
+    Returns ``None`` when the two layouts describe the same observation dimensions
+    (nothing to re-map, so the caller keeps the cheap prefix copy). Columns that did
+    not exist in the old vector map to ``None`` and keep their fresh init.
+
+    Block-to-block alignment assumes each block's *internal stride* is unchanged —
+    true for layout changes where only block *sizes* moved. When a per-entity
+    stride changes (``entity_features`` or ``type_features`` 7 -> 9), aligning from
+    the block start would be wrong, so those blocks are instead aligned
+    **slot-by-slot**: the first ``min(old_stride, new_stride)`` features of each
+    entity keep their weight and the appended features start at zero.
+    """
+
+    source_layout = _layout_dict(source_layout)
+    target_layout = _layout_dict(target_layout)
+    source_blocks = {name: (start, length) for name, start, length in _layout_blocks(source_layout)}
+    target_blocks = _layout_blocks(target_layout)
+    if not source_blocks:
+        return None
+    same = all(
+        source_blocks.get(name, (None, 0))[1] == length
+        for name, _start, length in target_blocks
+    ) and set(source_blocks) == {name for name, _start, _length in target_blocks}
+    if same:
+        return None
+
+    total = sum(length for _name, _start, length in target_blocks)
+    mapping: list[int | None] = [None] * total
+
+    # --- per-entity blocks: slot-by-slot when the stride changed -----------
+    #
+    # ``own``/``enemy`` hold ``max_entities`` records of ``entity_features``
+    # floats, ``type_own``/``type_enemy`` one record of ``type_features`` each.
+    # A stride change shifts every later record by the size difference, so the
+    # block-start copy would bind, say, entity 1's hp to entity 0's x. Mapping
+    # record r feature f -> same record, same feature keeps the meaning and
+    # leaves only the appended features (can_attack / attack_range) at zero.
+    stride_groups = (
+        ("own", "enemy", int(source_layout.get("entity_features") or 0),
+         int(target_layout.get("entity_features") or 0)),
+        ("type_own", "type_enemy", int(source_layout.get("type_features") or 0),
+         int(target_layout.get("type_features") or 0)),
+    )
+    handled: set[str] = set()
+    for first, second, old_stride, new_stride in stride_groups:
+        if not old_stride or not new_stride:
+            # A block appearing where there was none (0 -> N) gets no source at
+            # all and stays zero, which is exactly right.
+            continue
+        if old_stride == new_stride:
+            continue  # block-start copy is already correct
+        records = int(
+            min(
+                int(source_layout.get("max_entities") or 0),
+                int(target_layout.get("max_entities") or 0),
+            )
+        )
+        for name, block_index in ((first, 0), (second, 1)):
+            source = source_blocks.get(name)
+            target = next(
+                (entry for entry in target_blocks if entry[0] == name), None
+            )
+            if source is None or target is None:
+                continue
+            source_start, _source_length = source
+            target_start = target[1]
+            copy_stride = min(old_stride, new_stride)
+            for record in range(records):
+                for feature in range(copy_stride):
+                    mapping[target_start + record * new_stride + feature] = (
+                        source_start + record * old_stride + feature
+                    )
+            handled.add(name)
+        del block_index  # only used to keep the tuple shape readable
+
+    # --- remaining blocks: block-start copy -------------------------------
+    for name, target_start, length in target_blocks:
+        if name in handled:
+            continue
+        source = source_blocks.get(name)
+        if source is None:
+            continue
+        source_start, source_length = source
+        for index in range(min(length, source_length)):
+            mapping[target_start + index] = source_start + index
+    return mapping
 
 
 __all__ = ["PPOConfig", "PPOTrainer", "Rollout", "load_policy"]

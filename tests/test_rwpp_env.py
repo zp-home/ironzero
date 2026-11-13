@@ -359,8 +359,19 @@ class RwppBridgeLoopTests(unittest.TestCase):
             env.close()
 
     def test_env_terminates_on_elimination(self) -> None:
+        """Enemy army wiped out -> terminated with ``victory``.
+
+        ``result="victory"`` is required, not cosmetic. With the default
+        ``result="timeout"`` the fixture contradicts itself: the entity stream
+        shows every enemy at hp 0 while the ``done`` message says the engine never
+        decided. The bridge is free-running, so whichever reaches the socket
+        buffer first wins -- a fast read saw the terminal observation and fell
+        through to the annihilation heuristic (victory), a slower read saw ``done``
+        and booked a timeout. That made this test fail roughly one run in three.
+        """
+
         port = find_free_port()
-        bridge = FakeBridge(port, steps=2, eliminate_on_last=True)
+        bridge = FakeBridge(port, steps=2, eliminate_on_last=True, result="victory")
         env = make_env(bridge, port)
         try:
             env.reset()

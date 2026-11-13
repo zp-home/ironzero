@@ -80,11 +80,32 @@ class MicroDuelConfig:
     #
     # Layout choice matters for checkpoints: appending the block at the tail
     # means the global / own / enemy / grid columns keep their exact previous
-    # offsets, so ``_migrate_state_dict``'s "keep the leading columns" rule
-    # preserves the *entire* old meaning and only the new tail starts from zero
-    # influence. Inserting the new features inside each entity's stride would
-    # have shifted every later column and silently scrambled an old checkpoint.
-    type_features: int = 7
+    # offsets, so a checkpoint saved before this block existed keeps its meaning
+    # and only the new tail starts from zero influence. Inserting the new
+    # features inside each entity's stride would have shifted every later column
+    # and silently scrambled an old checkpoint.
+    #
+    # NOTE: that argument covers *this* block only. ``global_dim`` grew 12 -> 15
+    # earlier and it sits at the *head*, so every column after it moved by three.
+    # Migration therefore cannot be a plain "copy the leading columns" prefix
+    # (see ``training.ppo._column_source``): columns are re-mapped block by block
+    # so each weight stays attached to the feature it was trained on.
+    #
+    # 7 -> 9: two attack capabilities appended at the *tail* of each entity's
+    # stride, so the first seven columns of every slot keep their exact meaning
+    # and an older checkpoint's weights stay attached to the features they were
+    # trained on. Before this the policy could describe where an entity was and
+    # how much hp it had, but not whether it could shoot -- observed as a builder
+    # walking straight into the enemy base to die. Columns 7/8 are
+    # ``can_attack`` and ``attack_range / ATTACK_RANGE_SCALE``.
+    type_features: int = 9
+    # Fixed module-level denominator for the ``attack_range`` column (mirrored in
+    # ``observation.features.ATTACK_RANGE_SCALE``). It is deliberately *not* a
+    # config field: the map width changes per scenario, and a scenario-dependent
+    # denominator would make the same tank read differently on Lake than on the
+    # micro arena. 1000 px spans the whole stock 1.15 range ladder (tank 130,
+    # artillery 290, turrets < 400); longer ranges clamp to 1.0 rather than break
+    # the block's [0, 1] contract.
     # Normalisation denominators for the economy features. Fixed constants (not
     # derived from the scenario) so a checkpoint stays valid across maps.
     funds_scale: float = 5000.0

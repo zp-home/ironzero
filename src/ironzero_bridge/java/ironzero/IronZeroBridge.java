@@ -896,6 +896,14 @@ public final class IronZeroBridge implements ServerExtension {
                 // Action-group alignment: addOwnOrderableUnits() selects group members
                 // with id % GROUP_COUNT, so expose exactly that value to the policy.
                 + ",\"group_id\":" + (unit.id % GROUP_COUNT)
+                // "Can this thing actually shoot?" was the single missing bit that
+                // made a builder suicide into the enemy base: the observation could
+                // describe where an entity was and how much hp it had, but not
+                // whether walking into range of it was fatal. Reported as two
+                // fields so the policy can both gate the decision (``can_attack``)
+                // and reason about distance (``attack_range``).
+                + ",\"can_attack\":" + canAttack(unit)
+                + ",\"attack_range\":" + fmt(attackRange(unit))
                 + ",\"is_visible\":true,\"is_alive\":true}";
     }
 
@@ -992,6 +1000,59 @@ public final class IronZeroBridge implements ServerExtension {
     }
 
     /**
+     * Whether this entity can shoot at all — the engine's own answer.
+     *
+     * <p>This is the exact query asked for, not a heuristic: {@code Unit} declares
+     * {@code public abstract boolean canAttack()}, so every unit type answers it
+     * (a builder / an extractor / a command center return {@code false}, tanks and
+     * turrets {@code true}). It is deliberately the type-level capability and not
+     * "does it have a target right now": the policy needs to know that walking into
+     * range of the thing in front of it is fatal, and that is a property of its
+     * type, not of the current frame's targeting state.
+     *
+     * <p>Falls back to {@code false} on any engine exception: a single unreadable
+     * unit type must never fail the whole frame's observation.
+     */
+    private boolean canAttack(Unit unit) {
+        try {
+            return unit.canAttack();
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * The entity's maximum attack range in world pixels, or {@code 0} if it has none.
+     *
+     * <p>{@code getMaxAttackRange()} is declared on {@link OrderableUnit}, not on
+     * {@link Unit}: only orderable units own turrets and firing logic, so a map item
+     * or other non-orderable unit genuinely has no attack range and reports 0.
+     *
+     * <p>Gated on {@link #canAttack}: the engine's max-range helper can return a
+     * non-zero number for units that cannot attack (a builder's nano/repair reach is
+     * a different quantity with the same shape of API). Reporting 290 px for a
+     * builder would tell the policy exactly the wrong lesson, so a non-combatant is
+     * reported as range 0. The two fields therefore always agree.
+     */
+    private float attackRange(Unit unit) {
+        try {
+            if (!(unit instanceof OrderableUnit)) {
+                return 0.0f;
+            }
+            if (!unit.canAttack()) {
+                return 0.0f;
+            }
+            float range = ((OrderableUnit) unit).getMaxAttackRange();
+            if (!Float.isFinite(range) || range <= 0.0f) {
+                return 0.0f;
+            }
+            return range;
+        } catch (RuntimeException ignored) {
+            return 0.0f;
+        }
+    }
+
+    /**
      * Whether {@code upgrade_building} would be accepted for this unit.
      *
      * <p>Rusted Warfare models a tier upgrade as the building's current build
@@ -1018,10 +1079,65 @@ public final class IronZeroBridge implements ServerExtension {
     private void sendDone(RWGameEngine engine) {
         String result = gameResult != null ? gameResult : "timeout";
         boolean terminated = !"timeout".equals(result);
-        writeLine("{\"protocol\":\"ironzero/1\",\"type\":\"done\",\"message_id\":\"done-"
+        // Carry the terminal entity lists.
+        //
+        // This used to send only result/tick/terminated, so the last ``obs`` was
+        // the last time the client saw any units. ``merge_done_message`` then had
+        // nothing to merge and kept the *previous* state, which means the closing
+        // decision was scored against pre-terminal army counts:
+        //
+        //   * ``losses`` (``previous_enemy_alive - enemy_alive``) scored 0 for the
+        //     kills that actually ended the game;
+        //   * ``potential`` used the pre-terminal hp, so the final shaping step
+        //     was blind to the wipe-out it was being paid +1.0 for;
+        //   * ``eval_report.json`` recorded ``own_alive``/``enemy_alive`` from the
+        //     stale frame -- measured: a winning episode reported ``enemy_alive=3``
+        //     while the engine had just declared victory.
+        //
+        // Sending the lists makes the terminal state self-describing, so the
+        // Python side merges real numbers instead of inheriting an old frame. The
+        // fields are exactly the ones ``observation`` already emits, so every
+        // existing consumer keeps working.
+        String done = "{\"protocol\":\"ironzero/1\",\"type\":\"done\",\"message_id\":\"done-"
                 + engine.simulationTick + "\",\"episode_id\":\"rwpp-bridge\",\"tick\":"
                 + engine.simulationTick + ",\"result\":\"" + result + "\",\"reward\":0.0,"
-                + "\"terminated\":" + terminated + ",\"truncated\":" + (!terminated) + "}");
+                + "\"terminated\":" + terminated + ",\"truncated\":" + (!terminated);
+        try {
+            java.util.List<String> own = new java.util.ArrayList<>();
+            java.util.List<String> enemies = new java.util.ArrayList<>();
+            collectEntities(own, enemies);
+            done += ",\"own_entities\":[" + String.join(",", own) + "]"
+                    + ",\"visible_enemy_entities\":[" + String.join(",", enemies) + "]";
+        } catch (RuntimeException ignored) {
+            // A failed snapshot must not stop the verdict from being delivered:
+            // the result is the load-bearing part, the lists are an improvement.
+        }
+        writeLine(done + "}");
+    }
+
+    /**
+     * Fill the own/enemy entity JSON lists for the current frame.
+     *
+     * <p>Split out of the observation writer so {@link #sendDone} can attach the
+     * exact same lists to the terminal message.
+     */
+    private void collectEntities(
+            java.util.List<String> own, java.util.List<String> enemies) {
+        Team player = engine != null ? engine.playerTeam : null;
+        for (Object item : Unit.unitList) {
+            if (!(item instanceof Unit)) {
+                continue;
+            }
+            Unit unit = (Unit) item;
+            if (unit.removed || unit.hp <= 0.0f) {
+                continue;
+            }
+            if (isOwnUnit(player, unit)) {
+                own.add(entityJson(unit));
+            } else if (isEnemyUnit(player, unit)) {
+                enemies.add(entityJson(unit));
+            }
+        }
     }
 
     /**

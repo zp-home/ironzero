@@ -862,3 +862,60 @@ def test_opening_curriculum_pays_no_reward_by_itself() -> None:
     assert "bonus_build" in impl
     # The term is computed from own entity counts, not from receipts.
     assert "new_buildings" in impl
+
+@pytest.mark.skipif(not BRIDGE_SOURCE.is_file(), reason="bridge source not present")
+def test_terminal_done_message_carries_the_entity_lists() -> None:
+    """``sendDone`` must include the terminal state, not just the verdict.
+
+    It used to send only ``result``/``tick``/``terminated``. The last ``obs`` was
+    therefore the last time the client saw any units, and
+    ``merge_done_message`` -- which only merges keys that are present -- kept the
+    *previous* frame. The closing decision was then scored against pre-terminal
+    army counts:
+
+    * ``losses`` (``previous_own_alive - own_alive``) scored 0 for the units that
+      died on the final step;
+    * ``potential`` used the pre-terminal hp, so the last shaping step was blind
+      to the wipe-out it was being paid +/-1.0 for;
+    * ``eval_report.json`` recorded the stale ``own_alive``/``enemy_alive``.
+
+    Measured on a real ``IronZero5`` annihilation episode after the fix:
+    ``own_alive=0``, ``enemy_alive=5``, ``losses=-1.25`` (= 5 x ``loss_penalty``),
+    ``terminal=-1.0`` -- every casualty accounted for on the closing step.
+    """
+
+    source = BRIDGE_SOURCE.read_text(encoding="utf-8", errors="replace")
+    done = _method_body(source, "sendDone")
+    assert "own_entities" in done, (
+        "done must carry own_entities, otherwise the terminal state is stale"
+    )
+    assert "visible_enemy_entities" in done, (
+        "done must carry visible_enemy_entities; without it enemy_alive on the "
+        "final decision is whatever the previous frame had"
+    )
+    assert "collectEntities" in done, (
+        "the lists must come from the shared helper so they match observation"
+    )
+
+    shared = _method_body(source, "collectEntities")
+    assert "isOwnUnit" in shared and "isEnemyUnit" in shared, (
+        "team membership must use the engine-aware helpers, not a raw teamId "
+        "comparison; neutral map objects must stay excluded from both lists"
+    )
+
+
+@pytest.mark.skipif(not BRIDGE_SOURCE.is_file(), reason="bridge source not present")
+def test_done_message_still_delivers_a_verdict_when_the_snapshot_fails() -> None:
+    """A failed entity snapshot must not swallow the result.
+
+    The verdict is the load-bearing part of ``done``: the whole "wins were booked
+    as timeouts" class of bugs came from losing it. Attaching the lists is an
+    improvement, so it has to sit behind its own guard.
+    """
+
+    source = BRIDGE_SOURCE.read_text(encoding="utf-8", errors="replace")
+    done = _method_body(source, "sendDone")
+    assert "catch (RuntimeException" in done or "catch (Exception" in done, (
+        "the entity snapshot needs its own try/catch; an exception there must not "
+        "prevent writeLine of the verdict"
+    )

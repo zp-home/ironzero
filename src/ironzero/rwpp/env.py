@@ -30,7 +30,7 @@ from .decoding import decode_action, observation_to_state
 from .errors import RwppEnvError
 from .process import _ProcLike, launch_rwpp_process
 from .reward import army_distance_norm, army_hp_reference, combat_value_potential
-from .reward_shaping import compute_step_shaping
+from .reward_shaping import combat_army_distance_norm, compute_step_shaping
 from .session import await_observation, drain_verdict, shutdown_game, start_game
 from .spaces import _BoxSpace, _MultiDiscreteSpace
 from .stepping import absorb_message, build_step_info, send_step
@@ -76,6 +76,16 @@ class RwppDuelEnv:
         self.last_tick = 0
         self.last_potential = 0.0
         self.last_distance = 0.0
+        # Previous **combat**-centroid gap, kept alongside (never instead of)
+        # ``last_distance``. ``engagement`` differences two consecutive readings,
+        # so both endpoints have to follow the same centroid definition or the
+        # subtraction leaves a constant offset instead of telescoping: a builder
+        # wandering on Lake shifts the whole-army centroid by 843 px, worth
+        # ``0.3 * 843 / 3677 = +0.0688`` of phantom engagement per episode. The
+        # whole-army ``last_distance`` stays untouched for every other consumer.
+        # ``None`` means "no attack-capable unit on one side", which the reward
+        # reads as no combat signal rather than falling back to the army centroid.
+        self.last_combat_distance: float | None = None
         # Previous economy rate, so the ``income`` reward term can pay for the
         # *growth* of income (a new extractor / an upgrade) instead of paying
         # the absolute rate on every one of thousands of decisions.
@@ -133,6 +143,9 @@ class RwppDuelEnv:
         self.last_distance = army_distance_norm(
             self.state, float(np.hypot(self.micro.map_width, self.micro.map_height))
         )
+        self.last_combat_distance = combat_army_distance_norm(
+            self.state, float(np.hypot(self.micro.map_width, self.micro.map_height))
+        )
         self.last_income_rate = float(
             (self.state.get("global_state") or {}).get("income") or 0.0
         )
@@ -188,6 +201,7 @@ class RwppDuelEnv:
         self.episode_steps += 1
         previous_potential = float(self.last_potential)
         previous_distance = float(self.last_distance)
+        previous_combat_distance = self.last_combat_distance
         previous_income_rate = float(self.last_income_rate)
         previous_own_buildings = int(self.last_own_buildings)
         previous_own_combat = int(self.last_own_combat)
@@ -236,6 +250,9 @@ class RwppDuelEnv:
         distance = army_distance_norm(
             self.state, float(np.hypot(self.micro.map_width, self.micro.map_height))
         )
+        combat_distance = combat_army_distance_norm(
+            self.state, float(np.hypot(self.micro.map_width, self.micro.map_height))
+        )
         potential = combat_value_potential(self.state, self.own_max_ref, self.enemy_max_ref)
         own_alive = sum(1 for unit in self.state.get("own_entities", []) if float(unit.get("hp") or 0.0) > 0.0)
         enemy_alive = sum(
@@ -276,6 +293,8 @@ class RwppDuelEnv:
             previous_income_rate=previous_income_rate,
             previous_own_buildings=previous_own_buildings,
             previous_own_combat=previous_own_combat,
+            combat_distance=combat_distance,
+            previous_combat_distance=previous_combat_distance,
         )
         components = shaping.components
         reward = shaping.reward
@@ -285,6 +304,7 @@ class RwppDuelEnv:
             self.last_result = shaping.last_result
         self.last_potential = potential
         self.last_distance = distance
+        self.last_combat_distance = combat_distance
         # A terminal ``done`` message has no ``global_state``; keep the last
         # known rate instead of resetting it to 0, otherwise the next step books
         # a phantom -rate "economy collapse".

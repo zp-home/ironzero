@@ -65,6 +65,38 @@
 
    **只有 0..2 三个"计数"通道**除以 `units_per_team` 归一化；通道 3 本身已在
    `[0, 1]`，不再缩放。
+5. **标识块 identity**（`2 × max_entities × type_features`，默认 `type_features = 9`）
+   己方一段 + 敌方一段，同 slot 顺序，回答「这是什么、能不能打」。
+   位于**向量最末尾**（`type_block_offset` 之后），所以前面所有列的偏移不变。
+   每个 slot 9 维：
+
+   | 维 | 含义 |
+   |---: | --- |
+   | 0 | occupancy（空位补 0，与几何块一致） |
+   | 1 | `is_building` 建筑 |
+   | 2 | `is_factory` 可产兵工厂 |
+   | 3 | `is_builder` 工程车 |
+   | 4 | `is_air_unit` 空中单位 |
+   | 5 | `build_progress` 在建进度（1.0 = 已完工） |
+   | 6 | 类型哈希 `[0, 1)`（区分其余类型） |
+   | 7 | `can_attack` 能不能打（0/1） |
+   | 8 | `attack_range / 1000`，clamp 到 `[0, 1]` |
+
+   > **为什么有 7/8 维**：前 7 维能说清「这是什么」，但说不清「靠近它会不会死」。
+   > 策略只能靠第 6 维类型哈希从奖励里归纳「哈希 0.236 的东西冲上去会死」，
+   > 样本效率极低，实测表现为**建造者造完矿场后直接冲向敌方基地送死**。
+   > 引擎侧由 `IronZeroBridge.entityJson()` 的 `Unit.canAttack()` /
+   > `OrderableUnit.getMaxAttackRange()` 提供（异常降级为 `false` / `0`）。
+   >
+   > **归一化分母是固定常数 `ATTACK_RANGE_SCALE = 1000.0`**，不是 `cfg.map_width`：
+   > 地图宽度属于场景，用它做分母会让同一辆坦克在 1000px 微竞技场读作 0.130、
+   > 在 Lake(2600px) 读作 0.050，特征含义随地图漂移、checkpoint 无法迁移。
+   >
+   > **7→9 是尾部追加**：每个 slot 的 stride 从 7 变 9，但**第 0..6 维在 slot 内的
+   > 偏移与语义完全不变**。老 checkpoint 的 trunk 列迁移见
+   > `training.ppo._column_source`（注意 stride 变化时它会放弃重映射、退化为
+   > 前缀拷贝，见该函数 docstring）。
+
 
 ### 地形通道的失败语义（关键约定）
 

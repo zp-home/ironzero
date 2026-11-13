@@ -164,3 +164,158 @@ def test_missing_identity_fields_default_to_harmless_values() -> None:
     assert identity[0][0] == 1.0        # occupancy
     assert identity[0][1] == 0.0        # not a building
     assert identity[0][5] == 1.0        # unknown progress reads as finished
+
+
+# ----------------------------------------------------------------------
+# Columns 7/8: can this entity attack, and how far does it reach?
+#
+# The identity block could already say *what* an entity was, but not whether
+# walking into range of it is fatal: the policy had to induce "the thing with
+# hash 0.236 kills me" from reward alone, and a builder was observed walking
+# straight into the enemy base to die.
+# ----------------------------------------------------------------------
+
+#: Column indices inside one identity slot (``MicroDuelConfig.type_features`` = 9).
+CAN_ATTACK = 7
+ATTACK_RANGE = 8
+
+# Real bridge payloads: ``can_attack``/``attack_range`` come from
+# ``IronZeroBridge.entityJson`` (engine ``Unit.canAttack()`` and
+# ``OrderableUnit.getMaxAttackRange()``).
+ATTACKING_TANK = dict(TANK, can_attack=True, attack_range=130.0)
+PEACEFUL_BUILDER = dict(BUILDER, can_attack=False, attack_range=0.0)
+# Measured on a real [p2]Lake (2p) game (``scripts/rwpp_obs_probe.py``) -- a
+# command center in stock 1.15 *does* shoot, so it is NOT a non-combatant. Its
+# range is 280 px, not the tank's 130 px.
+ARMED_COMMAND_CENTER = dict(COMMAND_CENTER, can_attack=True, attack_range=280.0)
+
+
+def test_can_attack_column_separates_builder_from_tank() -> None:
+    """The core regression: a builder must not look like something that fights."""
+
+    vector = encode_observation(_state([ATTACKING_TANK, PEACEFUL_BUILDER]), CFG)
+    identity = _identity(vector)
+    # ``prioritise_own`` puts the builder (rank 2) before the combat unit (rank 3),
+    # so slot 0 is the builder and slot 1 is the tank.
+    builder_row, tank_row = identity[0], identity[1]
+    assert builder_row[3] == 1.0, "slot 0 should be the builder"
+    assert tank_row[3] == 0.0, "slot 1 should be the tank"
+
+    assert builder_row[CAN_ATTACK] == 0.0
+    assert tank_row[CAN_ATTACK] == 1.0
+    # An attack range of 0 for the builder, 130 px -> 0.13 for the tank.
+    assert builder_row[ATTACK_RANGE] == 0.0
+    assert abs(float(tank_row[ATTACK_RANGE]) - 0.13) < 1e-6
+
+
+def test_command_center_reports_its_real_weapon() -> None:
+    """Real-game values: the command center shoots (280 px), the builder cannot.
+
+    Measured on ``[p2]Lake (2p)``::
+
+        commandCenter  can_attack=true   attack_range=280.0
+        builder        can_attack=false  attack_range=0.0
+
+    A command center therefore must not be lumped in with a builder as
+    "harmless": the policy has to be able to tell that standing next to the
+    enemy base is dangerous even for a unit that cannot shoot back.
+    """
+
+    vector = encode_observation(
+        _state([ARMED_COMMAND_CENTER, PEACEFUL_BUILDER]), CFG
+    )
+    identity = _identity(vector)
+    # Buildings are prioritised into slot 0, the builder takes slot 1.
+    center_row, builder_row = identity[0], identity[1]
+    assert center_row[1] == 1.0                   # is_building
+    assert builder_row[3] == 1.0                  # is_builder
+
+    assert center_row[CAN_ATTACK] == 1.0          # armed
+    assert center_row[ATTACK_RANGE] > 0.0         # 280 px -> 0.28
+    assert abs(float(center_row[ATTACK_RANGE]) - 0.28) < 1e-6
+    assert builder_row[CAN_ATTACK] == 0.0         # harmless
+    assert builder_row[ATTACK_RANGE] == 0.0
+    # The two are distinguishable on the attack columns *and* on the type columns.
+    assert not np.array_equal(center_row, builder_row)
+
+
+def test_new_attack_columns_stay_in_the_unit_interval() -> None:
+    """The block's [0, 1] contract survives absurd and malformed engine values."""
+
+    cases = [
+        dict(ATTACKING_TANK, attack_range=130.0),
+        dict(ATTACKING_TANK, attack_range=0.0),
+        dict(ATTACKING_TANK, attack_range=5000.0),      # clamped
+        dict(ATTACKING_TANK, attack_range=float("nan")),  # -> 0, not NaN
+        dict(ATTACKING_TANK, attack_range=float("inf")),  # -> 0
+        dict(ATTACKING_TANK, attack_range=-50.0),       # -> 0
+        dict(ATTACKING_TANK, attack_range="?"),         # unparseable -> 0
+        dict(ATTACKING_TANK, attack_range=None),        # missing-ish -> 0
+        dict(PEACEFUL_BUILDER, can_attack="yes"),       # truthy -> 1.0
+    ]
+    for unit in cases:
+        identity = _identity(encode_observation(_state([unit]), CFG))
+        assert np.isfinite(identity).all(), f"non-finite feature for {unit}"
+        assert (identity >= 0.0).all(), f"negative feature for {unit}"
+        assert (identity <= 1.0).all(), f"feature > 1 for {unit}"
+    # A hostile range is clamped, not propagated.
+    huge = _identity(encode_observation(_state([dict(ATTACKING_TANK, attack_range=5000.0)]), CFG))
+    assert huge[0][ATTACK_RANGE] == 1.0
+
+
+def test_attack_columns_are_appended_without_touching_the_first_seven() -> None:
+    """Appending must not shift a column: an old checkpoint keeps its meaning."""
+
+    # The exact same entity, once without and once with the two new fields. The
+    # bridge change is purely additive, so the leading columns must be identical.
+    before = dict(TANK)
+    after = dict(before, can_attack=True, attack_range=130.0)
+    vec_before = encode_observation(_state([before]), CFG)
+    vec_after = encode_observation(_state([after]), CFG)
+
+    row_before = _identity(vec_before)[0]
+    row_after = _identity(vec_after)[0]
+    # Columns 0..6 -- occupancy, is_building, is_factory, is_builder, is_air_unit,
+    # build_progress, type hash -- are bit-identical.
+    np.testing.assert_array_equal(row_before[:7], row_after[:7])
+    # Only the two appended columns moved.
+    assert row_before[CAN_ATTACK] == 0.0
+    assert row_after[CAN_ATTACK] == 1.0
+    assert row_before[ATTACK_RANGE] == 0.0
+    assert row_after[ATTACK_RANGE] > 0.0
+
+    # The overall vector length is unchanged by the payload, and every earlier
+    # block (global / geometric / grid) keeps its exact offset and values.
+    assert vec_before.shape == vec_after.shape == (CFG.flat_obs_dim,)
+    geo_end = CFG.type_block_offset
+    np.testing.assert_array_equal(vec_before[:geo_end], vec_after[:geo_end])
+
+
+def test_enemy_attack_capability_is_observable() -> None:
+    """An enemy turret must look dangerous in the *enemy* identity block too."""
+
+    turret = dict(
+        SCOUT, entity_id=9, entity_type_id=12, is_building=True,
+        can_attack=True, attack_range=290.0,
+    )
+    as_tank = encode_observation(
+        _state([PEACEFUL_BUILDER], [dict(ATTACKING_TANK, entity_id=9)]), CFG
+    )
+    as_turret = encode_observation(_state([PEACEFUL_BUILDER], [turret]), CFG)
+    assert _identity(as_tank, block=1)[0][CAN_ATTACK] == 1.0
+    assert _identity(as_turret, block=1)[0][CAN_ATTACK] == 1.0
+    # Same capability, different reach: 130 px vs 290 px.
+    assert abs(float(_identity(as_tank, block=1)[0][ATTACK_RANGE]) - 0.13) < 1e-6
+    assert abs(float(_identity(as_turret, block=1)[0][ATTACK_RANGE]) - 0.29) < 1e-6
+
+
+def test_type_features_grew_to_nine_with_the_attack_columns_last() -> None:
+    """The layout constant and the feature vector must agree, at the tail."""
+
+    assert CFG.type_features == 9
+    from ironzero.observation.features import _entity_type_features
+
+    feats = _entity_type_features(dict(ATTACKING_TANK))
+    assert feats.shape == (CFG.type_features,)
+    assert feats[CAN_ATTACK] == 1.0
+    assert feats[ATTACK_RANGE] > 0.0
