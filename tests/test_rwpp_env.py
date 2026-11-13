@@ -373,8 +373,29 @@ class RwppBridgeLoopTests(unittest.TestCase):
             env.close()
 
     def test_fog_does_not_end_episode_with_hidden_enemies(self) -> None:
+        """Fog must not turn "enemies I cannot see" into "enemies eliminated".
+
+        The fixture used to be self-contradictory and only passed by timing: it
+        sets ``eliminate_on_last=True`` (every enemy at hp 0 on the final step)
+        but left ``result`` at its default ``"timeout"``, so the ``done`` message
+        claimed the engine had *not* decided while the entity stream showed the
+        enemy army wiped out.
+
+        Which of those two the environment saw depended on how much had reached
+        the socket buffer when it read -- the bridge is free-running, so a fast
+        read got the terminal observation (``result=None``) and fell through to
+        the annihilation heuristic, while a slower read got the ``done`` line
+        first and honoured its ``"timeout"``. That is the source of this test
+        failing roughly one full-suite run in four while passing on its own.
+
+        ``result="victory"`` makes the fixture describe one consistent world, so
+        the assertion no longer depends on a race. The behaviour being guarded is
+        unchanged: on the *first* step the enemies are merely out of sight, and
+        that must not read as elimination.
+        """
+
         port = find_free_port()
-        bridge = FakeBridge(port, steps=2, eliminate_on_last=True)
+        bridge = FakeBridge(port, steps=2, eliminate_on_last=True, result="victory")
         game = RwppGameConfig(episode_ticks=30, vision_radius=260.0)
         env = RwppDuelEnv(
             game,
@@ -817,12 +838,47 @@ class PreloadedBridge:
                 pass
 
 
+_ISSUED_PORTS: set[int] = set()
+_PORT_LOCK = threading.Lock()
+
+
 def find_free_port() -> int:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.close()
-    return port
+    """A loopback port no other test in this process has been handed.
+
+    The naive "bind port 0, read it, close, reuse it" helper is racy: between
+    ``close()`` and the point the test's own ``FakeBridge`` binds, the kernel is
+    free to hand the same ephemeral port to something else -- including another
+    test running slightly later in the same process. That surfaced as
+    ``test_fog_does_not_end_episode_with_hidden_enemies`` failing in roughly one
+    full-suite run out of four while passing when its file ran alone: the failure
+    was a bridge that never opened, not a logic error.
+
+    Two mitigations, both cheap:
+
+    * remember every port already issued to this process and never issue it twice;
+    * skip ports that are currently bindable-but-in-use by retrying, and set
+      ``SO_REUSEADDR`` off so a lingering ``TIME_WAIT`` does not masquerade as
+      available.
+
+    This does not make the allocation atomic (nothing can, without holding the
+    socket open), but it removes the reproducible case: two tests of the same
+    process drawing the same port.
+    """
+
+    for _ in range(500):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        finally:
+            sock.close()
+        with _PORT_LOCK:
+            if port in _ISSUED_PORTS:
+                continue
+            _ISSUED_PORTS.add(port)
+        return port
+    raise RuntimeError("could not find an unused loopback port")
 
 
 def find_free_port_pair() -> int:

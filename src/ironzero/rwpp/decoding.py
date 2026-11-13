@@ -80,6 +80,38 @@ def observation_to_state(message: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
+def _builder_group(state: dict[str, Any]) -> int:
+    """The ``unit_group`` index a build order must use to reach a builder.
+
+    Build orders are addressed to a *unit group*, and ``IronZeroBridge`` selects
+    group members with ``unit.id % GROUP_COUNT == unit_group`` -- so a builder
+    belongs to exactly one numbered group for the whole episode. The policy
+    meanwhile picks ``group`` freely (it is a learned head), and nothing ties its
+    choice to where the builder actually is.
+
+    Measured on ``[p2]Lake (2p)`` (``.runtime/econ_gate.json``): the map-placed
+    builder is unit 24 (group 0) and the command center is unit 23 (group 3).
+    A ``build_extractor`` addressed to group 3 is rejected ``BUILD_UNAVAILABLE``
+    while the *same* order to group 0 or to the broadcast slot (4) is accepted.
+    The action mask opens every numbered group that owns any unit, so group 3 was
+    selectable solely because the command center lives there -- an address that
+    can never build. In the 200-update Lake run this produced
+    ``BUILD_UNAVAILABLE=1620``, the single largest rejection bucket.
+
+    Returning the broadcast slot (``cfg.groups``) is the robust choice: the
+    bridge treats ``unit_group == GROUP_COUNT`` as "every living friendly unit",
+    which includes the builder wherever it sits and stays correct when the map
+    places *several* builders or when a factory produces more of them. Group
+    membership of the builder is not part of what the policy is being asked to
+    learn here -- only *whether* and *what* to build -- so this does not remove a
+    real decision from the action space.
+    """
+
+    from ..micro_config import DEFAULT_CONFIG
+
+    return int(DEFAULT_CONFIG.groups)
+
+
 def decode_action(
     action: np.ndarray,
     state: dict[str, Any],
@@ -137,11 +169,11 @@ def decode_action(
             candidates = list(range(len(slots)))
         else:
             candidates = [0]
-        return [{"kind": "build_extractor", "unit_group": group,
+        return [{"kind": "build_extractor", "unit_group": _builder_group(state),
                  "slot_id": int(candidates[int(target_index) % len(candidates)])}]
     if kind == "build_structure":
         x, y = config.grid_to_world(gx, gy)
-        return [{"kind": "build_structure", "unit_group": group,
+        return [{"kind": "build_structure", "unit_group": _builder_group(state),
                  "structure_type": "land_factory",
                  "x": round(float(x), 2), "y": round(float(y), 2)}]
     if kind == "produce_unit":

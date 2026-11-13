@@ -23,9 +23,10 @@ from typing import Any, Callable
 import numpy as np
 
 from ..micro_config import MicroDuelConfig
+from ..mock_engine import ACTION_KINDS
 from ..observations import build_masks, encode_observation
 from .config import RwppGameConfig
-from .decoding import observation_to_state
+from .decoding import decode_action, observation_to_state
 from .errors import RwppEnvError
 from .process import _ProcLike, launch_rwpp_process
 from .reward import army_distance_norm, army_hp_reference, combat_value_potential
@@ -158,6 +159,13 @@ class RwppDuelEnv:
         self.episode_steps = 0
         self._refresh_strategy()
         self.last_strategy_potential = self._strategy_potential()
+        # Opening curriculum: queue the first extractor before returning the first
+        # observation. See ``RwppGameConfig.opening_extractor`` for why a
+        # from-scratch policy cannot find this on its own (a build needs ~140
+        # uninterrupted ticks and every other order cancels it). This only issues
+        # the order -- ``bonus_build`` still requires the building to finish, so
+        # the reward stays honest.
+        self.opening_receipt = self._issue_opening_extractor()
         obs = encode_observation(self.obs_state, self.micro)
         info = {
             "episode_id": self.episode_id,
@@ -336,6 +344,62 @@ class RwppDuelEnv:
 
     def _strategy_potential(self) -> float | None:
         return strategy_potential(self)
+
+    def _issue_opening_extractor(self) -> dict[str, Any] | None:
+        """Queue one extractor with our builder at episode start (curriculum).
+
+        Issued through the normal bridge path so the game validates it exactly like
+        any policy order. Returns the receipt, or ``None`` when the curriculum is
+        disabled / there is no builder / no free resource pool -- all of which are
+        ordinary situations on maps that are not economically playable, so this
+        must never raise.
+
+        Deliberately *not* rewarded directly: ``bonus_build`` and ``income`` are
+        computed from the observation stream and only pay when the extractor
+        actually finishes and starts generating. The point is to remove the
+        exploration barrier (a build needs ~140 uninterrupted ticks), not to hand
+        out free reward.
+        """
+
+        if not getattr(self.game, "opening_extractor", False):
+            return None
+        state = self.state
+        slots = state.get("resource_slots") or []
+        free = [
+            index
+            for index, slot in enumerate(slots)
+            if isinstance(slot, dict) and not slot.get("occupied")
+        ]
+        if not free:
+            return None
+        if not any(unit.get("is_builder") for unit in state.get("own_entities", [])):
+            return None
+        # Nearest-to-own-base first is how the bridge already orders the list, so
+        # the first free pool is the intended opening build.
+        action = np.array(
+            [ACTION_KINDS.index("build_extractor"), int(self.micro.groups),
+             int(self.micro.position_grid) // 2, int(self.micro.position_grid) // 2,
+             int(free[0])],
+            dtype=np.int64,
+        )
+        try:
+            _actions, disconnected = send_step(self, action)
+        except (RwppEnvError, OSError):
+            return None
+        if disconnected:
+            return None
+        # The bridge answers with one ``receipt`` per action; read it so the caller
+        # can log whether the opening order was actually accepted. A rejected
+        # opening is not an error (some maps have no free pool within reach) and
+        # must not break ``reset``.
+        try:
+            message = self._await_observation(self.game.obs_timeout)
+        except (RwppEnvError, OSError):
+            return None
+        if not isinstance(message, dict):
+            return None
+        return {"accepted": bool(message.get("accepted", True)),
+                "kind": "build_extractor"}
 
     def action_masks(self) -> dict[str, np.ndarray]:
         return self.masks

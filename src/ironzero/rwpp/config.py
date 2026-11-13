@@ -23,6 +23,10 @@ from ..micro_config import DEFAULT_CONFIG, MicroDuelConfig
 # [3]=repository root (same value the single-file module computed from
 # ``src/ironzero/rwpp_env.py``'s parents[2]).
 REPO_ROOT = Path(__file__).resolve().parents[3]
+#: RWPP runtime root. ``scripts/make_ironzero_map.py`` resolves the *same* value
+#: (``resolve_repo_runtime``) because it installs generated arena maps into this
+#: tree while the trainer reads them back; two different answers leave every
+#: arena run stuck on "map missing".
 DEFAULT_RUNTIME = Path(os.environ.get("IRONZERO_RWPP_RUNTIME", r"E:\IronZeroBuild\rwpp-runtime-1.15"))
 DEFAULT_JAVA_HOME = Path(os.environ.get("IRONZERO_JAVA_HOME", r"E:\jdk25copy"))
 DEFAULT_MAP = "maps/challenge/Artillery.tmx"
@@ -237,6 +241,24 @@ class RwppGameConfig:
     # Team count used by ``recommended_episode_ticks`` when ``episode_ticks`` is
     # left at 0 (derive the cap). Two on every stock skirmish map.
     num_teams: int = 2
+    # Opening curriculum: queue an extractor build with the builder at reset.
+    #
+    # Without it the policy starts every episode facing an empty economy and a
+    # ~2000-tick latency before its first combat unit exists (measured on
+    # ``[p2]Lake (2p)``: extractor at 141, landFactory at 491, first unit at
+    # 2021). A from-scratch policy samples ``build_extractor`` roughly
+    # ``1/len(ACTION_KINDS)`` of the time and every other order cancels the
+    # in-flight build, so it almost never finishes a structure by exploration --
+    # ``income`` stayed at exactly 0.000 for 81 consecutive updates before the
+    # mask bug was fixed, and even afterwards the economy only started on ~20% of
+    # episodes.
+    #
+    # This is a *curriculum*, not a hidden policy: the opening order is issued
+    # once through the normal bridge path, the reward is paid by the normal rules
+    # (``bonus_build`` still requires a finished building), and the agent owns
+    # every decision from then on. Set ``--no-opening-extractor`` to disable it and
+    # measure the difference.
+    opening_extractor: bool = True
     log_dir: Path = REPO_ROOT / "runs" / "_rwpp_ppo"
     env_overrides: dict[str, str] = field(default_factory=dict)
 

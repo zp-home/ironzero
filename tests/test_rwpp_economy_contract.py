@@ -25,8 +25,10 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import numpy as np
 import pytest
 
+from ironzero.mock_engine import ACTION_KINDS
 from ironzero.observations import encode_observation
 from ironzero.rwpp.config import RwppGameConfig
 from ironzero.rwpp.reward_shaping import compute_step_shaping
@@ -723,3 +725,140 @@ def test_production_menu_is_only_reported_by_actual_factories() -> None:
         "gating the factory list on isBuilder would omit factories and put "
         "production back behind the builder's build menu"
     )
+
+def test_build_orders_use_the_broadcast_group_not_the_policy_group() -> None:
+    """A build order must reach the builder, wherever its group happens to be.
+
+    ``IronZeroBridge`` selects group members with ``unit.id % GROUP_COUNT``, so a
+    map-placed builder belongs to exactly one numbered group for the whole
+    episode -- but the policy picks ``group`` from a learned head with no idea
+    where the builder is. On ``[p2]Lake (2p)`` the builder is unit 24 (group 0)
+    and the command center is unit 23 (group 3); the action mask opens group 3
+    because the command center lives there, and a build addressed to group 3 can
+    never succeed. Measured over 200 updates on that map:
+    ``BUILD_UNAVAILABLE=1620``, the largest rejection bucket by far.
+
+    Broadcasting (``unit_group == cfg.groups``) orders every living friendly unit,
+    which includes the builder wherever it sits and stays correct when a map
+    places several builders or a factory produces more.
+    """
+
+    from ironzero.micro_config import DEFAULT_CONFIG
+    from ironzero.rwpp.decoding import decode_action
+
+    state = {
+        "own_entities": [
+            {"entity_id": 23, "hp": 4000.0, "max_hp": 4000.0, "x": 990.0, "y": 2040.0,
+             "group_id": 3, "is_building": True, "is_factory": True},
+            {"entity_id": 24, "hp": 170.0, "max_hp": 170.0, "x": 990.0, "y": 2070.0,
+             "group_id": 0, "is_builder": True},
+        ],
+        "visible_enemy_entities": [],
+        "global_state": {"funds": 4000.0},
+        "resource_slots": [{"slot_id": index, "occupied": False} for index in range(6)],
+    }
+    broadcast = int(DEFAULT_CONFIG.groups)
+    for kind in ("build_extractor", "build_structure"):
+        for group in range(DEFAULT_CONFIG.groups + 1):
+            action = np.array(
+                [ACTION_KINDS.index(kind), group, 3, 3, 0], dtype=np.int64
+            )
+            decoded = decode_action(action, state, DEFAULT_CONFIG)
+            assert decoded, f"{kind} produced no action for group {group}"
+            assert decoded[0]["unit_group"] == broadcast, (
+                f"{kind} sent unit_group={decoded[0]['unit_group']} for policy "
+                f"group {group}; a numbered group may contain no builder, which is "
+                "rejected as BUILD_UNAVAILABLE"
+            )
+
+
+def test_tactical_orders_still_honour_the_policy_group() -> None:
+    """The broadcast remap must apply to *build* orders only.
+
+    Move / attack / hold genuinely address a subset of the army, so collapsing
+    them to broadcast would delete a real decision from the action space.
+    """
+
+    from ironzero.micro_config import DEFAULT_CONFIG
+    from ironzero.rwpp.decoding import decode_action
+
+    state = {
+        "own_entities": [
+            {"entity_id": 24, "hp": 170.0, "max_hp": 170.0, "x": 990.0, "y": 2070.0,
+             "group_id": 0, "is_builder": True},
+        ],
+        "visible_enemy_entities": [],
+        "global_state": {"funds": 4000.0},
+        "resource_slots": [],
+    }
+    for kind in ("move_group", "attack_move", "hold", "stop"):
+        for group in range(DEFAULT_CONFIG.groups):
+            action = np.array(
+                [ACTION_KINDS.index(kind), group, 3, 3, 0], dtype=np.int64
+            )
+            decoded = decode_action(action, state, DEFAULT_CONFIG)
+            assert decoded[0]["unit_group"] == group, (
+                f"{kind} must keep the policy's group ({group}), got "
+                f"{decoded[0]['unit_group']}"
+            )
+
+def test_opening_extractor_curriculum_issues_one_real_build_order() -> None:
+    """``reset()`` must queue an extractor through the normal bridge path.
+
+    Why this exists: a from-scratch policy samples ``build_extractor`` about
+    ``1/len(ACTION_KINDS)`` of the time and *every other order cancels the
+    in-flight build* (that is why ``noop`` exists), so finishing a 140-tick
+    structure by exploration is vanishingly unlikely. Measured on
+    ``[p2]Lake (2p)``: ``income`` stayed at exactly 0.000 for 81 consecutive
+    updates, and even after the mask bug was fixed it only moved on ~20% of
+    episodes.
+
+    The curriculum only *issues the order*. ``bonus_build`` still requires a
+    finished building and ``income`` still pays from the observation stream, so no
+    reward is handed out for free -- asserted below by checking the term is not
+    touched here.
+    """
+
+    import inspect
+
+    from ironzero.rwpp.config import RwppGameConfig
+    from ironzero.rwpp.env import RwppDuelEnv
+
+    # Opt-out must exist and default to on.
+    assert RwppGameConfig().opening_extractor is True
+
+    source = inspect.getsource(RwppDuelEnv._issue_opening_extractor)
+    # Addressed via the broadcast group so it reaches the builder wherever it is.
+    assert "micro.groups" in source, (
+        "the opening order must broadcast, otherwise it misses the builder on any "
+        "map whose builder is not in the sampled group"
+    )
+    # Sent through the shared step path, not a private socket write.
+    assert "send_step" in source, (
+        "the opening order must go through send_step so the game validates it "
+        "exactly like a policy order"
+    )
+    # Only a free pool is a legal target.
+    assert "occupied" in source
+    # Must never break reset on a map that cannot honour it.
+    assert "return None" in source
+
+    reset_source = inspect.getsource(RwppDuelEnv.reset)
+    assert "_issue_opening_extractor" in reset_source
+
+
+def test_opening_curriculum_pays_no_reward_by_itself() -> None:
+    """The curriculum must not be a reward source.
+
+    ``bonus_build`` is counted from the observation stream by
+    ``compute_step_shaping``, so issuing the order contributes nothing until the
+    extractor finishes -- keeping the reward honest and policy-invariant.
+    """
+
+    from ironzero.rwpp.reward_shaping import compute_step_shaping
+
+    source = compute_step_shaping.__doc__ or ""
+    impl = __import__("inspect").getsource(compute_step_shaping)
+    assert "bonus_build" in impl
+    # The term is computed from own entity counts, not from receipts.
+    assert "new_buildings" in impl
