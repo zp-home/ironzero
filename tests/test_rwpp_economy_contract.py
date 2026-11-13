@@ -605,3 +605,72 @@ def test_step_info_carries_this_decisions_receipts() -> None:
     assert "receipts_this_step" in ctx, (
         "the receipts passed must be this step's slice, not the episode total"
     )
+
+# ---------------------------------------------------------------------------
+# 5. The builder's reported menu must cover what the engine actually accepts.
+# ---------------------------------------------------------------------------
+@pytest.mark.skipif(not BRIDGE_SOURCE.is_file(), reason="bridge source not present")
+def test_builder_menu_is_scanned_not_probed_from_a_fixed_list() -> None:
+    """``buildersJson`` must report the engine's real menu, not a 4-name probe.
+
+    Measured failure this guards: on ``[p2]Lake (2p)`` the bridge reported
+    ``can_build: ["landFactory"]`` for the map-placed builder while the very same
+    builder *accepted* ``structure_type="extractor"``. The Python action mask
+    gates ``build_extractor`` on the literal name ``"extractor"`` appearing in
+    this list, so the kind was closed for every decision of every episode and the
+    policy could not express "build an extractor" at all -- the agent literally
+    had no way to learn the economy, however long it trained.
+
+    ``canQueueAction`` answers "is this in the build *menu*", which is a
+    different question from "would the engine accept this build order".
+    ``buildWithBuilders`` dispatches through ``getSpecialAction`` +
+    ``isValidNewWaypoint``, so the menu has to be derived the same way or the
+    mask and the dispatcher disagree.
+    """
+
+    source = BRIDGE_SOURCE.read_text(encoding="utf-8", errors="replace")
+    method = _method_body(source, "buildersJson")
+    assert "buildableNamesFor" in method, (
+        "buildersJson must delegate to the registry scan; probing a fixed "
+        "BUILDABLE_PROBE list reports a menu narrower than the dispatchable set"
+    )
+    assert "BUILDABLE_PROBE" not in method, (
+        "the fixed-list probe is exactly the bug: it reported [landFactory] on a "
+        "map whose builder accepts extractor orders"
+    )
+
+    scan = _method_body(source, "buildableNamesFor")
+    assert "UnitType.values()" in scan, (
+        "the builder menu must come from a registry scan, like the factory menu"
+    )
+    assert "getSpecialAction" in scan, (
+        "the scan must use the same lookup buildWithBuilders dispatches with, "
+        "otherwise the reported menu and the accepted orders can diverge again"
+    )
+    assert "CANONICAL_BUILD_NAMES" in scan, (
+        "the registry scan alone misses 'extractor' on stock maps (the engine's "
+        "internal name there is extractorT1), so the canonical names the action "
+        "mask matches on must be probed explicitly"
+    )
+
+
+@pytest.mark.skipif(not BRIDGE_SOURCE.is_file(), reason="bridge source not present")
+def test_canonical_build_names_cover_every_masked_economy_kind() -> None:
+    """Every name the action mask gates on must be in the probe list.
+
+    ``masks._KIND_REQUIRED_BUILDABLE`` maps ``build_extractor`` -> ``"extractor"``
+    and ``build_structure`` -> ``"landFactory"``. If the bridge never reports one
+    of those strings, that kind is unreachable no matter what the engine would
+    accept.
+    """
+
+    from ironzero.observation.masks import _KIND_REQUIRED_BUILDABLE
+
+    source = BRIDGE_SOURCE.read_text(encoding="utf-8", errors="replace")
+    start = source.index("CANONICAL_BUILD_NAMES")
+    block = source[start:source.index("};", start)]
+    for kind, required in _KIND_REQUIRED_BUILDABLE.items():
+        assert f'"{required}"' in block, (
+            f"{kind} is masked on the name {required!r}, but the bridge's "
+            f"canonical probe list does not ask for it"
+        )

@@ -104,6 +104,24 @@ public final class IronZeroBridge implements ServerExtension {
     };
 
     /**
+     * Canonical economy names probed through {@code resolveUnitType}, i.e. the
+     * same lookup {@code buildWithBuilders} dispatches with.
+     *
+     * <p>These cover the four names the Python action mask gates on -- the mask
+     * asks for the literal string {@code "extractor"} and {@code "landFactory"}
+     * -- plus the two remaining economy kinds. The registry scan in
+     * {@link #buildableNamesFor} cannot produce {@code "extractor"} on a stock
+     * map (the engine's own internal name there is {@code extractorT1}'), so
+     * without this list the mask kept ``build_extractor`` closed even though the
+     * engine accepted the order.
+     */
+    private static final String[] CANONICAL_BUILD_NAMES = {
+        "extractor",
+        "landFactory",
+        "turret",
+    };
+
+    /**
      * Unit types reported in ``info.factories[].can_produce``.
      *
      * <p>Kept only as a fast path. The authoritative answer is the engine's own
@@ -557,29 +575,127 @@ public final class IronZeroBridge implements ServerExtension {
             }
             out.append("{\"entity_id\":").append(unit.id)
                     .append(",\"unit_type\":\"").append(typeName).append("\",\"can_build\":[");
-            boolean firstType = true;
-            for (UnitType candidate : BUILDABLE_PROBE) {
-                boolean ok;
-                try {
-                    ok = candidate != null && !candidate.isLocked()
-                            && unit.canQueueAction(candidate, false);
-                } catch (RuntimeException ignored) {
-                    ok = false;
-                }
-                if (!ok) {
-                    continue;
-                }
-                if (!firstType) {
+            java.util.List<String> names = buildableNamesFor(unit);
+            for (int index = 0; index < names.size(); index++) {
+                if (index > 0) {
                     out.append(',');
                 }
-                firstType = false;
-                out.append('"').append(candidate.getInternalName()).append('"');
+                out.append('"').append(names.get(index)).append('"');
             }
             out.append("]}");
         }
         out.append(']');
         return out.toString();
     }
+
+    /**
+     * Unit type names this builder can queue right now, in engine registry order.
+     *
+     * <p><b>This is the fix for "the agent never learns the economy on a stock
+     * map".</b> The previous implementation probed a fixed four-name list
+     * ({@link #BUILDABLE_PROBE}) with {@code unit.canQueueAction(...)}, and on
+     * {@code [p2]Lake (2p)} that returned exactly {@code ["landFactory"]}. The
+     * Python action mask gates {@code build_extractor} on the literal name
+     * {@code "extractor"} appearing here, so the kind was masked away for the
+     * whole episode -- the policy <i>could not express</i> "build an extractor".
+     *
+     * <p>Measured contradiction, same bridge build, same map, one order each
+     * (see {@code .runtime/buildnames.json}):
+     *
+     * <pre>
+     *   reported can_build = ["landFactory"]
+     *   order structure_type="extractor"   -&gt; accepted
+     *   order structure_type="extractorT1" -&gt; accepted
+     *   order structure_type="turret"      -&gt; accepted
+     *   order structure_type="tank"        -&gt; rejected BUILD_UNAVAILABLE
+     * </pre>
+     *
+     * <p>So {@code canQueueAction} is <i>not</i> the question the mask needs
+     * answered. The engine dispatches a build through {@code getSpecialAction}
+     * plus {@code isValidNewWaypoint} -- exactly the pair {@link #buildWithBuilders}
+     * uses before it reports an order as accepted -- so the honest menu is "the
+     * types for which a build action resolves", scanned over the registry the same
+     * way {@link #producibleNamesFor} does for factories. The reported menu and
+     * the dispatchable set then agree by construction, and the mask stops
+     * switching off actions the game would have executed.
+     *
+     * <p>Affordability is deliberately <i>not</i> baked in: the action mask already
+     * gates the economy kinds on funds, and a menu that changed with the bank
+     * balance would make the observation non-stationary for no benefit.
+     */
+    private java.util.List<String> buildableNamesFor(OrderableUnit builder) {
+        String key;
+        try {
+            key = builder.getUnitTypeInterface().getInternalName();
+        } catch (RuntimeException ignored) {
+            key = "?";
+        }
+        java.util.List<String> cached = buildableCache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        java.util.List<String> names = new java.util.ArrayList<>();
+        UnitType[] types;
+        try {
+            types = UnitType.values();
+        } catch (RuntimeException ignored) {
+            types = new UnitType[] {};
+        }
+        for (UnitType candidate : types) {
+            if (candidate == null || candidate.isLocked()) {
+                continue;
+            }
+            try {
+                if (!builder.isBuilder() || !builder.canBeGivenBuildOrders()) {
+                    continue;
+                }
+                // ``getSpecialAction`` is what ``buildWithBuilders`` dispatches
+                // through; a null action means the engine has no build entry for
+                // this type on this builder at all.
+                SpecialAction action = builder.getSpecialAction(candidate, false);
+                if (action == null) {
+                    continue;
+                }
+                names.add(candidate.getInternalName());
+            } catch (RuntimeException ignored) {
+                // Unqueryable candidate: not part of this builder's menu.
+            }
+        }
+        // The registry scan above misses names that dispatch *does* accept,
+        // because a unit is dispatched through ``UnitType.findUnitType(name)``
+        // (what ``resolveUnitType`` / ``buildWithBuilders`` use), which can
+        // resolve a name that no ``UnitType.values()`` entry reports verbatim.
+        // Measured on [p2]Lake (2p): the scan yields landFactory / airFactory /
+        // seaFactory / laserDefence / repairbay / experimentalLandFactory, while
+        // ``structure_type="extractor"`` is accepted by the very same builder.
+        // The Python mask asks for the literal name ``extractor``, so the
+        // canonical economy names are probed through the same resolution path
+        // and added when they resolve, keeping the reported menu a superset of
+        // the dispatchable one.
+        for (String canonical : CANONICAL_BUILD_NAMES) {
+            if (names.contains(canonical)) {
+                continue;
+            }
+            try {
+                UnitTypeInterface resolved = resolveUnitType(canonical);
+                if (resolved == null || resolved.isLocked()) {
+                    continue;
+                }
+                if (builder.getSpecialAction(resolved, false) == null) {
+                    continue;
+                }
+                names.add(canonical);
+            } catch (RuntimeException ignored) {
+                // Not buildable under that name on this map.
+            }
+        }
+        buildableCache.put(key, names);
+        return names;
+    }
+
+    /** Cache of "which unit types can this *builder type* make" (see above). */
+    private final java.util.HashMap<String, java.util.List<String>> buildableCache =
+            new java.util.HashMap<>();
 
     /**
      * Cache of "which unit types can this factory type make", keyed by the
