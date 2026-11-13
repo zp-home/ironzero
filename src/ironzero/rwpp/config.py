@@ -109,7 +109,22 @@ class RwppGameConfig:
     physics_ms: int = 16
     # Dense shaping: reward closing the distance to the enemy army (the skirmish
     # AI often starts far away, so pure hp-diff reward has no gradient early on).
-    engagement_coef: float = 2.0
+    #
+    # Lowered 2.0 -> 0.3, but be precise about *why*, because the obvious
+    # argument is wrong. Measured per-step magnitude on a 3680 px diagonal map:
+    # a tank moves ~11 px per decision, so a head-on approach changes the
+    # normalised distance by ~0.003 and this term paid ~0.006/step at coef 2.0 --
+    # the same order as ``terminal`` (0.027). So the coefficient was *not*
+    # numerically dominant step-by-step.
+    #
+    # The real reason to cut it is what it rewards across an episode: the two
+    # bases are ~1800 px apart, so the very first army move towards the enemy
+    # pays more than a kill (``kill_bonus = 0.25``) and it keeps paying every
+    # decision until contact. Integrated over an episode that is a large,
+    # one-directional gradient whose optimum is "walk at the enemy centroid" --
+    # in an economy game that means abandoning production. At 0.3 the initial
+    # gradient still exists but no longer competes with fighting.
+    engagement_coef: float = 0.3
     # Reward terms (docs 7.2/7.4): kills/own losses plus small penalties for
     # rejected orders and for idle decisions while enemies are in sight.
     # LLM/rule strategic layer (optional): the directive nudges reward shaping only,
@@ -124,6 +139,19 @@ class RwppGameConfig:
     # a hard-coded +5.0, which -- once the bridge actually made building work --
     # would pay more than winning and turn the policy into an extractor farmer.
     build_bonus: float = 0.20
+    # One-off reward for a *new combat unit* appearing (queued by ``produce_unit``
+    # at one of our factories). ``build_bonus`` paid for the factory and the
+    # income term paid for extractors, but nothing paid for actually using the
+    # factory -- so "finish the factory, then idle" scored the same as "finish the
+    # factory, then field an army", and the cheapest possible build dominated.
+    # Kept below ``build_bonus`` * 2 so a single structure still outranks one
+    # unit (the structure is the prerequisite), and far below a won game.
+    produce_bonus: float = 0.10
+    # One-off penalty for losing a completed building. The hp-based ``losses``
+    # term cannot price this: a command center has more hp than an army but its
+    # real value is the capability it unlocks (production / income). Small enough
+    # that retreating to save a factory never outweighs fighting for the win.
+    building_loss_penalty: float = 0.30
     log_dir: Path = REPO_ROOT / "runs" / "_rwpp_ppo"
     env_overrides: dict[str, str] = field(default_factory=dict)
 

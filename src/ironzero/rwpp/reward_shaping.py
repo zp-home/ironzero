@@ -114,6 +114,7 @@ def compute_step_shaping(
     episode_components: dict[str, float],
     previous_income_rate: float = 0.0,
     previous_own_buildings: int = 0,
+    previous_own_combat: int = 0,
 ) -> StepShaping:
     """Build the per-step reward terms and adjudicate termination.
 
@@ -145,6 +146,29 @@ def compute_step_shaping(
         1 for unit in state.get("own_entities", []) if unit.get("is_building")
     )
     new_buildings = max(0, int(own_buildings) - int(previous_own_buildings))
+    # ``bonus_produce`` closes the last gap in the economy loop: building was
+    # rewarded and promotion was rewarded, but *using* the factory to add a
+    # combat unit paid nothing. A policy that finished a factory and then never
+    # queued anything earned exactly the same return as one that did, so the
+    # only gradient left was "build the cheapest thing, then stop".
+    #
+    # Counted from the own-entity stream (buildings excluded), which is the same
+    # ground truth ``bonus_build`` uses. Producers are excluded so that making a
+    # builder -- which every factory's menu offers and is the cheapest entry --
+    # cannot farm this term.
+    own_combat = sum(
+        1
+        for unit in state.get("own_entities", [])
+        if not unit.get("is_building") and not unit.get("is_builder")
+    )
+    new_combat = max(0, int(own_combat) - int(previous_own_combat))
+    # Losing a building is a strategic loss, not a unit loss: the player forfeits
+    # production / income capacity, which the hp-based ``losses`` term cannot
+    # express (a command center's hp is huge, but its *value* is the capability).
+    # Charged once per building that disappears, and deliberately smaller than a
+    # won game so it shapes behaviour without dominating the terminal signal.
+    own_buildings_now = int(own_buildings)
+    lost_buildings = max(0, int(previous_own_buildings) - own_buildings_now)
     # Income is a *rate*, and a level rate integrated over a 5000-decision
     # episode would swamp the +/-1.0 terminal signal: at 18 credits/s the old
     # ``extractor_reward * income/10`` paid ~0.9 every decision, i.e. ~4500 per
@@ -186,6 +210,12 @@ def compute_step_shaping(
         ),
         "terminal": 0.0,
         "timeout": 0.0,
+        # Appended *after* the historical keys on purpose: ``reward`` is
+        # ``sum(components.values())`` and floating-point addition is order
+        # sensitive, so adding the new terms at the end keeps every pre-existing
+        # prefix bit-identical (the reward assertions depend on it).
+        "bonus_produce": float(game.produce_bonus) * float(new_combat),
+        "building_lost": -float(game.building_loss_penalty) * float(lost_buildings),
     }
 
     terminated = False

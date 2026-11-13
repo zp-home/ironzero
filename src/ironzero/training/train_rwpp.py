@@ -88,7 +88,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--enemy-ai-difficulty", type=int, default=None, choices=[-2, -1, 0, 1, 2, 3],
                         help="pin only the enemy teams' difficulty, leaving the player/teacher side "
                              "alone; use it to give the BC teacher real pressure to react to")
-    parser.add_argument("--engagement", type=float, default=2.0, help="dense reward for closing distance to the enemy army")
+    parser.add_argument("--engagement", type=float, default=RwppGameConfig().engagement_coef,
+                        help="dense reward for closing distance to the enemy army "
+                             f"(default {RwppGameConfig().engagement_coef}: enough to break the "
+                             "initial gradient, small enough not to outbid fighting)")
     parser.add_argument("--frame-ms", type=int, default=2,
                         help="wall-clock ms per simulated frame: 16=real time, 2=~8x faster, 0=unpaced (too fast for the client)")
     parser.add_argument("--physics-ms", type=int, default=16,

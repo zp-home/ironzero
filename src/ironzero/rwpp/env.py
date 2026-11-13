@@ -83,6 +83,10 @@ class RwppDuelEnv:
         # structure, never for an accepted order (which a policy can repeat
         # every decision to farm reward).
         self.last_own_buildings = 0
+        # Previous own *combat* unit count (buildings and builders excluded), so
+        # ``bonus_produce`` can pay for a unit actually appearing instead of for
+        # a queued order.
+        self.last_own_combat = 0
         self.previous_own_alive = 0
         self.previous_enemy_alive = 0
         self.episode_components: dict[str, float] = {}
@@ -134,6 +138,11 @@ class RwppDuelEnv:
         self.last_own_buildings = sum(
             1 for unit in self.state.get("own_entities", []) if unit.get("is_building")
         )
+        self.last_own_combat = sum(
+            1
+            for unit in self.state.get("own_entities", [])
+            if not unit.get("is_building") and not unit.get("is_builder")
+        )
         self.previous_own_alive = sum(
             1 for unit in self.state.get("own_entities", []) if float(unit.get("hp") or 0.0) > 0.0
         )
@@ -173,6 +182,7 @@ class RwppDuelEnv:
         previous_distance = float(self.last_distance)
         previous_income_rate = float(self.last_income_rate)
         previous_own_buildings = int(self.last_own_buildings)
+        previous_own_combat = int(self.last_own_combat)
         previous_own_alive = int(self.previous_own_alive)
         previous_enemy_alive = int(self.previous_enemy_alive)
         receipts_before = len(self.receipts)
@@ -235,6 +245,7 @@ class RwppDuelEnv:
             episode_components=self.episode_components,
             previous_income_rate=previous_income_rate,
             previous_own_buildings=previous_own_buildings,
+            previous_own_combat=previous_own_combat,
         )
         components = shaping.components
         reward = shaping.reward
@@ -252,6 +263,11 @@ class RwppDuelEnv:
             self.last_income_rate = float(state_global.get("income") or 0.0)
         self.last_own_buildings = sum(
             1 for unit in self.state.get("own_entities", []) if unit.get("is_building")
+        )
+        self.last_own_combat = sum(
+            1
+            for unit in self.state.get("own_entities", [])
+            if not unit.get("is_building") and not unit.get("is_builder")
         )
         self.previous_own_alive = own_alive
         self.previous_enemy_alive = enemy_alive
