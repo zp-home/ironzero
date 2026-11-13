@@ -711,6 +711,39 @@ public final class IronZeroBridge implements ServerExtension {
             new java.util.HashMap<>();
 
     /**
+     * True when this factory has finished construction and the engine considers
+     * it operational, i.e. when a {@code produce_unit} order can actually be
+     * queued here right now.
+     *
+     * <p>Deliberately two independent checks rather than one:
+     *
+     * <ul>
+     *   <li>{@code isNonOperational()} is the engine's own answer and also covers
+     *       states a progress number cannot express (disabled, stunned, still
+     *       waiting on a build order that has not been paid for);</li>
+     *   <li>{@code buildProgress} catches the window where the engine has started
+     *       constructing but has not yet flipped the operational flag.</li>
+     * </ul>
+     *
+     * <p>Both are needed because a bridge that reports "you can queue a tank here"
+     * for a half-built factory makes the action mask open {@code produce_unit}
+     * hundreds of ticks early; every such order is rejected and the policy learns
+     * to stop using the action entirely (measured: {@code bonus_produce} stayed at
+     * exactly 0.000 across 200 updates on {@code [p2]Lake (2p)}).
+     */
+    private boolean factoryCanProduceNow(OrderableUnit factory) {
+        try {
+            if (factory.isNonOperational()) {
+                return false;
+            }
+        } catch (RuntimeException ignored) {
+            // Unqueryable: fall through to the progress check rather than
+            // reporting a possibly-unusable menu.
+        }
+        return buildProgress(factory) >= 1.0f;
+    }
+
+    /**
      * Unit type names this factory can queue, in engine registry order.
      *
      * <p>This is the authoritative answer and is deliberately a registry scan,
@@ -799,7 +832,28 @@ public final class IronZeroBridge implements ServerExtension {
             out.append("{\"entity_id\":").append(unit.id)
                     .append(",\"unit_type\":\"").append(typeName)
                     .append("\",\"can_produce\":[");
-            java.util.List<String> names = producibleNamesFor(unit);
+            // A factory that is still being built cannot queue anything. This is
+            // NOT cosmetic: the Python action mask opens ``produce_unit`` when any
+            // reported factory advertises a non-``builder`` entry, so an
+            // under-construction factory used to advertise a full menu and the
+            // kind became selectable hundreds of ticks too early.
+            //
+            // Measured on [p2]Lake (2p) (``.runtime/produce_gate.json``, 99 samples
+            // while the landFactory was building):
+            //
+            //   progress 0.01..0.99, is_operational=false  ->  can_produce
+            //   ["builder","hoverTank"] advertised, mask open in 99/99 samples
+            //
+            // Every such order came back ``PRODUCE_UNAVAILABLE``. The policy paid
+            // ``invalid_penalty`` for obeying the mask and learned to avoid the
+            // action, which is why ``bonus_produce`` stayed at 0.000 over 200
+            // updates even though the same factory accepts the order in the same
+            // episode once it finishes. Reported honestly as an empty menu instead:
+            // an empty list is a real answer ("queue nothing yet"), and the mask
+            // already treats it as "not producible".
+            java.util.List<String> names = factoryCanProduceNow(unit)
+                    ? producibleNamesFor(unit)
+                    : java.util.Collections.<String>emptyList();
             for (int index = 0; index < names.size(); index++) {
                 if (index > 0) {
                     out.append(',');

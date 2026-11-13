@@ -674,3 +674,52 @@ def test_canonical_build_names_cover_every_masked_economy_kind() -> None:
             f"{kind} is masked on the name {required!r}, but the bridge's "
             f"canonical probe list does not ask for it"
         )
+
+@pytest.mark.skipif(not BRIDGE_SOURCE.is_file(), reason="bridge source not present")
+def test_unfinished_factory_reports_an_empty_production_menu() -> None:
+    """A half-built factory must not advertise a menu it cannot honour.
+
+    Measured failure this guards (``.runtime/produce_gate.json``): on
+    ``[p2]Lake (2p)`` a ``landFactory`` at build progress 0.01 -- with
+    ``is_operational=false`` -- reported ``can_produce: ["builder","hoverTank"]``.
+    The Python action mask opens ``produce_unit`` as soon as any factory offers a
+    non-``builder`` entry, so the kind was selectable hundreds of ticks before the
+    engine would accept the order. Measured consequence: every early order came
+    back ``PRODUCE_UNAVAILABLE`` and ``bonus_produce`` stayed at exactly 0.000
+    across 200 updates, even though the same factory accepts the same order later
+    in the same episode.
+
+    An empty list is a real answer ("queue nothing yet") -- the mask already
+    treats it as "not producible" (see
+    ``test_production_respects_what_the_factory_says_it_can_produce``).
+    """
+
+    source = BRIDGE_SOURCE.read_text(encoding="utf-8", errors="replace")
+    method = _method_body(source, "factoriesJson")
+    assert "factoryCanProduceNow" in method, (
+        "factoriesJson must gate the reported menu on the factory being finished; "
+        "reporting a menu for an under-construction factory opens produce_unit "
+        "early and the policy learns to avoid the action"
+    )
+    assert "producibleNamesFor(unit)" in method
+
+    gate = _method_body(source, "factoryCanProduceNow")
+    assert "isNonOperational" in gate, (
+        "the engine's own operational flag must be consulted, not just progress"
+    )
+    assert "buildProgress" in gate, (
+        "the progress check covers the window before the operational flag flips"
+    )
+
+
+@pytest.mark.skipif(not BRIDGE_SOURCE.is_file(), reason="bridge source not present")
+def test_production_menu_is_only_reported_by_actual_factories() -> None:
+    """A builder is not a factory: only ``isFactoryBuilding`` units get a menu."""
+
+    source = BRIDGE_SOURCE.read_text(encoding="utf-8", errors="replace")
+    method = _method_body(source, "factoriesJson")
+    assert "isFactoryBuilding" in method
+    assert "isBuilder" not in method, (
+        "gating the factory list on isBuilder would omit factories and put "
+        "production back behind the builder's build menu"
+    )
