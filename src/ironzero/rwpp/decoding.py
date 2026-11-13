@@ -260,11 +260,32 @@ def _decode_heads(
         # did not exist on the real game.
         #
         # ``can_upgrade`` is the engine's own answer ("this building has a next
-        # tier available right now", from ``getBuildActionId``). Bridges that do
-        # not report it fall back to any own building, which at worst yields a
-        # rejected order instead of a silently dropped one.
+        # tier available right now", from ``getBuildActionId``).
+        #
+        # When the bridge *does* report ``can_upgrade`` and every own building says
+        # false, the correct action is to issue nothing. The old fallback picked
+        # "any own building" in that case, which is a guaranteed rejection: the
+        # mask closes ``upgrade_building`` exactly when no ``can_upgrade`` is true,
+        # so a decoded order could only ever come back ``UPGRADE_UNAVAILABLE``.
+        #
+        # Measured on ``[p2]Lake (2p)`` over 60 decisions: the mask was open on 47
+        # of them, yet **every single upgrade order was rejected** -- and in 13 of
+        # those 60 the mask was *closed* while ``decode_action`` still produced a
+        # ``building_entity_id`` (the command center, ``can_upgrade=false``). A real
+        # run showed this as the largest rejection bucket: ``UPGRADE_UNAVAILABLE``
+        # 647 over 25 updates, versus ``BUILD_UNAVAILABLE`` 3.
+        #
+        # Only when *no* entity reports the field at all (an older bridge) is the
+        # "any building" fallback still used, where at worst it yields one rejected
+        # order instead of a silently dropped one.
+        reported = any("can_upgrade" in unit for unit in own)
         upgradable = [u for u in own if u.get("can_upgrade")]
         if not upgradable:
+            if reported:
+                # The engine was asked and said no. Dispatching nothing keeps the
+                # policy from paying ``invalid_penalty`` for an order it was told
+                # was impossible.
+                return []
             upgradable = [u for u in own if u.get("is_building")]
         if not upgradable:
             return _hold_action(state, group)

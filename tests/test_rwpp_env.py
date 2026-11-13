@@ -311,6 +311,31 @@ class FakeBridge:
                     )
                 )
             if last:
+                # The real bridge's ``sendDone`` now attaches the terminal entity
+                # lists (``own_entities`` / ``visible_enemy_entities``). Its absence
+                # here was the root of a long-standing flake:
+                #
+                # ``merge_done_message`` only merges keys that are *present*, so a
+                # ``done`` without entity lists keeps the PREVIOUS frame. Whichever
+                # message reached the socket buffer first decided the outcome -- a
+                # fast read got the terminal ``obs`` (enemies at hp 0) and fell
+                # through to the annihilation heuristic, a slower read got the lazy
+                # ``done`` and reported the stale ``enemy_alive``. That made
+                # ``test_env_terminates_on_elimination`` fail up to ~50% of runs
+                # while passing every time its file ran alone.
+                #
+                # Mirroring the real bridge removes the race: both messages now
+                # describe the same terminal world. Reusing ``obs_message`` keeps a
+                # single definition of "what an entity list looks like".
+                terminal_state = obs_message(
+                    tick,
+                    self.own_hp,
+                    enemy_hp,
+                    own_positions=self.own_positions,
+                    enemy_positions=self.enemy_positions,
+                    result=self.result if self.result != "timeout" else None,
+                    terminated=self.result != "timeout",
+                )
                 send(
                     {
                         "protocol": "ironzero/1",
@@ -320,6 +345,10 @@ class FakeBridge:
                         "result": self.result,
                         "terminated": self.result != "timeout",
                         "truncated": self.result == "timeout",
+                        "own_entities": terminal_state.get("own_entities", []),
+                        "visible_enemy_entities": terminal_state.get(
+                            "visible_enemy_entities", []
+                        ),
                     }
                 )
                 return

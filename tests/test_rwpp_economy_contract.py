@@ -919,3 +919,62 @@ def test_done_message_still_delivers_a_verdict_when_the_snapshot_fails() -> None
         "the entity snapshot needs its own try/catch; an exception there must not "
         "prevent writeLine of the verdict"
     )
+
+def test_upgrade_order_is_not_issued_when_the_engine_says_nothing_upgrades() -> None:
+    """A reported ``can_upgrade=false`` on every building must produce no order.
+
+    The mask closes ``upgrade_building`` exactly when no own building reports
+    ``can_upgrade``. ``decode_action`` used to fall back to "any own building" in
+    that case, so a selected kind still produced a ``building_entity_id`` that the
+    engine could only reject.
+
+    Measured on ``[p2]Lake (2p)`` over 60 decisions: the mask was open on 47, yet
+    every upgrade order was rejected; in 13 decisions the mask was *closed* while
+    the decoder still emitted an order. In a real 25-update run this showed up as
+    ``UPGRADE_UNAVAILABLE=647`` -- the largest rejection bucket, versus
+    ``BUILD_UNAVAILABLE=3`` -- and it charged ``invalid_penalty`` every time.
+
+    An older bridge that reports no ``can_upgrade`` field at all keeps the old
+    fallback, so a missing capability is still survivable.
+    """
+
+    from ironzero.micro_config import DEFAULT_CONFIG
+    from ironzero.rwpp.decoding import decode_action
+
+    def state(units):
+        return {
+            "own_entities": units,
+            "visible_enemy_entities": [],
+            "global_state": {"funds": 4000.0},
+            "resource_slots": [],
+        }
+
+    reported_not_upgradable = state([
+        {"entity_id": 23, "hp": 4000.0, "max_hp": 4000.0, "x": 990.0, "y": 2040.0,
+         "is_building": True, "can_upgrade": False},
+        {"entity_id": 24, "hp": 170.0, "max_hp": 170.0, "x": 990.0, "y": 2070.0,
+         "is_builder": True, "can_upgrade": False},
+    ])
+    action = np.array(
+        [ACTION_KINDS.index("upgrade_building"), 4, 0, 0, 0], dtype=np.int64
+    )
+    assert decode_action(action, reported_not_upgradable, DEFAULT_CONFIG) == [], (
+        "the engine said no upgrade is available; emitting an order guarantees "
+        "UPGRADE_UNAVAILABLE and an invalid penalty"
+    )
+
+    # Older bridge: field absent -> keep the permissive fallback.
+    unreported = state([
+        {"entity_id": 23, "hp": 4000.0, "max_hp": 4000.0, "x": 990.0, "y": 2040.0,
+         "is_building": True},
+    ])
+    decoded = decode_action(action, unreported, DEFAULT_CONFIG)
+    assert decoded and decoded[0]["kind"] == "upgrade_building"
+
+    # Something genuinely upgradable -> still ordered.
+    upgradable = state([
+        {"entity_id": 25, "hp": 600.0, "max_hp": 600.0, "x": 200.0, "y": 200.0,
+         "is_building": True, "can_upgrade": True},
+    ])
+    decoded = decode_action(action, upgradable, DEFAULT_CONFIG)
+    assert decoded and decoded[0]["building_entity_id"] == 25
