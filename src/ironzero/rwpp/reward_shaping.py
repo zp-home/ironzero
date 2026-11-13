@@ -260,13 +260,38 @@ def compute_step_shaping(
             or "ironzero" in str(game.map_name).lower()
             or micro.units_per_team > 0
         )
-        if is_micro_battle and not disconnected:
+        # Adjudicate on the army we can actually see, regardless of *why* the
+        # episode ended -- with one deliberate asymmetry.
+        #
+        # The old condition was ``is_micro_battle and not disconnected``, which
+        # wrote a bare ``timeout`` whenever the connection dropped. On the real
+        # game that happens routinely before the tick cap (the bridge stops, the
+        # engine tears down, the socket closes). Measured over a 60-update run:
+        # every eval episode reported ``result=timeout`` with
+        # ``own_alive=2, enemy_alive=8`` and ``ticks=5351`` against a 6000 cap --
+        # an obvious defeat recorded as a draw and paid ``terminal=0.0``.
+        # ``_decide_by_army`` on those exact numbers returns ``defeat``. A
+        # disconnected rollout therefore taught the policy nothing about having
+        # lost.
+        #
+        # Why the asymmetry: a *win* is only awarded when the bridge itself
+        # declared one, because "our army is bigger right now" is not the same as
+        # "the enemy is beaten" -- if the connection died mid-fight the enemy may
+        # simply have been out of sight. A *loss* is different: our own units are
+        # always fully visible (they are ours), so a wipe-out is unambiguous
+        # evidence even when the stream stops. Awarding defeat without data is
+        # honest; awarding victory without data is a false positive that directly
+        # corrupts the win rate.
+        if is_micro_battle:
             winner = _decide_by_army(
                 own_alive=own_alive,
                 enemy_alive=enemy_alive,
                 own_frac=own_frac,
                 enemy_frac=enemy_frac,
             )
+            # Never award a *win* on missing data. See the comment above.
+            if disconnected and winner == "victory":
+                winner = "timeout"
             if winner == "victory":
                 last_result = "victory"
                 components["terminal"] = float(micro.win_reward) * TIMEOUT_TERMINAL_SCALE

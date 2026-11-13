@@ -174,3 +174,57 @@ def test_a_disconnect_never_awards_a_win() -> None:
     )
     assert shaping.last_result == "timeout"
     assert shaping.components["terminal"] == 0.0
+
+
+def test_a_disconnect_does_award_a_defeat() -> None:
+    """But a wipe-out is unambiguous even when the stream stops.
+
+    The asymmetry is deliberate. Our own units are always fully visible (they are
+    ours), so seeing them gone is real evidence -- whereas "our army looks bigger
+    right now" is not evidence that the enemy is beaten (they may just be out of
+    sight). Awarding defeat on missing data is honest; awarding victory is a false
+    positive that corrupts the win rate.
+
+    Why this matters on the real game: a 60-update run reported every eval episode
+    as ``result=timeout`` with ``own_alive=2, enemy_alive=8`` at ``ticks=5351``
+    against a 6000 cap -- the bridge had stopped before the cap, and obvious
+    defeats were being paid ``terminal=0.0``.
+    """
+
+    game = RwppGameConfig(win_mode="native", units_per_team=8, episode_ticks=6000,
+                          map_relative="maps/skirmish/[p2]Lake (2p).tmx")
+    micro = game.micro_config()
+    state = {
+        "tick": 5351,
+        "own_entities": [{"hp": 4000.0, "max_hp": 4000.0}] * 2,
+        "visible_enemy_entities": [{"hp": 210.0, "max_hp": 210.0}] * 8,
+        "global_state": {},
+    }
+    shaping = compute_step_shaping(
+        micro=micro,
+        game=game,
+        state=state,
+        actions=[],
+        receipts=[],
+        message={"global_state": {}},
+        bridge_result=None,
+        potential=0.0,
+        previous_potential=0.0,
+        distance=0.5,
+        previous_distance=0.5,
+        own_alive=2,
+        enemy_alive=8,
+        previous_own_alive=2,
+        previous_enemy_alive=8,
+        strategy_component=0.0,
+        disconnected=True,
+        done=False,
+        own_max_ref=4170.0,
+        enemy_max_ref=4170.0,
+        episode_components={},
+    )
+    assert shaping.truncated
+    assert shaping.last_result == "defeat"
+    assert shaping.components["terminal"] == pytest.approx(
+        -1.0 * TIMEOUT_TERMINAL_SCALE
+    )
