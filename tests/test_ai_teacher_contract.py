@@ -260,3 +260,43 @@ def test_difficulty_income_multiplier_matches_the_engine_bytecode() -> None:
     assert multiplier(1) == pytest.approx(1.4)
     assert multiplier(2) == pytest.approx(1.8)
     assert multiplier(3) == pytest.approx(3.7)
+
+
+# ---------------------------------------------------------------------------
+# 5. Labels must be order-*change events*, not per-frame snapshots
+# ---------------------------------------------------------------------------
+@pytest.mark.skipif(not BRIDGE_SOURCE.is_file(), reason="bridge source not present")
+def test_labels_are_deduplicated_per_unit() -> None:
+    """A standing order must not be re-emitted every frame.
+
+    A per-frame snapshot is 87% ``hold`` because a unit repeats the same order for
+    seconds; training on it teaches "stand still". Measured after the first,
+    broken de-duplication attempt (which included the hold target -- the unit's own
+    moving x/y -- in the signature): 478 events, still 91% ``hold``.
+    """
+
+    source = BRIDGE_SOURCE.read_text(encoding="utf-8", errors="replace")
+    assert "aiOrderSignatures" in source
+    assert "signatureText.equals(previous)" in source
+
+
+@pytest.mark.skipif(not BRIDGE_SOURCE.is_file(), reason="bridge source not present")
+def test_hold_signature_ignores_the_units_own_position() -> None:
+    """Regression: including x/y in the hold signature defeats de-duplication."""
+
+    source = BRIDGE_SOURCE.read_text(encoding="utf-8", errors="replace")
+    body_start = source.find("StringBuilder signature = new StringBuilder(64);")
+    assert body_start >= 0
+    body = source[body_start : body_start + 900]
+    assert '!"hold".equals(kind)' in body, (
+        "coordinates must only enter the signature for orders that carry a real "
+        "destination; for hold the target is the unit's own moving position"
+    )
+
+
+@pytest.mark.skipif(not BRIDGE_SOURCE.is_file(), reason="bridge source not present")
+def test_dead_units_are_pruned_from_the_signature_map() -> None:
+    """A recycled entity id must not inherit the previous unit's signature."""
+
+    source = BRIDGE_SOURCE.read_text(encoding="utf-8", errors="replace")
+    assert "aiOrderSignatures.keySet().retainAll(alive)" in source

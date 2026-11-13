@@ -129,6 +129,15 @@ public final class IronZeroBridge implements ServerExtension {
      */
     private boolean recordAiOrders = false;
     /**
+     * Last emitted order signature per own unit id, for ``--record-ai-orders``.
+     *
+     * <p>Labels are emitted on *change* only: a per-frame snapshot of the same
+     * standing order is 87% ``hold`` and would teach a BC model to stand still.
+     * Pruned to the units that are still alive on every emission so a recycled id
+     * cannot inherit a stale signature.
+     */
+    private final java.util.HashMap<Long, String> aiOrderSignatures = new java.util.HashMap<>();
+    /**
      * ``--ai-difficulty N``: force the AI difficulty level (-2..3), or ``null`` to
      * keep the game's own resolution order.
      *
@@ -1149,17 +1158,29 @@ public final class IronZeroBridge implements ServerExtension {
     }
 
     /**
-     * The controlled team's current orders, as the bridge sees them.
+     * The controlled team's *changed* orders since the last observation.
      *
      * <p>Read from each own unit's active {@link Waypoint}. This is the label a
      * behaviour-cloning dataset needs: the action the expert actually took, in the
      * same vocabulary the policy emits (move / attack_move / attack_target /
      * build / repair / hold), plus the target coordinates or entity id.
+     *
+     * <p><b>Only changes are emitted.</b> A per-frame snapshot is the wrong label
+     * distribution: measured over 15065 frames of AI play, 87% of entries were
+     * {@code hold} ({@code hold: 13057, attack_move: 1519, move_group: 489}),
+     * because a unit keeps the same order for many seconds. Training on that
+     * teaches "stand still". Emitting only changes turns the same run into ~1600
+     * genuine decisions instead.
+     *
+     * <p>The signature deliberately excludes position: the {@code hold} "target" is
+     * the unit's own {@code x/y}, which changes every frame as it moves, so
+     * including it would defeat the de-duplication entirely.
      */
     private String aiOrdersJson() {
         Team player = engine != null ? engine.playerTeam : null;
         StringBuilder out = new StringBuilder("[");
         boolean first = true;
+        java.util.HashSet<Long> alive = new java.util.HashSet<>();
         for (Object item : Unit.unitList) {
             if (!(item instanceof OrderableUnit)) {
                 continue;
@@ -1205,6 +1226,37 @@ public final class IronZeroBridge implements ServerExtension {
                     // order we can label.
                 }
             }
+            // Attack target is reported separately from the waypoint: a unit can
+            // hold position and still have an auto-acquired attack target, and
+            // that is exactly what a micro-management teacher demonstrates.
+            Unit attackTarget = null;
+            try {
+                attackTarget = unit.getEffectiveAttackTarget();
+            } catch (RuntimeException ignored) {
+                // No target information available.
+            }
+            long attackTargetId = attackTarget != null ? attackTarget.id : -1L;
+            alive.add(Long.valueOf(unit.id));
+
+            // Signature = everything that identifies the order. Coordinates are
+            // only meaningful for orders that actually carry a destination: for a
+            // standing order the "target" is the unit's own x/y, which changes
+            // every frame while it walks, so including it re-emits a "new" hold
+            // order on every step -- measured: 478 change events of which 91% were
+            // still `hold`, i.e. the de-duplication did not work at all. Whole
+            // pixels are used for the rest so sub-pixel drift is not a decision.
+            StringBuilder signature = new StringBuilder(64);
+            signature.append(kind).append('|').append(typeName).append('|')
+                    .append(targetId).append('|').append(attackTargetId).append('|')
+                    .append(buildType).append('|').append(buildLevel);
+            if (waypoint != null && !"hold".equals(kind)) {
+                signature.append('|').append(Math.round(tx)).append(',').append(Math.round(ty));
+            }
+            String signatureText = signature.toString();
+            String previous = aiOrderSignatures.put(Long.valueOf(unit.id), signatureText);
+            if (signatureText.equals(previous)) {
+                continue;
+            }
             if (!first) {
                 out.append(',');
             }
@@ -1219,19 +1271,11 @@ public final class IronZeroBridge implements ServerExtension {
                 out.append(",\"build_type\":\"").append(buildType).append('"')
                         .append(",\"build_tech_level\":").append(buildLevel);
             }
-            // Attack target is reported separately from the waypoint: a unit can
-            // hold position and still have an auto-acquired attack target, and
-            // that is exactly what a micro-management teacher demonstrates.
-            Unit attackTarget = null;
-            try {
-                attackTarget = unit.getEffectiveAttackTarget();
-            } catch (RuntimeException ignored) {
-                // No target information available.
-            }
-            out.append(",\"attack_target_id\":")
-                    .append(attackTarget != null ? attackTarget.id : -1L)
-                    .append('}');
+            out.append(",\"attack_target_id\":").append(attackTargetId).append('}');
         }
+        // Forget dead units, otherwise an id reused by a later unit would inherit
+        // the old signature and its first real order would be swallowed.
+        aiOrderSignatures.keySet().retainAll(alive);
         out.append(']');
         return out.toString();
     }
