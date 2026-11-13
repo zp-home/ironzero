@@ -47,7 +47,9 @@ import java.util.Locale;
  *       and Team defeat bookkeeping; "annihilation": ignore the native early
  *       signals and decide the episode from unit counts on a building-less map)
  *   --unlock-ai                      (default off: clear Unit.aiLimitedUse on the
- *       enemy AI teams and enable AI.aggressiveMode so map-placed units attack)
+ *       enemy AI teams so map-placed units join the AI's army. Deliberately does
+ *       *not* set AI.aggressiveMode: that flag disables the AI's construction and
+ *       base defence, and made the AI build nothing but builders and scouts)
  *   --ticks bounds simulated frames (1 frame = 1 tick; 60 ticks = 1 s).
  *   --frame-ms is the wall-clock pacing budget; by default it is *also* the
  *       engine's frame delta, so 16 = real time and 2 = ~8x faster.
@@ -62,6 +64,16 @@ import java.util.Locale;
 public final class IronZeroBridge implements ServerExtension {
     private static final int DECISION_INTERVAL = 10;
     private static final int FRAME_PERIOD_MILLIS = 16;
+    /**
+     * How long {@link #closeBridge()} waits for the client's trailing messages
+     * before the final {@code close()}, so the close is graceful instead of a RST.
+     *
+     * <p>Short on purpose: the client sends at most one step message per
+     * observation, and we already called {@code shutdownOutput()}, so anything we
+     * are still reading is a write that was in flight. Waiting longer only delays
+     * the episode's end.
+     */
+    private static final int CLOSE_DRAIN_TIMEOUT_MILLIS = 250;
     /**
      * Engine physics delta in milliseconds; {@code 0} means "use {@code frameMs}".
      *
@@ -1048,9 +1060,21 @@ public final class IronZeroBridge implements ServerExtension {
      * Units placed in a map editor are loaded with ``Unit.aiLimitedUse = true``,
      * which keeps them out of ``AIUnitGroup.recruitUnits`` and the AI's attacker
      * counts, so a 25v25 arena otherwise has a completely passive opponent.
-     * Clearing the flag and enabling ``AI.aggressiveMode`` (attack mode
-     * ``aggressive`` instead of ``outOfRange``) makes those units advance and
-     * engage. Must run after the map finished loading.
+     * Clearing that flag is the whole fix. Must run after the map finished loading.
+     *
+     * <p><b>Do not also set ``AI.aggressiveMode``.</b> This method used to, on the
+     * theory that "aggressive" means "attacks". It does the opposite, because the
+     * engine reads the flag in two places that both *disable* work
+     * ({@code Base.chooseBuildingToBuild} returns {@code null} at
+     * {@code Base.java:229} and {@code Base.defendBase()} is skipped at
+     * {@code Base.java:1246} when it is set). Measured on Lake over 20056 ticks,
+     * zero client actions, only the flag differing: with it the AI built *nothing
+     * but* builders and scouts for the whole episode (3 unit types total, nearest
+     * approach 1291 px); without it the AI built extractors, a land and an air
+     * factory, turrets, tanks, artillery and hover tanks (12 types, nearest
+     * approach 781 px). {@code aggressiveMode} is a scenario-authoring flag that
+     * {@code TriggerEngine} sets for maps declaring {@code basicAI}; it is not the
+     * AI's aggression switch for normal skirmish play.
      */
     private void unlockAiTeams() {
         Team player = engine != null ? engine.playerTeam : null;
@@ -1065,9 +1089,6 @@ public final class IronZeroBridge implements ServerExtension {
                 continue;
             }
             teams++;
-            if (team instanceof AI) {
-                ((AI) team).aggressiveMode = true;
-            }
             for (Object unitItem : Unit.unitList) {
                 if (!(unitItem instanceof Unit)) {
                     continue;
@@ -1279,7 +1300,6 @@ public final class IronZeroBridge implements ServerExtension {
         }
         Team current = engine.playerTeam;
         if (current instanceof AI) {
-            ((AI) current).aggressiveMode = true;
             System.out.println("[ironzero] ai-pilot: team " + current.teamId + " already an AI");
             return;
         }
@@ -1293,7 +1313,11 @@ public final class IronZeroBridge implements ServerExtension {
             // the first attempt (own funds frozen at 4000 for 192 s, orders=0).
             AI pilot = new AI(teamId, true);
             pilot.isAI = true;
-            pilot.aggressiveMode = true;
+            // NOT ``aggressiveMode``: the engine treats that flag as "this is a
+            // scripted scenario actor", and it stops the AI from building anything
+            // (``Base.chooseBuildingToBuild`` returns null) and from defending
+            // (``Base.updateBuildLogic`` skips ``defendBase``). A pilot taught with
+            // it on only ever produced builders and scouts -- see unlockAiTeams.
             pilot.aiDifficulty = current != null ? current.aiDifficulty : pilot.aiDifficulty;
             // Carry the economy over: AI.updateResourceTimers reads credits from
             // its own Team instance, so a fresh team would start at 0 funds and
@@ -2361,6 +2385,51 @@ public final class IronZeroBridge implements ServerExtension {
     }
 
     private void closeBridge() {
+        // Graceful shutdown, not ``client.close()`` in a hurry.
+        //
+        // Closing a TCP socket that still has *unread inbound* data makes the OS
+        // send RST instead of FIN. RST instructs the peer to discard its receive
+        // queue -- and at this point that queue holds the last observations and
+        // the ``done`` message we just flushed. The consumer is by design a
+        // free-running client that lags behind the simulation, so the queue is
+        // never empty when the match ends.
+        //
+        // Measured symptom (2026-11-13, 40-update run): Python recorded
+        // ``timeout`` with terminal = 0.0 for all 40 updates / win_rate = 0.0,
+        // while these very logs said 38 victories and 5 defeats. The engine's
+        // verdict was written, flushed, and then destroyed by the RST.
+        //
+        // Order matters: flush what we wrote, half-close (FIN) so the peer can
+        // read it and then see EOF, and only then drain the peer's pending steps
+        // so the final close() does not reset either.
+        try {
+            if (writer != null) {
+                writer.flush();
+            }
+        } catch (IOException ignored) {
+            // best effort
+        }
+        try {
+            if (client != null) {
+                client.shutdownOutput();
+            }
+        } catch (IOException ignored) {
+            // best effort
+        }
+        try {
+            if (reader != null && client != null) {
+                client.setSoTimeout(CLOSE_DRAIN_TIMEOUT_MILLIS);
+                String pending;
+                while ((pending = reader.readLine()) != null) {
+                    if (!pending.isBlank()) {
+                        continue;
+                    }
+                }
+            }
+        } catch (IOException ignored) {
+            // Timeout or reset while draining: the bytes we care about are already
+            // handed to the OS, so proceed to close regardless.
+        }
         try {
             if (client != null) {
                 client.close();

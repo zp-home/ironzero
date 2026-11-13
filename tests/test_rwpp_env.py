@@ -615,6 +615,208 @@ class VecRwppEnvTests(unittest.TestCase):
             vec.close()
 
 
+class BridgeBacklogCatchUpTests(unittest.TestCase):
+    """The bridge free-runs, so its observations queue up in our socket.
+
+    These tests pin the behaviour that keeps a decided match from being booked as
+    a timeout: catch up on what already arrived, and never let a stale queued
+    observation overwrite a verdict. Regression for the 2026-11-13 run whose 40
+    updates all reported ``win_rate = 0.0`` / ``terminal = 0.0`` while the bridge
+    logs for those same games showed 38 victories and 5 defeats.
+    """
+
+    def test_catch_up_reports_the_freshest_observation(self) -> None:
+        """Three queued observations: the newest one must win, not the oldest."""
+
+        port = find_free_port()
+        bridge = PreloadedBridge(
+            port,
+            [
+                obs_message(10, [210.0, 210.0], [210.0, 210.0, 210.0]),
+                obs_message(20, [210.0, 210.0], [210.0, 210.0, 210.0]),
+                obs_message(30, [210.0, 210.0], [210.0, 210.0, 210.0]),
+            ],
+        )
+        env = make_env(bridge, port)
+        try:
+            env.reset()
+            obs, _reward, _terminated, _truncated, info = env.step(
+                np.array([2, 0, 0, 0, 0])
+            )
+            self.assertEqual(info["tick"], 30)
+            self.assertEqual(obs.shape, (make_micro().flat_obs_dim,))
+        finally:
+            env.close()
+
+    def test_a_queued_verdict_survives_a_reset_send(self) -> None:
+        """A ``done`` already in the buffer must decide the episode.
+
+        Mirrors the real race: the bridge writes the verdict and closes, so the
+        client's next ``sendall`` fails. The verdict is already on our side and
+        must not be thrown away by the disconnect handling.
+        """
+
+        port = find_free_port()
+        bridge = PreloadedBridge(
+            port,
+            [
+                obs_message(10, [210.0, 210.0], [210.0, 210.0, 210.0]),
+                {
+                    "protocol": "ironzero/1",
+                    "type": "done",
+                    "message_id": "done-20",
+                    "tick": 20,
+                    "result": "victory",
+                    "terminated": True,
+                    "truncated": False,
+                },
+            ],
+            close_after_send=True,
+        )
+        env = make_env(bridge, port)
+        try:
+            env.reset()
+            _obs, _reward, terminated, _truncated, info = env.step(
+                np.array([2, 0, 0, 0, 0])
+            )
+            self.assertEqual(info["result"], "victory")
+            self.assertEqual(info["bridge_result"], "victory")
+            self.assertTrue(terminated)
+            # The engine decided, so the win bonus is paid -- not the timeout fine.
+            self.assertGreater(info["reward_components"]["terminal"], 0.0)
+            self.assertEqual(info["reward_components"]["timeout"], 0.0)
+        finally:
+            env.close()
+
+    def test_a_stale_obs_never_overwrites_a_verdict(self) -> None:
+        """A verdict in the buffer must beat a *later* frame in the same batch.
+
+        Checked at the session boundary (``await_observation``) rather than
+        through ``reset()``: reset legitimately catches up too, so a test that
+        preloads a verdict before reset would exercise the wrong step.
+        """
+
+        from ironzero.rwpp.session import await_observation
+        from ironzero.rwpp.transport import _LineReader
+
+        server, client = socket.socketpair()
+        try:
+            stream = b"\n".join(
+                json.dumps(message).encode("utf-8")
+                for message in (
+                    obs_message(10, [210.0, 210.0], [210.0, 210.0, 210.0]),
+                    {
+                        "protocol": "ironzero/1",
+                        "type": "obs",
+                        "message_id": "obs-20",
+                        "tick": 20,
+                        "result": "victory",
+                        "terminated": True,
+                        "truncated": False,
+                        "global_state": {"tick": 20},
+                        "own_entities": [],
+                        "visible_enemy_entities": [],
+                    },
+                    obs_message(30, [210.0, 210.0], [210.0, 210.0, 210.0]),
+                )
+            ) + b"\n"
+            server.sendall(stream)
+
+            class _FakeEnv:
+                def __init__(self) -> None:
+                    self._reader = _LineReader(client)
+                    self.receipts: list = []
+                    self.done = False
+
+            picked = await_observation(_FakeEnv(), 2.0)
+            self.assertIsNotNone(picked)
+            self.assertEqual(picked.get("result"), "victory")
+            self.assertEqual(picked.get("tick"), 20)
+        finally:
+            for sock in (server, client):
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+    def test_a_disconnect_without_a_verdict_is_still_a_timeout(self) -> None:
+        """No verdict buffered means timeout -- never an invented result."""
+
+        port = find_free_port()
+        bridge = PreloadedBridge(
+            port,
+            [obs_message(10, [210.0, 210.0], [210.0, 210.0, 210.0])],
+            close_after_send=True,
+        )
+        env = make_env(bridge, port)
+        try:
+            env.reset()
+            _obs, _reward, terminated, truncated, info = env.step(
+                np.array([2, 0, 0, 0, 0])
+            )
+            self.assertFalse(terminated)
+            self.assertTrue(truncated)
+            self.assertEqual(info["result"], "timeout")
+            self.assertTrue(info["disconnected"])
+            self.assertEqual(info["reward_components"]["terminal"], 0.0)
+        finally:
+            env.close()
+
+
+class PreloadedBridge:
+    """Writes every message up front, then optionally closes the socket.
+
+    Unlike :class:`FakeBridge` this model never reacts to the client's steps: it
+    reproduces the free-running bridge whose observations pile up while the
+    client is still deciding.
+    """
+
+    def __init__(self, port: int, messages: list[dict], close_after_send: bool = False) -> None:
+        self.port = port
+        self.messages = list(messages)
+        self.close_after_send = close_after_send
+        self.process = FakeProcess()
+        self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._server.bind(("127.0.0.1", port))
+        self._server.listen(4)
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def launcher(self, _game: RwppGameConfig, port: int) -> FakeProcess:
+        assert port == self.port, f"bridge {self.port} asked to serve port {port}"
+        return self.process
+
+    def _serve(self) -> None:
+        try:
+            client, _ = self._server.accept()
+        except OSError:
+            return
+        try:
+            writer = client.makefile("w", encoding="utf-8", newline="\n")
+            writer.write(json.dumps({"protocol": "ironzero/1", "type": "hello",
+                                     "message_id": "hello"}) + "\n")
+            for message in self.messages:
+                writer.write(json.dumps(message) + "\n")
+            writer.flush()
+            if self.close_after_send:
+                # Graceful FIN, matching the hardened closeBridge(): the peer must
+                # still be able to read everything we wrote.
+                try:
+                    client.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+                time.sleep(0.2)
+            else:
+                # Stay open so the client's catch-up sees a live (silent) peer.
+                time.sleep(1.0)
+        finally:
+            try:
+                client.close()
+            except OSError:
+                pass
+
+
 def find_free_port() -> int:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", 0))

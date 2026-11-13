@@ -30,7 +30,7 @@ from .errors import RwppEnvError
 from .process import _ProcLike, launch_rwpp_process
 from .reward import army_distance_norm, army_hp_reference, combat_value_potential
 from .reward_shaping import compute_step_shaping
-from .session import await_observation, shutdown_game, start_game
+from .session import await_observation, drain_verdict, shutdown_game, start_game
 from .spaces import _BoxSpace, _MultiDiscreteSpace
 from .stepping import absorb_message, build_step_info, send_step
 from .strategy import refresh_strategy, strategy_potential, strategy_summary
@@ -191,7 +191,29 @@ class RwppDuelEnv:
         # so using the ground-truth list here would fire at the wrong enemy.
         actions, disconnected = send_step(self, action)
 
-        message = None if disconnected else self._await_observation(self.game.obs_timeout)
+        # Always read, even when the send failed.
+        #
+        # The bridge is a free-running simulator: it advances on ``--frame-ms``
+        # and emits an observation every ``DECISION_INTERVAL`` ticks without
+        # waiting for a client ``step``. When the engine decides the match it
+        # writes ``done`` and closes the socket, so our next ``sendall`` fails
+        # with ``ConnectionResetError(10054)`` and the kernel *discards the
+        # unread receive queue* -- verdict included.
+        #
+        # The old code turned that into ``message = None if disconnected else ...``:
+        # the read was skipped entirely, the episode was booked as a timeout with
+        # ``terminal = 0.0``, and the trainer reported ``win_rate = 0.0`` for all
+        # 40 updates of a run whose bridge logs showed 38 victories and 5 defeats.
+        #
+        # ``_await_observation`` now also drains whatever already arrived and
+        # prefers a decisive ``result``/``done`` over a stale frame, so the
+        # verdict survives. After a real drop nothing is buffered and the result
+        # is still an honest ``timeout`` (``_drain_verdict`` never invents one).
+        message = self._await_observation(self.game.obs_timeout)
+        if (message is None or not message.get("result")) and disconnected:
+            # The step budget may have been eaten by the send failure + catch-up;
+            # give the verdict one more bounded chance to surface.
+            message = self._drain_verdict() or message
         receipts_this_step = self.receipts[receipts_before:]
         if message is None:
             disconnected = True
@@ -335,6 +357,9 @@ class RwppDuelEnv:
 
     def _await_observation(self, timeout: float) -> dict[str, Any] | None:
         return await_observation(self, timeout)
+
+    def _drain_verdict(self) -> dict[str, Any] | None:
+        return drain_verdict(self)
 
     def _shutdown_game(self) -> None:
         shutdown_game(self)
