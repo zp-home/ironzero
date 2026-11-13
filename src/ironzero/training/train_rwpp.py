@@ -78,6 +78,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="bridge win condition passed through as --win-mode (e.g. annihilation); omitted by default")
     parser.add_argument("--unlock-ai", action="store_true",
                         help="let the built-in AI play; passed through as --unlock-ai to the bridge")
+    parser.add_argument("--ai-pilot", action="store_true",
+                        help="let the built-in AI drive the controlled team (behaviour-cloning teacher)")
+    parser.add_argument("--record-ai-orders", action="store_true",
+                        help="record the AI pilot's orders as BC labels (implies --ai-pilot)")
+    parser.add_argument("--ai-difficulty", type=int, default=None, choices=[-2, -1, 0, 1, 2, 3],
+                        help="pin every AI team's difficulty (-2..3); omitted keeps the engine "
+                             "default, which is 0 (正常, x1.00 income, no AI cheat bonus)")
     parser.add_argument("--engagement", type=float, default=2.0, help="dense reward for closing distance to the enemy army")
     parser.add_argument("--frame-ms", type=int, default=2,
                         help="wall-clock ms per simulated frame: 16=real time, 2=~8x faster, 0=unpaced (too fast for the client)")
@@ -114,6 +121,9 @@ def build_game(args: argparse.Namespace) -> RwppGameConfig:
         terrain_path=Path(args.terrain) if args.terrain else None,
         win_mode=str(args.win_mode or ""),
         unlock_ai=bool(args.unlock_ai),
+        ai_pilot=bool(args.ai_pilot) or bool(args.record_ai_orders),
+        record_ai_orders=bool(args.record_ai_orders),
+        ai_difficulty=(int(args.ai_difficulty) if args.ai_difficulty is not None else None),
         engagement_coef=float(args.engagement),
         frame_ms=max(0, int(args.frame_ms)),
         physics_ms=max(0, int(args.physics_ms)),
@@ -243,6 +253,9 @@ def main(argv: list[str] | None = None) -> int:
             "terrain": micro.terrain_path,
             "win_mode": game.win_mode,
             "unlock_ai": bool(game.unlock_ai),
+            "ai_pilot": bool(game.ai_pilot),
+            "record_ai_orders": bool(game.record_ai_orders),
+            "ai_difficulty": game.ai_difficulty,
             "runtime": str(game.runtime),
         },
         "micro": asdict(micro),

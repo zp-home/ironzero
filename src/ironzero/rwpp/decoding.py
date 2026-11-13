@@ -50,6 +50,21 @@ def observation_to_state(message: dict[str, Any]) -> dict[str, Any]:
         # only selectable when the game would actually accept it; without this
         # the policy keeps picking extractor orders that the map cannot honour.
         "builders": list((info or {}).get("builders") or []) if isinstance(info, dict) else [],
+        # Behaviour-cloning labels: the expert's current order per own unit
+        # (``--ai-pilot --record-ai-orders``). Kept verbatim -- this is the target
+        # the supervised phase trains against, and ``None`` when the bridge is not
+        # in teacher mode so normal runs carry no extra payload.
+        "info": {
+            "ai_orders": list((info or {}).get("ai_orders") or []),
+            "ai_pilot": bool((info or {}).get("ai_pilot", False)),
+            # Resolved teacher strength (-2..3), None for a human-driven team. Kept
+            # so a BC dataset can record which difficulty produced the labels.
+            "ai_difficulty": (info or {}).get("ai_difficulty"),
+            # Per-team resolved difficulty + income multiplier. This is the value
+            # that actually drives the AI's resource cheat, so it is recorded rather
+            # than inferred from funds.
+            "ai_teams": list((info or {}).get("ai_teams") or []),
+        } if isinstance(info, dict) else {},
         "receipts": [],
         "result": message.get("result"),
         "terminated": bool(message.get("terminated", False)),

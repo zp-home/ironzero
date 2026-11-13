@@ -10,6 +10,7 @@ import com.corrodinggames.rts.game.units.Unit;
 import com.corrodinggames.rts.game.units.UnitType;
 import com.corrodinggames.rts.game.units.UnitTypeInterface;
 import com.corrodinggames.rts.game.units.Waypoint;
+import com.corrodinggames.rts.game.units.WaypointType;
 import com.corrodinggames.rts.game.units.actions.ActionId;
 import com.corrodinggames.rts.game.units.actions.SpecialAction;
 import com.corrodinggames.rts.game.units.buildings.FactoryInterface;
@@ -53,6 +54,10 @@ import java.util.Locale;
  *   --physics-ms fixes the engine delta independently of --frame-ms, so an
  *       episode can keep a real-time simulation delta while the wall clock runs
  *       unpaced or fast. Omitted = old behaviour (delta == frame-ms).
+ *   --ai-difficulty N                (-2..3: 非常简单/简单/正常/困难/非常困难/炼狱)
+ *       pins every AI team's difficulty. Omitted = the game's own resolution,
+ *       which in a headless single-player run is SettingsEngine.aiDifficulty
+ *       (default 0 = 正常 = x1.00 income, no AI cheat bonus).
  */
 public final class IronZeroBridge implements ServerExtension {
     private static final int DECISION_INTERVAL = 10;
@@ -103,6 +108,44 @@ public final class IronZeroBridge implements ServerExtension {
     private boolean unlockAi = false;
     /** ``--debug-build``: trace every gate that rejects a build order. */
     private boolean debugBuild = false;
+    /**
+     * ``--ai-pilot``: let the built-in AI drive the *controlled* team.
+     *
+     * <p>This is the behaviour-cloning teacher. The engine creates the player team
+     * as a plain {@code Player(0)} and only teams that are {@code instanceof AI}
+     * get an AI tick (see {@code Team.updateTeams} -> {@code AI.updateResourceTimers}).
+     * Replacing {@code engine.playerTeam} with an {@code AI} instance therefore
+     * makes the game play itself with the official AI, and
+     * {@code --record-ai-orders} can then read back exactly which order it gave to
+     * which unit -- a real expert demonstration instead of a hand-written script.
+     */
+    private boolean aiPilotTeam = false;
+    /**
+     * ``--record-ai-orders``: emit the AI's current orders in every observation.
+     *
+     * <p>Implies {@code --ai-pilot}. Orders are read from each own unit's active
+     * {@link Waypoint} (move / attackMove / attack / build / repair), which is
+     * what the AI actually queued, not what we guessed it would do.
+     */
+    private boolean recordAiOrders = false;
+    /**
+     * ``--ai-difficulty N``: force the AI difficulty level (-2..3), or ``null`` to
+     * keep the game's own resolution order.
+     *
+     * <p>Rusted Warfare resolves an AI's difficulty through
+     * {@code Team.getEffectiveAIDifficulty()}: a locked team uses its own
+     * {@code aiDifficulty}; a networked/replay match uses its own value; everything
+     * else (which includes this headless single-player bridge) falls back to
+     * {@code aiDifficultyOverride}, and finally to the global
+     * {@code SettingsEngine.aiDifficulty}. That global preference defaults to
+     * {@code 0} ("正常" / Medium) when no settings file exists, so without this flag
+     * every bridge run -- including the AI pilot used as a BC teacher -- plays at
+     * level 0, i.e. the x1.00 income multiplier with no AI resource bonus.
+     *
+     * <p>Setting it locks every AI team it can find (via {@code aiDifficultyLocked})
+     * so the value actually reaches {@code getAIDifficultyIncomeMultiplier()}.
+     */
+    private Integer aiDifficulty = null;
     // Game-over plumbing: the native engine knows when the battle is decided
     // (TriggerEngine win/lose objectives and Team defeat checks). The bridge
     // polls that state every frame and reports it to the RL environment; it is
@@ -141,10 +184,23 @@ public final class IronZeroBridge implements ServerExtension {
         if (unlockAi) {
             unlockAiTeams();
         }
+        if (aiPilotTeam) {
+            // Hand the controlled team to the built-in AI so its own commands can
+            // be recorded as a behaviour-cloning teacher (``--record-ai-orders``).
+            installAiPilot();
+        }
+        if (aiDifficulty != null) {
+            // Must run after the map finished loading (teams exist) and after the
+            // pilot replaced the player team, otherwise the pilot would inherit the
+            // old team's difficulty.
+            applyAiDifficulty();
+        }
         System.out.println("[ironzero] world ready: mapLoaded="
                 + (engine.map != null && engine.map.mapLoaded)
                 + " units=" + countUnits() + " teams=" + Team.getTeams().size()
-                + " winMode=" + winMode + " unlockAi=" + unlockAi);
+                + " winMode=" + winMode + " unlockAi=" + unlockAi
+                + " aiPilot=" + aiPilotTeam
+                + " aiDifficulty=" + effectiveAiDifficultyDescription());
 
         sendHello();
         int frames = 0;
@@ -252,6 +308,19 @@ public final class IronZeroBridge implements ServerExtension {
                 }
             } else if ("--unlock-ai".equals(argument)) {
                 unlockAi = true;
+            } else if ("--ai-pilot".equals(argument)) {
+                aiPilotTeam = true;
+            } else if ("--record-ai-orders".equals(argument)) {
+                // Recording only makes sense while the AI is actually playing.
+                recordAiOrders = true;
+                aiPilotTeam = true;
+            } else if ("--ai-difficulty".equals(argument) && i + 1 < args.size()) {
+                try {
+                    aiDifficulty = Integer.valueOf(Integer.parseInt(args.get(i + 1).trim()));
+                } catch (NumberFormatException ignored) {
+                    System.out.println("[ironzero] ignoring non-numeric --ai-difficulty: "
+                            + args.get(i + 1));
+                }
             } else if ("--debug-build".equals(argument)) {
                 debugBuild = true;
             }
@@ -374,7 +443,14 @@ public final class IronZeroBridge implements ServerExtension {
                 + ",\"truncated\":false,"
                 + "\"info\":{\"source\":\"rwpp\",\"frame\":" + frame + ",\"units_alive\":" + alive
                 + ",\"win_mode\":\"" + winMode + "\",\"unlock_ai\":" + unlockAi
-                + ",\"builders\":" + buildersJson() + "}}";
+                + ",\"ai_pilot\":" + aiPilotTeam
+                + ",\"ai_difficulty\":" + ownAiDifficulty()
+                + ",\"ai_teams\":" + aiTeamsJson()
+                + ",\"builders\":" + buildersJson()
+                // Behaviour-cloning labels: the orders the expert (built-in AI)
+                // is executing right now. Absent unless --record-ai-orders.
+                + (recordAiOrders ? ",\"ai_orders\":" + aiOrdersJson() : "")
+                + "}}";
         writeLine(line);
     }
 
@@ -806,6 +882,384 @@ public final class IronZeroBridge implements ServerExtension {
             }
         }
         System.out.println("[ironzero] unlock-ai: aiTeams=" + teams + " unlockedUnits=" + units);
+    }
+
+    /**
+     * Every AI team's resolved difficulty and income multiplier, as JSON.
+     *
+     * <p>Reported per observation so a run records -- rather than assumes -- which
+     * teacher strength produced its labels. {@code getEffectiveAIDifficulty()} has
+     * two surprises that only an explicit readback catches: a team-level
+     * {@code aiDifficulty} is ignored unless {@code aiDifficultyLocked} is set, and
+     * the fallback is a *global* persisted preference, so the same map can play at
+     * different strengths on different machines.
+     */
+    private String aiTeamsJson() {
+        StringBuilder out = new StringBuilder("[");
+        boolean first = true;
+        for (Object item : Team.getTeams()) {
+            if (!(item instanceof Team)) {
+                continue;
+            }
+            Team team = (Team) item;
+            if (team == null || !team.isAI) {
+                continue;
+            }
+            int level;
+            double multiplier;
+            try {
+                level = team.getEffectiveAIDifficulty();
+                multiplier = team.getAIDifficultyIncomeMultiplier();
+            } catch (RuntimeException ignored) {
+                continue;
+            }
+            if (!first) {
+                out.append(',');
+            }
+            out.append("{\"team_id\":").append(team.teamId)
+                    .append(",\"difficulty\":").append(level)
+                    .append(",\"income_multiplier\":").append(fmt(multiplier))
+                    .append(",\"locked\":").append(team.aiDifficultyLocked)
+                    .append('}');
+            first = false;
+        }
+        return out.append(']').toString();
+    }
+
+    /**
+     * ``--ai-difficulty N``: pin the AI difficulty of every AI team on the map.
+     *
+     * <p>Rusted Warfare has six levels ({@code -2..3}, i.e. 非常简单 / 简单 / 正常 /
+     * 困难 / 非常困难 / 炼狱模式). They are not cosmetic: the level feeds
+     * {@code Team.getAIDifficultyIncomeMultiplier()}, which is the AI's resource
+     * cheat, and the resolved level also drives {@code getAIDifficultyArmyValue()}
+     * (how big an army the AI builds before attacking) and the AI's build order
+     * delays. Measured multipliers: {@code -2 -> x0.40}, {@code -1 -> x0.70},
+     * {@code 0 -> x1.00}, {@code 1 -> x1.40}, {@code 2 -> x1.80}, {@code 3 -> x3.70}
+     * (level 3 also gets a flat +1.5 bonus, read from the bytecode and confirmed
+     * on the Lake map).
+     *
+     * <p>Without the lock the team-level {@code aiDifficulty} is ignored and the
+     * global {@code SettingsEngine.aiDifficulty} wins (default {@code 0}), which is
+     * why the pilot measured x1.00 income.
+     */
+    private void applyAiDifficulty() {
+        int requested = aiDifficulty.intValue();
+        int applied = 0;
+        int skipped = 0;
+        for (Object item : Team.getTeams()) {
+            if (!(item instanceof Team)) {
+                continue;
+            }
+            Team team = (Team) item;
+            if (team == null) {
+                continue;
+            }
+            if (!team.isAI) {
+                // A non-AI team's difficulty is never consulted, so pinning it would
+                // only produce a confusing log line.
+                skipped++;
+                continue;
+            }
+            try {
+                team.aiDifficulty = requested;
+                team.aiDifficultyLocked = true;
+                team.aiDifficultyOverride = Integer.valueOf(requested);
+                applied++;
+            } catch (RuntimeException failure) {
+                System.out.println("[ironzero] ai-difficulty: failed on team "
+                        + team.teamId + ": " + failure);
+            }
+        }
+        System.out.println("[ironzero] ai-difficulty: requested=" + requested
+                + " appliedTeams=" + applied + " nonAiTeams=" + skipped
+                + " incomeMultiplier=x" + fmt(incomeMultiplierFor(requested)));
+    }
+
+    /**
+     * Every AI team's resolved difficulty and income multiplier, as a log string.
+     *
+     * <p>Reported at world-ready so an operator can tell from the log alone which
+     * teacher strength a BC run actually used instead of inferring it from income.
+     */
+    private String effectiveAiDifficultyDescription() {
+        StringBuilder out = new StringBuilder();
+        out.append("none");
+        boolean first = true;
+        for (Object item : Team.getTeams()) {
+            if (!(item instanceof Team)) {
+                continue;
+            }
+            Team team = (Team) item;
+            if (team == null || !team.isAI) {
+                continue;
+            }
+            int level;
+            double multiplier;
+            try {
+                level = team.getEffectiveAIDifficulty();
+                multiplier = team.getAIDifficultyIncomeMultiplier();
+            } catch (RuntimeException failure) {
+                continue;
+            }
+            if (!first) {
+                out.append(',');
+            } else {
+                out.setLength(0);
+            }
+            out.append("team").append(team.teamId)
+                    .append("=level").append(level)
+                    .append("/x").append(fmt(multiplier));
+            first = false;
+        }
+        return out.toString();
+    }
+
+    /** The documented income cheat for one difficulty level (for log lines). */
+    private static double incomeMultiplierFor(int level) {
+        double multiplier = 1.0;
+        if (level > 0) {
+            multiplier += level * 0.4;
+        } else {
+            multiplier += level * 0.3;
+        }
+        if (level == 3) {
+            // Verified against the bytecode: level 3 adds 1.5f, not 1.0f, so
+            // 3 -> 1 + 3*0.4 + 1.5 = 3.7 (measured x3.7 on the Lake map).
+            multiplier += 1.5;
+        }
+        return Math.max(0.1, multiplier);
+    }
+
+    /**
+     * Replace the controlled team with a built-in AI instance (``--ai-pilot``).
+     *
+     * <p>The engine only ticks teams that are {@code instanceof AI}; the controlled
+     * team is normally a plain {@code Player(0)}, so nothing drives it and the
+     * policy has to learn macro play from scratch. Swapping in an {@code AI} for
+     * the same team id gives us a competent player whose orders we can record.
+     *
+     * <p>The map is loaded with {@code loadMapWithAI(..., aiCount=1, ...)}, which
+     * already created an AI for the *enemy* slot. The controlled team keeps its
+     * own units either way: {@code Team} membership is by {@code teamId}, and unit
+     * ownership is resolved from {@code unit.team}, so replacing the team object
+     * only adds the AI brain -- it does not move or drop units.
+     */
+    private void installAiPilot() {
+        if (engine == null) {
+            return;
+        }
+        Team current = engine.playerTeam;
+        if (current instanceof AI) {
+            ((AI) current).aggressiveMode = true;
+            System.out.println("[ironzero] ai-pilot: team " + current.teamId + " already an AI");
+            return;
+        }
+        int teamId = current != null ? current.teamId : 0;
+        try {
+            // The second constructor argument is ``replaceInTeamArray``: it must
+            // be true, otherwise the AI is created but never registered in
+            // ``Team.teamArray`` and therefore never ticked by
+            // ``Team.updateTeams`` -- it looks installed (playerTeam points at it)
+            // but plays nothing, which is exactly the silent failure measured on
+            // the first attempt (own funds frozen at 4000 for 192 s, orders=0).
+            AI pilot = new AI(teamId, true);
+            pilot.isAI = true;
+            pilot.aggressiveMode = true;
+            pilot.aiDifficulty = current != null ? current.aiDifficulty : pilot.aiDifficulty;
+            // Carry the economy over: AI.updateResourceTimers reads credits from
+            // its own Team instance, so a fresh team would start at 0 funds and
+            // never build anything.
+            if (current != null) {
+                pilot.credits = current.credits;
+                pilot.antiLagCredits = current.antiLagCredits;
+                pilot.name = current.name != null ? current.name : "IronZeroPilot";
+                pilot.startingUnitsOverride = current.startingUnitsOverride;
+            }
+            engine.playerTeam = pilot;
+            // Re-home every own unit onto the new team object. Unit ownership is
+            // compared with reference equality (``unit.team == this`` in
+            // ``Team.updateDefeatCheck``, ``unit.team == team`` in every bridge
+            // helper), so a fresh AI that nobody points at looks like an empty
+            // team: the engine declared "Player had no starting units" and called
+            // the game at tick=1. Re-pointing the units is what actually hands the
+            // army over.
+            int unlocked = 0;
+            int moved = 0;
+            for (Object item : Unit.unitList) {
+                if (!(item instanceof Unit)) {
+                    continue;
+                }
+                Unit unit = (Unit) item;
+                if (unit.team == current) {
+                    unit.team = pilot;
+                    moved++;
+                }
+                if (unit.team == pilot && unit.aiLimitedUse) {
+                    // Map-placed units arrive with aiLimitedUse=true, which keeps
+                    // them out of AIUnitGroup.recruitUnits; without clearing it the
+                    // pilot would sit on its units forever.
+                    unit.aiLimitedUse = false;
+                    unlocked++;
+                }
+            }
+            // Rebuild the team caches from the re-homed units and mark the team as
+            // having had units, otherwise ``updateDefeatCheck``/``getUnitsMax``
+            // still reason about an empty roster.
+            try {
+                Team.markAllUnitCachesDirty();
+                pilot.hasHadUnits = moved > 0;
+                pilot.defeated = false;
+                pilot.wipedOut = false;
+                pilot.eliminated = false;
+                pilot.unitCachesDirty = true;
+            } catch (RuntimeException ignored) {
+                // Cache bookkeeping is best effort; the reference swap above is
+                // what makes the army usable.
+            }
+            System.out.println("[ironzero] ai-pilot: team=" + teamId
+                    + " credits=" + fmt(pilot.credits)
+                    + " movedUnits=" + moved + " unlockedUnits=" + unlocked);
+        } catch (RuntimeException failure) {
+            // Fall back to the normal human-controlled team: an unusable pilot is
+            // worse than no pilot, and the caller can still drive the policy.
+            System.out.println("[ironzero] ai-pilot FAILED: " + failure);
+            engine.playerTeam = current;
+            aiPilotTeam = false;
+            recordAiOrders = false;
+        }
+    }
+
+    /**
+     * The controlled team's resolved AI difficulty, or {@code null} for a human team.
+     *
+     * <p>Exported in ``info.ai_difficulty`` so a run's logs and dataset metadata
+     * record which teacher strength produced the labels.
+     */
+    private String ownAiDifficulty() {
+        Team player = engine != null ? engine.playerTeam : null;
+        if (player == null || !player.isAI) {
+            return "null";
+        }
+        try {
+            return Integer.toString(player.getEffectiveAIDifficulty());
+        } catch (RuntimeException ignored) {
+            return "null";
+        }
+    }
+
+    /**
+     * The controlled team's current orders, as the bridge sees them.
+     *
+     * <p>Read from each own unit's active {@link Waypoint}. This is the label a
+     * behaviour-cloning dataset needs: the action the expert actually took, in the
+     * same vocabulary the policy emits (move / attack_move / attack_target /
+     * build / repair / hold), plus the target coordinates or entity id.
+     */
+    private String aiOrdersJson() {
+        Team player = engine != null ? engine.playerTeam : null;
+        StringBuilder out = new StringBuilder("[");
+        boolean first = true;
+        for (Object item : Unit.unitList) {
+            if (!(item instanceof OrderableUnit)) {
+                continue;
+            }
+            OrderableUnit unit = (OrderableUnit) item;
+            if (unit.removed || unit.hp <= 0.0f) {
+                continue;
+            }
+            if (!isOwnUnit(player, unit)) {
+                continue;
+            }
+            Waypoint waypoint = null;
+            try {
+                waypoint = unit.getCurrentWaypoint();
+            } catch (RuntimeException ignored) {
+                continue;
+            }
+            String kind = "hold";
+            String typeName = "";
+            double tx = unit.x;
+            double ty = unit.y;
+            long targetId = -1L;
+            String buildType = "";
+            int buildLevel = 0;
+            if (waypoint != null) {
+                try {
+                    WaypointType type = waypoint.getType();
+                    typeName = type == null ? "" : type.name();
+                    tx = waypoint.getTargetX();
+                    ty = waypoint.getTargetY();
+                    Unit target = waypoint.getTargetUnit();
+                    if (target != null) {
+                        targetId = target.id;
+                    }
+                    UnitTypeInterface buildUnit = waypoint.getUnitType();
+                    if (buildUnit != null) {
+                        buildType = buildUnit.getInternalName();
+                        buildLevel = waypoint.getBuildTechLevel();
+                    }
+                    kind = waypointKind(type);
+                } catch (RuntimeException ignored) {
+                    // Keep the "hold" default: an unreadable waypoint is not an
+                    // order we can label.
+                }
+            }
+            if (!first) {
+                out.append(',');
+            }
+            first = false;
+            out.append("{\"entity_id\":").append(unit.id)
+                    .append(",\"kind\":\"").append(kind).append('"')
+                    .append(",\"waypoint_type\":\"").append(typeName).append('"')
+                    .append(",\"x\":").append(fmt(tx))
+                    .append(",\"y\":").append(fmt(ty))
+                    .append(",\"target_entity_id\":").append(targetId);
+            if (!buildType.isEmpty()) {
+                out.append(",\"build_type\":\"").append(buildType).append('"')
+                        .append(",\"build_tech_level\":").append(buildLevel);
+            }
+            // Attack target is reported separately from the waypoint: a unit can
+            // hold position and still have an auto-acquired attack target, and
+            // that is exactly what a micro-management teacher demonstrates.
+            Unit attackTarget = null;
+            try {
+                attackTarget = unit.getEffectiveAttackTarget();
+            } catch (RuntimeException ignored) {
+                // No target information available.
+            }
+            out.append(",\"attack_target_id\":")
+                    .append(attackTarget != null ? attackTarget.id : -1L)
+                    .append('}');
+        }
+        out.append(']');
+        return out.toString();
+    }
+
+    /** Map an engine {@code WaypointType} onto the policy's action vocabulary. */
+    private String waypointKind(WaypointType type) {
+        if (type == null) {
+            return "hold";
+        }
+        switch (type.name()) {
+            case "move":
+                return "move_group";
+            case "attackMove":
+            case "patrol":
+                return "attack_move";
+            case "attack":
+                return "attack_target";
+            case "build":
+                return "build_structure";
+            case "repair":
+                return "repair_target";
+            case "guard":
+            case "guardAt":
+            case "follow":
+                return "hold";
+            default:
+                return "hold";
+        }
     }
 
     private void readClientCommands() {
@@ -1489,6 +1943,14 @@ public final class IronZeroBridge implements ServerExtension {
      * own figure and is already a rate, so it is reported as-is; multiplying it
      * by 60 would push an active extractor past the scale and saturate the
      * feature at 1.0.
+     *
+     * <p>The AI difficulty multiplier is applied here even though
+     * {@code getGenerationCredits()} does not include it. The engine multiplies in
+     * {@code Team.updateIncome}: {@code addIncome(getAIDifficultyIncomeMultiplier()
+     * * delta)}, so the raw sum is what a *non-AI* team would earn. Reporting it
+     * unscaled made the {@code income} feature (and the {@code income} reward term)
+     * blind to the AI's resource cheat -- measured: identical 18.0/s at difficulty
+     * -2, 0 and 3, while the same teams' real multiplier ranged x0.40 to x3.70.
      */
     private double ownIncome() {
         double income = 0.0;
@@ -1507,6 +1969,14 @@ public final class IronZeroBridge implements ServerExtension {
                 income += unit.getGenerationCredits();
             } catch (RuntimeException ignored) {
                 // A unit type that does not report generation simply adds nothing.
+            }
+        }
+        Team player = engine != null ? engine.playerTeam : null;
+        if (player != null && player.isAI) {
+            try {
+                income *= player.getAIDifficultyIncomeMultiplier();
+            } catch (RuntimeException ignored) {
+                // Keep the raw sum rather than dropping the whole feature.
             }
         }
         return income;

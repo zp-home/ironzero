@@ -69,6 +69,23 @@ class RwppGameConfig:
     # line only when set, so legacy invocations stay byte-identical.
     win_mode: str = ""  # e.g. "annihilation" -> --win-mode annihilation
     unlock_ai: bool = False  # -> --unlock-ai
+    # Behaviour-cloning teacher mode. ``ai_pilot`` hands the *controlled* team to
+    # the game's built-in AI (see ``IronZeroBridge.installAiPilot``); the AI's own
+    # orders can then be read from ``record_ai_orders`` and used as expert labels.
+    # Both are opt-in so a normal run's command line is unchanged.
+    ai_pilot: bool = False
+    record_ai_orders: bool = False
+    # Built-in AI strength (-2..3, i.e. 非常简单/简单/正常/困难/非常困难/炼狱).
+    #
+    # The level is not cosmetic: it feeds ``Team.getAIDifficultyIncomeMultiplier()``,
+    # the AI's resource cheat (x0.40 / x0.70 / x1.00 / x1.40 / x1.80 / x3.20), and
+    # ``getAIDifficultyArmyValue()``, the army size the AI reaches before attacking.
+    # A headless bridge run is neither networked nor a replay and sets no override,
+    # so without this field the engine falls back to the global
+    # ``SettingsEngine.aiDifficulty``, which defaults to **0 (正常, x1.00)** -- i.e.
+    # the teacher plays with no bonus at all. ``None`` keeps that resolution order;
+    # an int pins every AI team via ``aiDifficultyLocked``.
+    ai_difficulty: int | None = None
     # Fixed engine frame delta, independent of ``frame_ms`` pacing. ``0`` keeps the
     # historical behaviour where ``frame_ms`` is both the delta and the sleep
     # budget (16 ms = real time). Set it (e.g. 16) to keep a real-time simulation

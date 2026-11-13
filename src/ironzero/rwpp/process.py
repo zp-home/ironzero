@@ -88,6 +88,15 @@ def _bridge_command(launcher: Path, port: int, game: RwppGameConfig) -> list[str
         command.extend(["--win-mode", str(game.win_mode)])
     if game.unlock_ai:
         command.append("--unlock-ai")
+    if getattr(game, "ai_pilot", False):
+        command.append("--ai-pilot")
+    if getattr(game, "record_ai_orders", False):
+        command.append("--record-ai-orders")
+    ai_difficulty = getattr(game, "ai_difficulty", None)
+    if ai_difficulty is not None:
+        # Opt-in: omitted keeps the engine's own resolution (global settings, which
+        # default to level 0 = 正常 = x1.00 income, no AI cheat bonus).
+        command.extend(["--ai-difficulty", str(int(ai_difficulty))])
     if int(getattr(game, "physics_ms", 0) or 0) > 0:
         # Pin the simulation delta so the wall-clock pacing (``--frame-ms``) can
         # be lowered without changing what an episode simulates. Only sent when
