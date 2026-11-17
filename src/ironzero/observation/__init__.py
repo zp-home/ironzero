@@ -24,7 +24,15 @@ from __future__ import annotations
 
 from .encoding import encode_observation
 from .features import GROUP_DIM, _cell, _entity_features, _nearest, _unit_group
-from .masks import build_masks, flat_mask_vector, masks_as_lists
+from .masks import (
+    MULTI_MASK_KEYS,
+    build_masks,
+    build_masks_for_config,
+    build_masks_multi,
+    flat_mask_vector,
+    masks_as_lists,
+    multi_mask_keys,
+)
 from .terrain_channel import (
     REPO_ROOT,
     _downsample_passable,
@@ -35,6 +43,7 @@ from .terrain_channel import (
 
 __all__ = [
     "GROUP_DIM",
+    "MULTI_MASK_KEYS",
     "REPO_ROOT",
     "_cell",
     "_downsample_passable",
@@ -44,8 +53,11 @@ __all__ = [
     "_terrain_passable_channel",
     "_unit_group",
     "build_masks",
+    "build_masks_for_config",
+    "build_masks_multi",
     "encode_observation",
     "flat_mask_vector",
     "masks_as_lists",
+    "multi_mask_keys",
     "terrain_passable_channel",
 ]

@@ -234,7 +234,16 @@ def test_build_and_tactical_move_are_emitted_together() -> None:
     # group, exactly as the single-slot decoder does.
     build, move = orders
     assert build["unit_group"] == DEFAULT_CONFIG.groups
-    assert build["structure_type"] == "land_factory"
+    # The structure type now comes from the engine's own ``can_build`` menu, so it
+    # is spelled the way the ENGINE spells it (``landFactory``) rather than the
+    # protocol's snake_case constant (``land_factory``). ``IronZeroBridge`` accepts
+    # both -- ``resolveUnitTypeName`` folds snake_case onto the enum constant -- so
+    # this is purely about which side does the translation.
+    #
+    # Reporting the engine's spelling is the point of the change: the type is now a
+    # *decision* indexed by the target head, and an index into a menu must be
+    # expressed in the menu's own vocabulary or the two can drift.
+    assert build["structure_type"] == "landFactory"
     assert move["unit_group"] == 1
     # The two orders must address different concerns; a shared group is allowed
     # (a player may order the same units twice) but the *kinds* must differ.

@@ -14,6 +14,12 @@ import numpy as np
 
 from ..micro_config import MicroDuelConfig
 from ..mock_engine import ACTION_KINDS
+from ..observation.menus import (
+    build_menu,
+    produce_menu,
+    produce_options,
+    upgradable_buildings,
+)
 
 
 def observation_to_state(message: dict[str, Any]) -> dict[str, Any]:
@@ -112,16 +118,61 @@ def _builder_group(state: dict[str, Any]) -> int:
     return int(DEFAULT_CONFIG.groups)
 
 
+def extractor_pool_candidates(state: dict[str, Any]) -> list[int]:
+    """Global slot ids a ``build_extractor`` target head may name, in order.
+
+    The list is what the **policy's** target head indexes: ordinal ``i`` means
+    "the ``i``-th entry here", and that entry is a global pool id resolved against
+    the bridge's own ``resource_slots`` array.
+
+    Why pools that already carry an extractor are excluded: re-ordering one is a
+    no-op the engine reports ``accepted: true`` for, so leaving them selectable
+    would let the policy "succeed" forever without growing the economy. The bridge
+    sorts pools nearest-to-own-base first, so ordinal 0 is the intended opening
+    build and the ordering itself carries the preference.
+
+    The returned list is never empty when ``slots`` is non-empty, so callers can
+    index it with a modulo without a division-by-zero hazard. ``[]`` means the
+    payload reported no pools at all (mock engine, older bridge, hand-written
+    fixture); callers must then fall back to a bare ``slot_id`` 0.
+    """
+
+    slots = state.get("resource_slots") or []
+    if not slots:
+        return []
+    free = [
+        index
+        for index, slot in enumerate(slots)
+        if not (isinstance(slot, dict) and slot.get("occupied"))
+    ]
+    # Every pool taken: fall back to all of them so the order is still
+    # well-formed (the engine rejects it as already occupied, which is honest).
+    return free or list(range(len(slots)))
+
+
 def decode_action(
     action: np.ndarray,
     state: dict[str, Any],
     config: MicroDuelConfig,
+    *,
+    extractor_slot_is_global: bool = False,
 ) -> list[dict[str, Any]]:
     """Decode one policy action into ``ironzero/1`` step actions.
 
     The bridge understands the same group head as the mock engine: 0..G-1 order
     the units whose id maps to that group, and the last slot (G) broadcasts to
     every living friendly unit.
+
+    ``extractor_slot_is_global`` says what head 4 means for ``build_extractor``:
+
+    * ``False`` (default) -- a **free-pool ordinal**, the policy's contract. The
+      target head is sized and masked from the same list the decoder indexes, so
+      "the mask opened slot 3" and "the decode can name slot 3" are one statement.
+    * ``True`` -- a **resolved global pool id**. The curriculum stages reason in
+      concrete pools ("build on the pool nearest the base"), and re-indexing their
+      answer through the free list is what silently redirected them: measured with
+      pool 0 occupied, a stage asking for pool 0 was decoded as pool 1, and asking
+      for pool 2 was decoded as pool 3.
     """
 
     vector = np.asarray(action, dtype=np.int64).reshape(-1)
@@ -130,13 +181,17 @@ def decode_action(
         raise ValueError(
             f"action must have {expected_heads} heads, got {vector.shape[0]}"
         )
-    return _decode_heads(vector, state, config)
+    return _decode_heads(
+        vector, state, config, extractor_slot_is_global=extractor_slot_is_global
+    )
 
 
 def _decode_heads(
     vector: np.ndarray,
     state: dict[str, Any],
     config: MicroDuelConfig,
+    *,
+    extractor_slot_is_global: bool = False,
 ) -> list[dict[str, Any]]:
     """Decode exactly one 5-head slot (``kind, group, x, y, target``).
 
@@ -162,45 +217,108 @@ def _decode_heads(
         x, y = config.grid_to_world(gx, gy)
         return [{"kind": kind, "unit_group": group, "x": round(float(x), 2), "y": round(float(y), 2)}]
     if kind == "build_extractor":
-        # ``slot_id`` indexes the resource slots reported by the bridge. Only
-        # slots without an extractor are candidates: re-ordering an existing pool
-        # is a no-op the engine accepts, which would let the policy "succeed"
-        # forever without ever growing the economy. Among the free slots the
-        # bridge already sorts nearest-to-own-base first, so the counter keeps
-        # that preference. When the bridge reports no slots at all we still emit
-        # the action and let the Java side resolve slot 0 against its own map
-        # resource list.
-        slots = state.get("resource_slots") or []
-        free = [
-            index
-            for index, slot in enumerate(slots)
-            if not (isinstance(slot, dict) and slot.get("occupied"))
-        ]
-        if free:
-            # The target head is shared with the enemy head, so a slot index is
-            # taken modulo the number of free pools rather than trusted raw.
-            candidates = free
-        elif slots:
-            # Every pool is taken: fall back to all of them so the order is still
-            # well-formed (the engine rejects it as already occupied).
-            candidates = list(range(len(slots)))
+        # ``target_index`` is a **free-pool ordinal**, not a global slot id.
+        #
+        # A pool that already carries an extractor is excluded from the candidate
+        # list, so "re-order an existing extractor" is not expressible from the
+        # action space. That rule is old and load-bearing: re-ordering a pool the
+        # engine already accepted is a no-op it reports ``accepted: true`` for, so
+        # allowing it would let the policy "succeed" forever without ever growing
+        # the economy.
+        #
+        # The bridge sorts pools nearest-to-own-base first, so ordinal 0 is the
+        # intended opening build and the ordering carries the preference.
+        #
+        # Historically this branch indexed the *free* list with ``target_index``
+        # and nothing else could reach it, so the ordinal reading was the only
+        # one in use. That changed when the curriculum stages started building
+        # their own vectors: they put a **global** pool id in head 4, and the
+        # mismatch was silent -- measured, with pool 0 occupied, a stage asking
+        # for pool 0 was decoded as pool 1, and asking for pool 2 was decoded as
+        # pool 3. ``resolve_extractor_slot`` is now the single place that decides
+        # what head 4 means, and ``_decode_heads`` receives the answer instead of
+        # re-deriving it.
+        pools = extractor_pool_candidates(state)
+        if not pools and not extractor_slot_is_global:
+            # No pools in the payload at all: emit slot 0 and let the Java side
+            # resolve it against its own map resource list. This is the documented
+            # behaviour for an older bridge, the mock engine and hand-written
+            # fixtures (see ``tests/test_rwpp_economy_slots.py``).
+            resolved = 0
+        elif extractor_slot_is_global:
+            # ``target_index`` already names a concrete pool (a curriculum stage
+            # resolved it); re-indexing it through the free list is the bug that
+            # redirected every expansion order once pool 0 was taken.
+            resolved = int(target_index)
         else:
-            candidates = [0]
+            resolved = int(pools[int(target_index) % len(pools)])
         return [{"kind": "build_extractor", "unit_group": _builder_group(state),
-                 "slot_id": int(candidates[int(target_index) % len(candidates)])}]
+                 "slot_id": resolved}]
     if kind == "build_structure":
         x, y = config.grid_to_world(gx, gy)
+        # Which *structure* is a decision, not a constant.
+        #
+        # This branch used to hard-code ``structure_type="land_factory"``, which
+        # made the entire action space unable to express "build a turret", "build
+        # an air factory" or "build a second land factory as a different
+        # structure". Every ``build_structure`` sample meant the same building, so
+        # "the agent never builds turrets / only builds one factory" was not a
+        # learning failure -- the order the policy would have had to sample did
+        # not exist. Measured in ``.runtime/buildnames.json``: the engine accepts
+        # ``turret`` on this very map, so the capability was always there and only
+        # the encoder was missing it.
+        #
+        # The structure is now selected by the **target** head, indexing
+        # :func:`~ironzero.observation.menus.build_menu` -- the same list the
+        # action mask opens exactly those slots from. Using one list for both is
+        # what keeps "the mask opened it" and "the decode can name it" the same
+        # statement; deriving them separately is the documented cause of the
+        # ``invalid_penalty`` spiral.
+        #
+        # Fallbacks, in order: the reported menu, then the historical constant.
+        # The constant stays last so a bridge that reports no builder
+        # capabilities (older build, mock engine, hand-written fixture) keeps
+        # working exactly as before instead of silently emitting nothing.
+        menu = build_menu(state)
+        if menu:
+            structure_type = menu[int(target_index) % len(menu)]
+        else:
+            structure_type = "land_factory"
         return [{"kind": "build_structure", "unit_group": _builder_group(state),
-                 "structure_type": "land_factory",
+                 "structure_type": structure_type,
                  "x": round(float(x), 2), "y": round(float(y), 2)}]
     if kind == "produce_unit":
-        # Production is a *factory* action: pick the factory, then ask the game
-        # which unit types it can actually queue here. ``"tank"`` used to be
-        # hard-coded, which silently asked every factory for a tank -- wrong on
-        # any map whose factory cannot make one (a Lake start's commandCenter can
-        # only make a scout), and the order then either got rejected or produced
-        # something the policy never chose. Falls back to ``"tank"`` only when the
-        # bridge reports no factory capabilities at all.
+        # Which *unit* is a decision, not a constant.
+        #
+        # This branch used to end with ``unit_type = combat[0]``: the first
+        # non-builder entry of the factory's menu, every single time. The target
+        # head was spent entirely on choosing *which factory*, so there was no
+        # dimension left that could mean "build the other unit" -- which is
+        # exactly the reported "only ever builds one kind of tank". Measured on
+        # ``[p2]Lake (2p)`` a ``landFactory`` offers two combat types, so half of
+        # the game's production options were unreachable from the action space.
+        #
+        # The pair is now selected by the target head indexing
+        # :func:`~ironzero.observation.menus.produce_options` -- the cross product
+        # of (factory, unit) in the engine's own stable order, which is the same
+        # list :mod:`ironzero.observation.masks` sizes the head against.
+        options = produce_options(state)
+        if options:
+            factory_id, unit_type = options[int(target_index) % len(options)]
+            return [
+                {
+                    "kind": "produce_unit",
+                    "unit_group": group,
+                    "factory_entity_id": int(factory_id),
+                    "unit_type": str(unit_type),
+                }
+            ]
+        # ---- fallbacks for payloads that report no factory capabilities -----
+        # Kept in their historical order so a bridge without ``info.factories``
+        # behaves exactly as it did before. ``"tank"`` is the last resort because
+        # it at least names a real unit type on stock data; the engine rejects it
+        # honestly (``PRODUCE_UNAVAILABLE``) when the factory cannot make one,
+        # which is better than dispatching nothing and paying for a silent no-op.
         factories = state.get("factories") or []
         reported = [
             entry
@@ -208,31 +326,10 @@ def _decode_heads(
             if isinstance(entry, dict) and isinstance(entry.get("can_produce"), list)
         ]
         if reported:
-            # Prefer a factory that offers a *combat* unit. The list is in the
-            # engine's unit order, which puts the command center first, and a
-            # command center only makes builders -- so taking ``target_index``
-            # raw would spend the whole economy on builders even with a real
-            # factory standing.
-            combat_factories = [
-                entry
-                for entry in reported
-                if any(
-                    str(name).lower() != "builder"
-                    for name in (entry.get("can_produce") or [])
-                )
-            ]
-            pool = combat_factories or reported
-            factory = pool[int(target_index) % len(pool)]
+            factory = reported[int(target_index) % len(reported)]
             producible = [str(name) for name in factory.get("can_produce") or []]
             if not producible:
                 return _hold_action(state, group)
-            # The group head is not a unit-type head, so one deterministic pick
-            # is made per factory. Prefer a *combat* unit: a factory's menu is
-            # reported in engine registry order and can put ``builder`` (or
-            # ``hoverTank``) first, and always picking the first entry would
-            # spend the whole economy on builders. Falling back to the first
-            # entry keeps every menu usable, including one that only offers
-            # builders (a Lake command center).
             combat = [name for name in producible if name.lower() != "builder"]
             unit_type = combat[0] if combat else producible[0]
             return [
@@ -278,8 +375,12 @@ def _decode_heads(
         # Only when *no* entity reports the field at all (an older bridge) is the
         # "any building" fallback still used, where at worst it yields one rejected
         # order instead of a silently dropped one.
-        reported = any("can_upgrade" in unit for unit in own)
-        upgradable = [u for u in own if u.get("can_upgrade")]
+        #
+        # The two cases are now read from :func:`observation.menus.upgradable_buildings`
+        # so the *mask* and the *decode* agree by construction: both ask the helper
+        # the same question instead of each re-deriving "reported vs empty" from
+        # raw fields. See that function for why the distinction is load-bearing.
+        upgradable, reported = upgradable_buildings(state)
         if not upgradable:
             if reported:
                 # The engine was asked and said no. Dispatching nothing keeps the
@@ -424,6 +525,8 @@ def decode_action_multi(
     action: np.ndarray,
     state: dict[str, Any],
     config: MicroDuelConfig,
+    *,
+    extractor_slot_is_global: bool = False,
 ) -> list[dict[str, Any]]:
     """Decode one two-slot decision into **at most two** ``ironzero/1`` orders.
 
@@ -474,13 +577,29 @@ def decode_action_multi(
         economy_vector[0], ECONOMY_ACTION_KINDS, ECONOMY_EMPTY_INDEX
     )
     if economy_kind is not None:
-        orders.extend(_decode_slot(economy_vector, economy_kind, state, config))
+        orders.extend(
+            _decode_slot(
+                economy_vector,
+                economy_kind,
+                state,
+                config,
+                extractor_slot_is_global=extractor_slot_is_global,
+            )
+        )
 
     tactical_kind = _slot_kind(
         tactical_vector[0], TACTICAL_ACTION_KINDS, TACTICAL_EMPTY_INDEX
     )
     if tactical_kind is not None:
-        orders.extend(_decode_slot(tactical_vector, tactical_kind, state, config))
+        orders.extend(
+            _decode_slot(
+                tactical_vector,
+                tactical_kind,
+                state,
+                config,
+                extractor_slot_is_global=extractor_slot_is_global,
+            )
+        )
 
     return orders
 
@@ -509,6 +628,8 @@ def _decode_slot(
     kind: str,
     state: dict[str, Any],
     config: MicroDuelConfig,
+    *,
+    extractor_slot_is_global: bool = False,
 ) -> list[dict[str, Any]]:
     """Decode one slot with ``kind`` already resolved, reusing ``_decode_heads``.
 
@@ -517,11 +638,16 @@ def _decode_slot(
     table for *both* decoders: a new build/produce rule added to ``_decode_heads``
     automatically applies to the two-slot layout, and the two cannot disagree
     about e.g. which resource pool a ``build_extractor`` names.
+
+    ``extractor_slot_is_global`` is forwarded unchanged for the same reason: the
+    two decoders must not disagree about what head 4 means either.
     """
 
     head = np.array(vector, dtype=np.int64).reshape(-1).copy()
     head[0] = ACTION_KINDS.index(kind)
-    return _decode_heads(head, state, config)
+    return _decode_heads(
+        head, state, config, extractor_slot_is_global=extractor_slot_is_global
+    )
 
 
 def merge_done_message(state: dict[str, Any], message: dict[str, Any]) -> dict[str, Any]:

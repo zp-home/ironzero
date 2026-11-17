@@ -266,7 +266,24 @@ def test_each_economy_kind_respects_its_capability(kind: str) -> None:
         assert kind not in selectable_for(full, factory_can_produce=[])
         return
 
-    necessary = {"build_extractor": "extractor",
-                 "build_structure": "landFactory"}[kind]
+    if kind == "build_structure":
+        # ``build_structure`` is gated on the *structure* menu being non-empty, not
+        # on one particular name inside it.
+        #
+        # The old version of this test required the literal ``landFactory`` to be
+        # present, which is exactly the defect that made the kind unable to express
+        # any other building: the target head could only ever mean "a second land
+        # factory". The correct contract is now:
+        #
+        #   * a menu with ANY non-pool structure keeps the kind selectable, even if
+        #     that structure is a turret and no factory is offered;
+        #   * a menu containing only pool-only types (an extractor) closes it,
+        #     because ``build_extractor`` is the kind that places those.
+        assert kind in selectable_for(["turret"])
+        assert kind in selectable_for(["airFactory"])
+        assert kind not in selectable_for(["extractor"])
+        return
+
+    necessary = {"build_extractor": "extractor"}[kind]
     reduced = [name for name in full if name != necessary]
     assert kind not in selectable_for(reduced)
