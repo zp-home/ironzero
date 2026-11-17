@@ -68,9 +68,9 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-from ..micro_config import MicroDuelConfig
+from ..micro_config import DEFAULT_CONFIG, MicroDuelConfig
 from .config import RwppGameConfig
-from .reward import hp_fractions
+from .reward import hp_fractions, threat_value
 
 # ``idle_penalty`` only applies inside this multiple of the unit attack range.
 # 3x is the "already in the fight" band: our units and the enemy centroid are
@@ -233,6 +233,79 @@ class StepShaping:
     last_result: str | None
 
 
+def _building_tier_total(state: dict) -> int:
+    """Tiers our *buildings* have gained above the starting T1.
+
+    The quantity ``bonus_upgrade`` pays for, so what it must **not** include decides
+    its correctness:
+
+    * **not units** -- every unit reports ``tech_level`` 1, so a per-entity sum makes
+      "make a scout" identical to "upgrade an extractor";
+    * **not the starting tier** -- a building begins at T1, so counting
+      ``tech_level`` outright pays the bonus for the command centre existing.
+
+    A payload that reports no ``tech_level`` yields 0, which keeps the term
+    identically zero on the mock engine and on older bridges -- the same
+    "missing field reads as zero" contract the other counters use.
+    """
+
+    total = 0
+    for unit in state.get("own_entities") or []:
+        if not isinstance(unit, dict) or not unit.get("is_building"):
+            continue
+        try:
+            level = int(float(unit.get("tech_level") or 0))
+        except (TypeError, ValueError):
+            continue
+        if level > 1:
+            total += level - 1
+    return total
+
+
+def _weighted_attrition(
+    before: list[dict[str, Any]] | None,
+    after: list[dict[str, Any]] | None,
+) -> float:
+    """How much threat disappeared between two observations, in baseline units.
+
+    Priced with :func:`ironzero.rwpp.reward.threat_value`, normalised so one plain
+    combat unit scores ``1.0``. That keeps the historical scale ("one kill is worth
+    ``kill_bonus``") while making the *identity* of the casualty matter.
+
+    Matching is by ``entity_id`` when both sides report it, because that is the only
+    stable handle: position changes, the stream order changes, and slot index is
+    not an identity. A payload without ids (mock engine, hand-written fixtures)
+    falls back to the bare count difference so those environments keep their
+    previous behaviour exactly.
+
+    Returns ``0.0`` when nothing disappeared, and never a negative value -- a unit
+    appearing is not a kill.
+    """
+
+    if not before or not after:
+        return 0.0
+    ids_before = {
+        int(unit.get("entity_id")): unit
+        for unit in before
+        if isinstance(unit, dict) and unit.get("entity_id") is not None
+    }
+    ids_after = {
+        int(unit.get("entity_id"))
+        for unit in after
+        if isinstance(unit, dict) and unit.get("entity_id") is not None
+    }
+    if not ids_before or not ids_after:
+        # No usable ids: keep the historical count semantics.
+        return float(max(0, len(before) - len(after)))
+    gone = [unit for key, unit in ids_before.items() if key not in ids_after]
+    if not gone:
+        return 0.0
+    # ``threat_value`` returns ``max_hp * (1 + threat)``; dividing by a baseline
+    # hull turns it back into "how many plain units was this worth".
+    baseline = max(1.0, float(DEFAULT_CONFIG.unit_hp))
+    return float(sum(threat_value(unit) for unit in gone) / baseline)
+
+
 def compute_step_shaping(
     *,
     micro: MicroDuelConfig,
@@ -250,6 +323,8 @@ def compute_step_shaping(
     enemy_alive: int,
     previous_own_alive: int,
     previous_enemy_alive: int,
+    previous_own_units: list[dict[str, Any]] | None = None,
+    previous_enemy_units: list[dict[str, Any]] | None = None,
     strategy_component: float,
     disconnected: bool,
     done: bool,
@@ -259,6 +334,8 @@ def compute_step_shaping(
     previous_income_rate: float = 0.0,
     previous_own_buildings: int = 0,
     previous_own_combat: int = 0,
+    previous_own_tier_total: int = 0,
+    previous_own_defences: int = 0,
     combat_distance: float | None = _UNSET_DISTANCE,
     previous_combat_distance: float | None = _UNSET_DISTANCE,
 ) -> StepShaping:
@@ -344,6 +421,65 @@ def compute_step_shaping(
         if not unit.get("is_building") and not unit.get("is_builder")
     )
     new_combat = max(0, int(own_combat) - int(previous_own_combat))
+    # Tier upgrades actually achieved, and defensive structures actually finished.
+    #
+    # Both are measured from the *observation stream*, never from an accepted
+    # receipt, for the same reason ``bonus_build`` counts new buildings: repeating an
+    # order is accepted every single time (measured: ``build_progress`` pinned at
+    # 0.0 while every receipt said ``accepted: true``), so paying per receipt is a
+    # farmable bug rather than a signal.
+    #
+    # ``tech_level`` is the engine's own tier, reported per entity by the bridge.
+    # Summing it over our **buildings** and taking the positive difference is
+    # exactly "some building gained a tier", which is what an upgrade *is*.
+    # Summing rather than counting buildings above T1 matters because a destroyed
+    # T2 building must not look like an upgrade elsewhere.
+    #
+    # Two filters are load-bearing, and both were measured rather than reasoned:
+    #
+    # * **buildings only.** Every *unit* carries ``tech_level`` 1, so a per-entity
+    #   sum cannot tell "produced a scout" from "upgraded an extractor". With the
+    #   unfiltered sum this term fired on **609 of 609 decisions** of a real
+    #   difficulty-1 episode while **no building ever left T1** -- the policy was
+    #   paid an upgrade bonus for every unit it made, on top of ``bonus_produce``,
+    #   and duly spent 15 straight updates massing scouts with no economy at all
+    #   (``.runtime/tier_reward_audit.json``, ``.runtime/tier_reward_verify.json``);
+    # * **tiers above the starting T1.** Otherwise the command centre pays the bonus
+    #   once for existing at episode start.
+    #
+    # This lives here rather than being imported from ``rwpp.env`` to keep
+    # ``reward_shaping`` free of an env import (``env`` imports this module), so the
+    # two implementations are kept identical by
+    # ``tests/test_gameplay_gaps.py::test_tier_total_counts_buildings_and_matches_reward_shaping``
+    # rather than by hope.
+    own_tier_total = _building_tier_total(state)
+    tier_gain = max(0, own_tier_total - int(previous_own_tier_total))
+    own_defences = sum(
+        1
+        for unit in state.get("own_entities", []) or []
+        if isinstance(unit, dict)
+        and unit.get("is_building")
+        # ``is_defence`` only, deliberately -- **not** ``or is_turret``.
+        #
+        # Measured on ``[p2]Lake (2p)`` (``.runtime/q2_turret.json``): a finished
+        # stock gun turret reports ``unit_type = c_turret_t1`` with
+        # ``is_turret: FALSE`` but ``is_defence: true`` and ``can_attack: true``.
+        # The bridge computes ``is_turret`` as ``unit instanceof Turret``, and the
+        # stock turret is an ``.ini``-defined CustomUnit (``turret_t1.ini`` declares
+        # ``name: c_turret_t1`` / ``overrideAndReplace: turret``), so the instanceof
+        # test misses it. ``is_defence`` is a derived capability and is correct.
+        #
+        # The main building and production facilities are excluded because
+        # ``is_defence`` means "can shoot", not "is a turret": a ``commandCenter``
+        # reports ``is_defence: true`` with ``attack_range: 280``
+        # (``.runtime/q7d_sea_produce.json``). Counting it would pay this bonus once
+        # at episode start for a building the agent never chose to build, and would
+        # hide the first real turret behind a counter that already read 1.
+        and unit.get("is_defence")
+        and not unit.get("is_factory")
+        and not unit.get("is_factory_building")
+    )
+    new_defences = max(0, own_defences - int(previous_own_defences))
     # Losing a building is a strategic loss, not a unit loss: the player forfeits
     # production / income capacity, which the hp-based ``losses`` term cannot
     # express (a command center's hp is huge, but its *value* is the capability).
@@ -389,12 +525,35 @@ def compute_step_shaping(
         )
     else:
         engagement_value = float(game.engagement_coef) * (previous_distance - distance)
+    # ``kills`` / ``losses`` are weighted by **what** was destroyed, not by how
+    # many things were.
+    #
+    # A flat count made every trade identical: killing the enemy's artillery --
+    # 290 px range against a tank's 130, i.e. the unit that wins exchanges without
+    # being hit -- scored exactly the same as killing a builder. Measured on
+    # ``[p2]Lake (2p)`` the artillery carries **140 hp** against a builder's 170,
+    # so the old ``max_hp``-priced ``potential`` made it the *cheaper* of the two to
+    # leave alive. Together with the fact that artillery never entered the policy's
+    # 8 enemy observation slots (0 of 500 unit-frames visible in
+    # ``runs/platform/real-rwpp-20261116-133006-d97c5a``), the agent had both no
+    # sight of its highest-output threat and no gradient toward it.
+    #
+    # ``threat_value`` prices a unit by hull *and* by what it can do, normalised so
+    # one baseline combat unit is worth 1.0. The count difference is still the
+    # trigger -- only the units that actually disappeared are priced -- so this
+    # cannot be farmed by creating units.
+    kill_weight = _weighted_attrition(
+        previous_enemy_units, state.get("visible_enemy_entities") or []
+    )
+    loss_weight = _weighted_attrition(
+        previous_own_units, state.get("own_entities") or []
+    )
     components: dict[str, float] = {
         "potential": float(micro.potential_coef) * (potential - previous_potential),
         "engagement": engagement_value,
         "strategy": strategy_component,
-        "kills": float(game.kill_bonus) * max(0, previous_enemy_alive - enemy_alive),
-        "losses": -float(game.loss_penalty) * max(0, previous_own_alive - own_alive),
+        "kills": float(game.kill_bonus) * kill_weight,
+        "losses": -float(game.loss_penalty) * loss_weight,
         "income": float(micro.extractor_reward) * income_delta / 10.0,
         # A fixed +5.0 dwarfed the +/-1.0 terminal reward, so once building
         # actually worked the cheapest build would dominate the return and the
@@ -420,6 +579,69 @@ def compute_step_shaping(
         # prefix bit-identical (the reward assertions depend on it).
         "bonus_produce": float(game.produce_bonus) * float(new_combat),
         "building_lost": -float(game.building_loss_penalty) * float(lost_buildings),
+        # Appended after every historical key, for the reason given above.
+        "bonus_upgrade": float(game.upgrade_bonus) * float(tier_gain),
+        "bonus_defence": float(game.defence_bonus) * float(new_defences),
+        # The economy's growth signal, one term per *permanent* rate increase.
+        #
+        # The historical ``income`` term above pays ``extractor_reward * delta / 10``,
+        # i.e. **0.04** for a whole new extractor (delta 8 credits/s / 10 * 0.5). Against
+        # a terminal that is worth +/-1.0 that is a 25:1 ratio, so an agent deciding
+        # whether to spend 700 credits on an extractor or on two scouts sees almost no
+        # reward difference at the moment of the choice: the extractor's value only
+        # arrives hundreds of decisions later, through a terminal it cannot yet
+        # correlate. Measured on the two-slot layout at difficulty 1: after 34 updates
+        # the policy had built **zero extractors** and an income of exactly the 18.0
+        # base rate, while massing scouts (``best extractors ever: 0``).
+        #
+        # ``income_growth`` pays the *fraction of the starting rate* that was added,
+        # so a first extractor (18 -> 26, +44%) is worth ``economy_growth_bonus * 0.44``
+        # and a full six-extractor economy is worth a few of these in total. It is a
+        # rate *change*, not a rate, so it cannot be farmed by sitting still, and it is
+        # bounded well below a win, so it shapes the economy without replacing the
+        # objective.
+        #
+        # This is teaching, not scripting: it says "raising your income is good", and
+        # leaves *how* (extractors, upgrades, how many, where) entirely to the policy.
+        "income_growth": (
+            float(game.economy_growth_bonus)
+            * (income_delta / max(1.0, float(game.base_income_reference)))
+            if income_delta > 0.0
+            else 0.0
+        ),
+        # Potential-based shaping on the income *level*, which is what makes saving
+        # for an expensive building rational.
+        #
+        # Measured crowding-out (``.runtime/affordability_trap.py``): the funds the
+        # policy holds sit at **100-650** for a whole episode, while an extractor
+        # costs **700**. So `build_extractor` is honestly closed by the mask (the
+        # engine would refuse it) and the policy simply never accumulates. Meanwhile a
+        # 250-credit tank pays `bonus_produce` 0.10 immediately and is always
+        # affordable.
+        #
+        # The economics are not close: an extractor is worth **+8 credits/s for the
+        # remaining ~251 s = ~2000 credits**, about eight tanks, repeating. The reward
+        # paid 0.22 for it against 0.10 per tank -- a signal off by an order of
+        # magnitude, which is exactly why the policy never saved.
+        #
+        # Raising ``economy_growth_bonus`` would be the wrong fix: it is a one-off
+        # payment for an event, and making it big enough to beat tanks would teach
+        # "build one extractor then stop". What the policy actually needs is a reason
+        # to *hold a productive state*, so this is potential-based:
+        #
+        #     r' = r + gamma * Phi(s') - Phi(s),   Phi(s) = w * income(s) / scale
+        #
+        # Ng, Harada & Russell (1999) prove this leaves the optimal policy unchanged,
+        # so it cannot teach a wrong lesson -- it only makes the correct one visible:
+        # income is an asset, letting it fall costs reward, and the payment scales with
+        # the rate rather than with the single act of building. A sixth extractor is
+        # worth six times the potential of the first, which is what makes continued
+        # expansion attractive rather than a one-off.
+        "income_potential": (
+            float(game.economy_potential_coef)
+            * (income_rate - float(previous_income_rate))
+            / max(1.0, float(game.base_income_reference))
+        ),
     }
 
     terminated = False

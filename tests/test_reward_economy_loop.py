@@ -201,7 +201,23 @@ def test_historical_components_keep_their_exact_order_as_a_prefix() -> None:
     keys = list(shaping.components)
     assert keys[: len(HISTORICAL_KEYS)] == HISTORICAL_KEYS
     # And the new terms really are appended, not interleaved.
-    assert set(keys[len(HISTORICAL_KEYS):]) == {"bonus_produce", "building_lost"}
+    #
+    # ``bonus_upgrade`` / ``bonus_defence`` were appended after ``building_lost``
+    # for the "never upgrades / never builds turrets" repair, and ``income_growth``
+    # was appended after those so the economy's rate increase is paid at the moment
+    # it happens rather than hundreds of decisions later. The *order* rule is what
+    # this test protects: appending preserves every pre-existing prefix bit for bit,
+    # because ``reward`` is ``sum(components.values())`` and float addition is order
+    # sensitive. Inserting a term before an existing key would silently change the
+    # reward of every historical step.
+    assert set(keys[len(HISTORICAL_KEYS):]) == {
+        "bonus_produce",
+        "building_lost",
+        "bonus_upgrade",
+        "bonus_defence",
+        "income_growth",
+        "income_potential",
+    }
 
 
 def test_reward_still_equals_the_component_sum() -> None:
@@ -221,3 +237,106 @@ def test_neutral_step_pays_nothing_from_the_new_terms() -> None:
     )
     assert shaping.components["bonus_produce"] == 0.0
     assert shaping.components["building_lost"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# 4. The objective's argmax must be "win", not "produce forever"
+# ---------------------------------------------------------------------------
+def test_the_production_flow_cannot_outbid_a_won_match() -> None:
+    """This is the invariant the reward was rebalanced for.
+
+    "Produce a unit" is an unbounded FLOW: every unit pays ``produce_bonus`` for
+    as long as credits arrive. "Win" is a fixed STOCK paid once. If the total
+    flow an episode can fund exceeds the terminal reward, then *not winning*
+    is the optimal policy -- which is exactly what was measured before this
+    invariant was enforced (``bonus_produce`` +288.70 vs ``terminal`` +4.51 over
+    231 updates, and 0 wins in 96 evaluation episodes at two difficulty levels).
+
+    Recomputing the flow here rather than pinning a literal keeps this test
+    honest when the episode length or the income constants change: it is the
+    *relationship* that must hold, not any particular number.
+    """
+
+    game = RwppGameConfig(map_width_px=2600.0, map_height_px=2600.0)
+    micro = game.micro_config()
+
+    # Credits the episode can earn, using the documented ramp 18 -> 58 cr/s.
+    seconds = game.resolved_episode_ticks() / 60.0
+    mean_income = (game.base_income_reference + 58.0) / 2.0
+    credits = mean_income * seconds
+    # The cheapest combat unit is what a flow-maximising policy would build.
+    units = credits / 350.0  # c_tank price, assets/units/tanks/tank.ini
+    flow_cap = game.produce_bonus * units
+
+    assert flow_cap < micro.win_reward, (
+        f"the production flow ({flow_cap:.2f}) must stay below the terminal "
+        f"reward ({micro.win_reward:.2f}), or 'never win' is optimal"
+    )
+
+
+def test_a_pure_stall_loses_to_winning() -> None:
+    """Producing maximally and letting the clock run out must be unprofitable."""
+
+    game = RwppGameConfig(map_width_px=2600.0, map_height_px=2600.0)
+    micro = game.micro_config()
+    seconds = game.resolved_episode_ticks() / 60.0
+    mean_income = (game.base_income_reference + 58.0) / 2.0
+    units = (mean_income * seconds) / 350.0
+    stall = game.produce_bonus * units - game.timeout_penalty
+
+    assert stall < 0.0, (
+        f"stalling pays {stall:+.2f}; it must be negative so that finishing the "
+        f"match (win {micro.win_reward:+.2f}, timeout {-game.timeout_penalty:+.2f}) "
+        f"is strictly better"
+    )
+
+
+def test_killing_the_whole_enemy_army_pays_less_than_winning() -> None:
+    """Kill farming must not outbid closing the game out.
+
+    ``kills`` is scaled by ``threat_value``, so a naive per-kill weight can pay
+    more for clearing the map than the objective pays for the win -- a second,
+    independent way to never finish.
+    """
+
+    game = RwppGameConfig()
+    micro = game.micro_config()
+    max_kills = 40.0        # measured max enemy_alive on Lake at difficulty 1
+    mean_threat = 1.2       # 1.0 = plain unit; artillery/AA score above it
+    total = game.kill_bonus * max_kills * mean_threat
+    assert total < micro.win_reward, (
+        f"clearing {max_kills:.0f} units pays {total:+.2f}, which must stay below "
+        f"the win ({micro.win_reward:+.2f})"
+    )
+
+
+def test_a_favourable_trade_still_pays() -> None:
+    """The rebalance must not make combat worthless.
+
+    ``kills``/``losses`` are threat-weighted, so trading a tank for the enemy's
+    artillery is a net gain even with ``kill_bonus == loss_penalty``.
+    """
+
+    game = RwppGameConfig()
+    artillery_threat = 1.0 + 0.9 + 0.25 * 1.0   # reach 290/300, rate 1, no air
+    tank_threat = 1.0 + 130.0 / 300.0 + 0.25 * 1.0
+    trade = game.kill_bonus * artillery_threat - game.loss_penalty * tank_threat
+    assert trade > 0.0, f"tank-for-artillery paid {trade:+.4f}; must be positive"
+
+
+def test_the_terminal_reward_overrides_the_micro_default() -> None:
+    """The real-game config overrides +/-1.0; the library default is untouched."""
+
+    from ironzero.micro_config import DEFAULT_CONFIG as MICRO_DEFAULT
+
+    game = RwppGameConfig()
+    micro = game.micro_config()
+    assert micro.win_reward == pytest.approx(game.win_reward)
+    assert micro.loss_reward == pytest.approx(game.loss_reward)
+    # The micro-duel contract every shipped checkpoint uses must not move.
+    assert MICRO_DEFAULT.win_reward == 1.0
+    assert MICRO_DEFAULT.loss_reward == -1.0
+    # ``None`` keeps the micro default, which is what offline callers rely on.
+    inherited = RwppGameConfig(win_reward=None, loss_reward=None).micro_config()
+    assert inherited.win_reward == MICRO_DEFAULT.win_reward
+    assert inherited.loss_reward == MICRO_DEFAULT.loss_reward
