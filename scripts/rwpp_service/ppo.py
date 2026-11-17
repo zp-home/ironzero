@@ -447,48 +447,83 @@ def _robust_units(units_per_team) -> int | None:
 def resolve_bc_checkpoint(units_per_team) -> Path | None:
     """按坦克数查找可用的 BC 预热权重，找不到返回 ``None``。
 
-    先按当前坦克数精确匹配，再回退到 25v25（最大场景）的权重；
+    只做**精确匹配**，不再回退到 25v25。回退看起来"总能找到权重"，但那份权重是
+    在 25 辆坦克的布局上学的，给 2v2 地图用语义上是错的：迁移机制会把 768 维的
+    trunk 逐列重映射到 511 维（实测 coverage 99%，所以不会崩），但策略学到的是
+    "指挥 25 个单位"，不是"从 2 个单位起家搞经济"。用户看到"预热策略"会以为站在
+    BC 肩膀上，实际拿到的是一个布局和玩法都不匹配的起点。
+
+    找不到时返回 ``None``，由 :func:`resolve_init_state` 显式告诉用户"本次从零
+    开始"，而不是静默换一个不相干的权重。
+
     每个候选名都在 :data:`_BC_CHECKPOINT_PARENTS` 的每个父目录下查找。
     """
 
-    names: list[str] = []
     units = _robust_units(units_per_team)
-    if units is not None:
-        names.append(f"bc_ironzero{units}")
-    if "bc_ironzero25" not in names:
-        names.append("bc_ironzero25")
-    for name in names:
-        for parent in _BC_CHECKPOINT_PARENTS:
-            candidate = REPO_ROOT / parent / name / "checkpoint.pt"
-            if candidate.is_file():
-                return candidate
+    if units is None:
+        return None
+    name = f"bc_ironzero{units}"
+    for parent in _BC_CHECKPOINT_PARENTS:
+        candidate = REPO_ROOT / parent / name / "checkpoint.pt"
+        if candidate.is_file():
+            return candidate
     return None
 
 
-def resolve_init_checkpoint(payload: dict, units_per_team) -> str | None:
-    """收敛 ``init_checkpoint``：显式路径优先，否则按坦克数回退到 BC 预热权重。"""
+def resolve_init_state(payload: dict, units_per_team) -> dict:
+    """收敛 ``init_checkpoint``，并把「为什么没用上」也说出来。
+
+    返回 ``{"checkpoint": str|None, "mode": str, "error": str}``。
+    ``error`` 非空表示用户**显式**要求了某个 checkpoint 却无法使用（路径不存在、
+    或是容器路径 ``/app/...`` 在宿主机上根本没有这个目录）——这种情况必须报错，
+    因为静默退回 ``None`` 会让「加载已有权重继续训练」变成「从零重训」，界面上
+    却完全看不出来。warmstart 找不到 BC 权重属于可选增强，只写日志不报错。
+    """
 
     init_checkpoint = payload.get("init_checkpoint")
-    init_mode = payload.get("init_mode")
+    init_mode = str(payload.get("init_mode") or "")
+    error = ""
+    warmstart_warning = ""
+    explicit = bool(init_checkpoint)
+    if explicit:
+        # 平台后端把 checkpoint 列成容器路径（``/app/runs/...``）。宿主机上
+        # 没有 ``/app``，所以要按仓库根还原；正常路径由 ``routers/rwpp.py``
+        # 改写，这里兜底是为了别的调用方直接打宿主机服务时也能用。
+        init_checkpoint = _strip_container_prefix(init_checkpoint)
     if (init_mode == "warmstart" or not init_checkpoint) and init_mode != "scratch":
-        # 根据当前坦克数量优先寻找最匹配的预热权重
+        # 只按当前坦克数精确匹配预热权重。以前找不到会回退到 bc_ironzero25，
+        # 那份权重是在 25 辆坦克的布局上学的：迁移机制能把它逐列搬进 2v2 的网络
+        # （实测 coverage 99%，不会崩），但策略学到的是「指挥 25 个单位」，
+        # 与「从 2 个单位起家搞经济」完全不是一回事。给了比没有更误导。
         best_bc = resolve_bc_checkpoint(units_per_team)
         if best_bc is not None:
             init_checkpoint = str(best_bc)
         elif init_mode == "warmstart":
-            # 静默退回 None 正是旧 bug 的隐蔽之处（用户以为在 warmstart，实际从零）。
-            # 找不到就在服务端日志里显式抱怨一句，别再无声无息。
+            # 用户明确选了「预热策略」却拿不到匹配的权重：必须说出来，
+            # 否则界面上「预热」和「从零」长得一模一样。
             print(
-                f"[warmstart] 未找到 BC 预热权重 (units_per_team={units_per_team!r})，"
+                f"[warmstart] 未找到匹配的 BC 预热权重 (units_per_team={units_per_team!r})，"
                 f"已查找: "
                 + ", ".join(
-                    str(REPO_ROOT / parent / f"bc_ironzero{_robust_units(units_per_team) or 25}" / "checkpoint.pt")
+                    str(
+                        REPO_ROOT
+                        / parent
+                        / f"bc_ironzero{_robust_units(units_per_team) or '?'}"
+                        / "checkpoint.pt"
+                    )
                     for parent in _BC_CHECKPOINT_PARENTS
                 )
-                + " 及 bc_ironzero25 回退；本次将从头开始训练。",
+                + "；本次将从零开始训练（不再回退到其他坦克数的权重）。",
                 file=sys.stderr,
                 flush=True,
             )
+            warmstart_warning = (
+                f"没有 units_per_team={_robust_units(units_per_team)} 的 BC 预热权重，"
+                "本次从零开始训练"
+            )
+    if warmstart_warning:
+        # Surfaced through the job record so the dashboard can show the real start.
+        print(f"[warmstart] {warmstart_warning}", file=sys.stderr, flush=True)
     if init_checkpoint:
         candidate = Path(str(init_checkpoint))
         if not candidate.is_absolute():
@@ -496,5 +531,21 @@ def resolve_init_checkpoint(payload: dict, units_per_team) -> str | None:
         if candidate.is_file():
             init_checkpoint = str(candidate.resolve())
         else:
+            if explicit:
+                error = (
+                    f"init_checkpoint not found on the host: {payload.get('init_checkpoint')}"
+                    f" (resolved to {candidate})"
+                )
             init_checkpoint = None
-    return init_checkpoint
+    return {
+        "checkpoint": init_checkpoint,
+        "mode": init_mode,
+        "error": error,
+        "warning": warmstart_warning,
+    }
+
+
+def resolve_init_checkpoint(payload: dict, units_per_team) -> str | None:
+    """收敛 ``init_checkpoint``：显式路径优先，否则按坦克数回退到 BC 预热权重。"""
+
+    return resolve_init_state(payload, units_per_team)["checkpoint"]
