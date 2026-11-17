@@ -37,6 +37,7 @@
 
     <nav class="site-nav" id="site-nav" aria-label="主导航">
       <a href="#mission">任务</a>
+      <a href="#sandbox">沙盘</a>
       <a href="#loop">训练闭环</a>
       <a href="#architecture">架构</a>
       <a href="#roadmap">路线图</a>
@@ -149,9 +150,30 @@
       </div>
     </section>
 
+    <section class="section section-shell sandbox-section" id="sandbox">
+      <div class="section-heading reveal">
+        <p class="section-index">02 / LIVE SANDBOX</p>
+        <h2>真实对局，<br><span>逐帧落进沙盘。</span></h2>
+        <p>下面不是示意图，而是一场真实 1.15 无头对局的回放：Lake 地图 tick 56821–60001，画面内 53–54 个单位，双方兵力 19 : 34 打到 22 : 32，本段落累计 2941 点伤害。</p>
+      </div>
+      <figure class="sandbox-figure reveal">
+        <img src="assets/sandbox-preview.gif" alt="真实对局沙盘回放：Lake 地图岸边交战，蓝方基地与坦克、水中敌方舰队，HUD 显示 tick 与双方血量" width="760" height="470" decoding="async" loading="lazy">
+        <figcaption>
+          <span>REPLAY / REAL-GAME FRAMES</span>
+          <b>真实 1.15 对局的沙盘回放</b>
+        </figcaption>
+      </figure>
+      <div class="sandbox-notes reveal">
+        <article><span>DATA</span><strong>逐帧回传</strong><p>桥接层按仿真步长批量推送状态快照（实测间隔 5–50 tick，多为 10），经 loopback TCP 落成 <code>frames.jsonl</code>，沙盘按绝对游标增量取帧。</p></article>
+        <article><span>RENDER</span><strong>真实资源</strong><p>地形取自游戏原版 tileset，单位贴图按 <code>unitSprites</code> 清单解析，与网页沙盘同一套素材。</p></article>
+        <article><span>CAMERA</span><strong>交战锚定</strong><p>镜头窗口按片段内的实际伤害重心定位，而不是简单包围盒，避免画面落在空白湖面上。</p></article>
+      </div>
+      <p class="image-attribution reveal">该片段由 <code>tools/render_sandbox.py</code> 从记录数据渲染，非浏览器截图；游戏素材版权归 Corroding Games 所有，仅用于非官方研究项目。</p>
+    </section>
+
     <section class="section loop-section" id="loop">
       <div class="section-shell">
-        <div class="section-heading compact reveal"><p class="section-index">02 / TRAINING LOOP</p><h2>从战场到策略，<span>再回到战场。</span></h2></div>
+        <div class="section-heading compact reveal"><p class="section-index">03 / TRAINING LOOP</p><h2>从战场到策略，<span>再回到战场。</span></h2></div>
         <div class="loop-track reveal">
           <article class="loop-node"><span>01</span><h3>OBSERVE</h3><p>读取本队可见单位、资源、建筑和迷雾状态。</p></article><div class="loop-arrow">→</div>
           <article class="loop-node"><span>02</span><h3>ENCODE</h3><p>全局标量、实体集合与局部地图融合编码。</p></article><div class="loop-arrow">→</div>
@@ -164,7 +186,7 @@
     </section>
 
     <section class="section section-shell" id="architecture">
-      <div class="section-heading reveal"><p class="section-index">03 / ARCHITECTURE</p><h2>一个协议，<br><span>贯穿训练与推理。</span></h2></div>
+      <div class="section-heading reveal"><p class="section-index">04 / ARCHITECTURE</p><h2>一个协议，<br><span>贯穿训练与推理。</span></h2></div>
       <div class="architecture-grid">
         <div class="arch-stack reveal" aria-label="五层系统架构">
           <article class="arch-layer active"><span>05</span><div><h3>Train / Evaluate</h3><p>PPO · GAE · Checkpoint · Metrics</p></div><b>PYTHON</b></article>
@@ -200,7 +222,7 @@
 
     <section class="section roadmap-section" id="roadmap">
       <div class="section-shell">
-        <div class="section-heading compact reveal"><p class="section-index">04 / ROADMAP</p><h2>先证明环境，<span>再追求胜率。</span></h2></div>
+        <div class="section-heading compact reveal"><p class="section-index">05 / ROADMAP</p><h2>先证明环境，<span>再追求胜率。</span></h2></div>
         <div class="roadmap reveal">
           <article class="road-step done"><span class="road-node"></span><div class="road-meta">M0 / COMPLETE</div><h3>协议与仓库契约</h3><p>IronZero v1 schema、动作模型、顺序校验和测试基线。</p></article>
           <article class="road-step done"><span class="road-node"></span><div class="road-meta">M1 / COMPLETE</div><h3>RWPP 运行验证</h3><p>1.15 客户端、Java 25、RWML 与 RWPP 无头服务端完成 180 tick 实测。</p></article>
@@ -212,7 +234,7 @@
     </section>
 
     <section class="section section-shell open-source" id="open-source">
-      <div class="section-heading reveal"><p class="section-index">05 / OPEN SOURCE</p><h2>代码开放，<span>边界清晰。</span></h2><p>原创代码采用 Apache-2.0，文档采用 CC BY 4.0；第三方依赖和未来 RWPP 集成保留各自许可证。</p></div>
+      <div class="section-heading reveal"><p class="section-index">06 / OPEN SOURCE</p><h2>代码开放，<span>边界清晰。</span></h2><p>原创代码采用 Apache-2.0，文档采用 CC BY 4.0；第三方依赖和未来 RWPP 集成保留各自许可证。</p></div>
       <div class="license-grid">
         <a class="license-card reveal" href="https://github.com/zp-home/ironzero/blob/main/LICENSE" target="_blank" rel="noreferrer"><span class="license-type">CODE</span><strong>Apache<span>-2.0</span></strong><p>协议、脚本、测试、工具和 schema。</p><b>查看全文 ↗</b></a>
         <a class="license-card reveal" href="https://github.com/zp-home/ironzero/blob/main/docs/LICENSE" target="_blank" rel="noreferrer"><span class="license-type">DOCS</span><strong>CC BY<span> 4.0</span></strong><p>架构、规格、检查表和路线文档。</p><b>查看全文 ↗</b></a>

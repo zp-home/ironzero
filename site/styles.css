@@ -187,6 +187,20 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .mechanic-rail h3 { margin: 8px 0; font: 700 21px var(--display); }
 .mechanic-rail p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
 
+/* 02 / LIVE SANDBOX ------------------------------------------------ */
+.sandbox-section { border-bottom: 1px solid var(--line); }
+.sandbox-figure { position: relative; margin: 0; border: 1px solid var(--line-strong); background: var(--ink-2); overflow: hidden; }
+.sandbox-figure img { display: block; width: 100%; height: auto; filter: saturate(.98) contrast(1.02); }
+.sandbox-figure figcaption { display: flex; justify-content: space-between; gap: 20px; align-items: baseline; padding: 14px 18px; border-top: 1px solid var(--line); background: var(--panel); }
+.sandbox-figure figcaption span { color: var(--acid); font: 8px var(--mono); letter-spacing: .11em; }
+.sandbox-figure figcaption b { color: var(--text); font: 700 16px var(--display); letter-spacing: .01em; }
+.sandbox-notes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin-top: 22px; background: var(--line); border: 1px solid var(--line); }
+.sandbox-notes article { padding: 20px; background: var(--ink-2); }
+.sandbox-notes span { color: var(--acid); font: 8px var(--mono); letter-spacing: .11em; }
+.sandbox-notes strong { display: block; margin: 10px 0 8px; font: 700 19px var(--display); }
+.sandbox-notes p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.75; }
+.sandbox-notes code { color: var(--acid-soft); font: 10px var(--mono); }
+
 .section { padding: 155px 0; }
 .section-heading { max-width: 960px; margin-bottom: 62px; }
 .section-heading.compact { margin-bottom: 45px; }
@@ -321,6 +335,8 @@ button, a { -webkit-tap-highlight-color: transparent; }
   .shot-primary { grid-row: auto; min-height: 280px; }
   .shot-card { min-height: 235px; }
   .mechanic-rail { grid-template-columns: repeat(2, 1fr); }
+  .sandbox-notes { grid-template-columns: 1fr; }
+  .sandbox-figure figcaption { flex-direction: column; align-items: flex-start; gap: 6px; }
   .feature-card { min-height: 235px; }
   .card-icon { margin-top: 32px; }
   .loop-track { grid-template-columns: 1fr; gap: 0; }
