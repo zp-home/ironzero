@@ -112,6 +112,8 @@ def _bridge_command(launcher: Path, port: int, game: RwppGameConfig) -> list[str
         command.extend(["--win-mode", str(game.win_mode)])
     if game.unlock_ai:
         command.append("--unlock-ai")
+    if getattr(game, "debug_build", False):
+        command.append("--debug-build")
     if getattr(game, "ai_pilot", False):
         command.append("--ai-pilot")
     if getattr(game, "record_ai_orders", False):

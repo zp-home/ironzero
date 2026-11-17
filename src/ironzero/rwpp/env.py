@@ -29,6 +29,7 @@ from ..observation.menus import (
     build_menu,
     is_defence_type,
     menu_index,
+    produce_options,
     upgradable_buildings,
 )
 from .config import RwppGameConfig
@@ -1709,14 +1710,73 @@ class RwppDuelEnv:
             return []
         # Every structure currently standing must be finished, or the builder is
         # busy somewhere and a new order would cancel that work.
-        if any(not _is_operational(unit) for unit in own if unit.get("is_building")):
+        #
+        # **Buildings only, and only ones the builder is actively working on.**
+        # The original form of this check was
+        # ``any(not _is_operational(unit) for unit in own if unit.get("is_building"))``
+        # which is subtly wider than "the builder is busy": on a real economy map
+        # the enemy destroys a factory every few hundred ticks, the factory stage
+        # immediately re-orders it, and the reconstruction keeps *some* building
+        # permanently below 1.0 progress. Expansion then never runs -- measured on
+        # Lake at difficulty 1 (``.runtime/army_growth.json``): ``income`` sat at
+        # exactly **26.0** (one extractor) for 14,000 ticks while ``factories``
+        # oscillated 4 -> 3 -> 0 -> 3, i.e. the army was losing its production
+        # buildings faster than the builder could replace them and the economy could
+        # never grow to pay for replacements.
+        #
+        # A structure at progress < 1.0 that the builder is *not* currently assigned
+        # to is not a reason to refuse an expansion order; the builder would simply
+        # start the extractor. What must be avoided is stealing the builder from an
+        # in-flight build, and that is what the ``_builder_busy_hold`` mechanism
+        # already handles in the factory stage.
+        if any(
+            not _is_operational(unit)
+            for unit in own
+            if unit.get("is_building") and unit.get("build_progress") not in (None, 0.0)
+        ):
             return []
         if not any(
             unit.get("is_builder") and float(unit.get("hp") or 0.0) > 0.0 for unit in own
         ):
             return []
         funds = float((state.get("global_state") or {}).get("funds") or 0.0)
-        if funds < float(self.macro.credit_reserve):
+        # An extractor is a *production investment*, so it competes with the army
+        # for the same credits -- but the reserve gate must not be the price of a
+        # structure, or nothing ever gets built.
+        #
+        # The original gate was ``funds < macro.credit_reserve`` (900 by default,
+        # derived from the cheapest buildable structure). Measured funds on Lake at
+        # difficulty 1 wobble between 216 and 888 while the factory stage keeps
+        # spending every credit above the reserve, so the gate was closed on most
+        # decisions and expansion -- the only stage that raises the income ceiling --
+        # never fired.
+        #
+        # The extractor's own price is the honest bar: if the bank can pay for the
+        # extractor, it can be ordered. ``credit_reserve`` still protects the
+        # *builder's next structure* via the factory stage, which is where that
+        # concern belongs.
+        #
+        # This build does not expose a per-menu price array (``reported_price``
+        # arrived in a later commit), so the engine's own reported price is read
+        # from the builder's menu when available and otherwise the configured
+        # ``extractor_cost`` is used, which is the same number the action mask
+        # gates on.
+        extractor_price = float(getattr(self.game, "extractor_cost", 700.0) or 700.0)
+        for entry in state.get("builders") or []:
+            if not isinstance(entry, dict):
+                continue
+            names = entry.get("can_build")
+            prices = entry.get("can_build_price")
+            if not isinstance(names, list) or not isinstance(prices, list):
+                continue
+            for name, price in zip(names, prices):
+                if str(name).lower() in {"extractor", "extractort1"}:
+                    try:
+                        extractor_price = float(price)
+                    except (TypeError, ValueError):
+                        pass
+                    break
+        if funds < extractor_price:
             return []
         occupied = sum(
             1 for slot in slots if isinstance(slot, dict) and slot.get("occupied")
@@ -1753,6 +1813,10 @@ class RwppDuelEnv:
             # both start from here.
             self._expansion_distance = None
             self._expansion_ordered_at = None
+            # The leg's *starting* distance is what the stall budget must be sized
+            # against; see the ``_expansion_walk_budget`` call below for the
+            # measurement that makes this load-bearing.
+            self._expansion_leg_distance = None
         action = np.array(
             [
                 ACTION_KINDS.index("build_extractor"),
@@ -1837,7 +1901,25 @@ class RwppDuelEnv:
                 reported = 0.0
             if reported > 0.0:
                 speed = reported
-        closing_threshold = max(1.0, speed * 10.0 * 0.5)
+        # ``closing_threshold`` is the smallest distance change that counts as
+        # "still walking". It used to be ``speed * 10 * 0.5`` = 4 px for the
+        # builder's 0.8 px/tick over the bridge's 10-tick decision interval, i.e.
+        # half a step. A builder that walks on a diagonal, is nudged by the engine's
+        # own pathing, or pauses for one decision therefore reads as "not closing",
+        # and the stage treats a working order as a stalled one.
+        #
+        # Measured (``.runtime/expansion_timeline.json`` on Lake at difficulty 1):
+        # the builder closed 894 -> 692 px on one leg and the stage still switched
+        # pools, ending on one 1663 px away. In 1400 decisions it never arrived
+        # anywhere and income never left 26.
+        #
+        # One full step is the honest bar for "made progress this decision".
+        closing_threshold = max(1.0, speed * 10.0)
+        # Record the distance this leg STARTED from. The stall budget is sized from
+        # it, and it must not shrink as the builder approaches -- see the
+        # ``_expansion_walk_budget`` call below.
+        if distance_now is not None and getattr(self, "_expansion_leg_distance", None) is None:
+            self._expansion_leg_distance = float(distance_now)
         distance_then = getattr(self, "_expansion_distance", None)
         if (
             distance_now is not None
@@ -1848,7 +1930,9 @@ class RwppDuelEnv:
             # of the way without touching the stall counter.
             self._expansion_distance = distance_now
             self._expansion_stalled = 0
-            self._expansion_ordered_at = int(self.episode_steps)
+            # ``_expansion_ordered_at`` is deliberately NOT refreshed here: it
+            # anchors "how long has this leg been running", and rewriting it on
+            # every closing decision makes the stall budget unreachable.
             self._expansion_occupied = int(occupied)
             return []
         self._expansion_distance = distance_now
@@ -1870,7 +1954,24 @@ class RwppDuelEnv:
             # ``distance / speed`` plus the structure's own build time. A constant
             # window either cuts off a legal walk (what happened) or delays the
             # switch past the point where the pool is provably dead.
-            budget = self._expansion_walk_budget(distance_now)
+            #
+            # **Measured against the distance at dispatch, not the current one.**
+            # Using ``distance_now`` made the budget shrink as the builder
+            # approached, so the closer it got the sooner it was declared stalled:
+            # measured on Lake at difficulty 1 (``.runtime/expansion_timeline.json``),
+            # the builder closed from 894 px to 692 px on one leg -- real progress --
+            # and the budget computed from the *remaining* 692 px then expired, so
+            # the stage switched to a pool 1183 px away, and from there to one
+            # 1663 px away. In 1400 decisions it never arrived anywhere: nine free
+            # pools, 23 orders, one extractor, income pinned at 26.0.
+            #
+            # The leg's own length is the honest unit of patience: a leg that starts
+            # 900 px away is allowed the time 900 px needs, regardless of how far
+            # along it is when the check runs.
+            leg_distance = getattr(self, "_expansion_leg_distance", None)
+            budget = self._expansion_walk_budget(
+                leg_distance if leg_distance is not None else distance_now
+            )
             if self.episode_steps - int(ordered_at) < budget:
                 return []
             # The budget elapsed without the builder closing the distance. The pool
@@ -1887,6 +1988,10 @@ class RwppDuelEnv:
             ) + 1
             self._expansion_target = None
             self._expansion_distance = None
+            # This pool is abandoned, so the next leg gets its own starting
+            # distance. Leaving the old value here would size the *next* leg's
+            # patience from the *previous* leg's length.
+            self._expansion_leg_distance = None
         self._expansion_ordered_at = int(self.episode_steps)
         self._expansion_occupied = int(occupied_now)
         return self._send_curriculum_order(
@@ -2048,10 +2153,50 @@ class RwppDuelEnv:
         )
         if queued >= int(self.macro.production_queue_depth):
             return []
+        # Pick the target index from the factory's OWN menu, not from a constant.
+        #
+        # This used to pin the target head at ``target_slots - 1``, and
+        # ``decode_action`` resolves that index modulo ``produce_options(state)`` --
+        # the (factory, unit) cross product over **every** factory, including the
+        # command centre. Measured on Lake at difficulty 1
+        # (``.runtime/queue_items.json``): factory 29 was ordered to build
+        # ``scout``, a unit that appears in the *command centre's* menu and not in
+        # the land factory's, so the engine queued it and never started it --
+        # ``queued[].progress`` stayed at exactly **-1.0** ("not started") from tick
+        # 1001 to 2751 while ``can_produce`` listed only
+        # ``[builder, hoverTank, tank]``.
+        #
+        # A queue that never drains is worse than an empty one: it holds the
+        # ``production_queue_depth`` slots, so this stage reads ``queue_full`` on
+        # every subsequent decision and never orders the units that *would* work.
+        # The measured consequence was ``factories=4``, ``queue=3``, ``funds=1624``
+        # and ``army=0`` for an entire episode.
+        #
+        # ``produce_options`` already filters ``builder`` out, so any entry it
+        # returns is a combat unit this factory can actually make. Selecting the
+        # index of the *first option belonging to a combat factory* keeps the
+        # stage's "one order per decision" behaviour while guaranteeing the order is
+        # executable.
+        options = produce_options(state)
+        combat_ids = {
+            int(entry.get("entity_id", -1))
+            for entry in combat_factories
+            if entry.get("entity_id") is not None
+        }
+        target_index = None
+        for index, (factory_id, _unit) in enumerate(options):
+            if factory_id in combat_ids:
+                target_index = index
+                break
+        if target_index is None:
+            # No producible combat unit on any factory this decision. Returning
+            # here is correct: ordering anything else would queue a unit the
+            # factory cannot build and wedge the queue (see above).
+            return []
         action = np.array(
             [ACTION_KINDS.index("produce_unit"), int(self.micro.groups),
              int(self.micro.position_grid) // 2, int(self.micro.position_grid) // 2,
-             int(self.micro.target_slots) - 1],
+             int(target_index)],
             dtype=np.int64,
         )
         orders = self._send_curriculum_order(action, {"kind": "produce_unit"})
@@ -2712,7 +2857,27 @@ class RwppDuelEnv:
         proved the turret order *was* being sent -- the last cancelling order won.
         """
 
-        shared = {"build_extractor", "build_structure", "produce_unit"}
+        # ``produce_unit`` is **not** shared with the builder goals.
+        #
+        # It used to be, and that made production and the march mutually exclusive
+        # for a reason that does not hold: ``produce_unit`` addresses a *factory
+        # queue*, not the single builder. A factory can be filling its queue while
+        # the builder constructs an extractor and the army marches -- three
+        # different actors.
+        #
+        # The measured cost of the old grouping (``.runtime/production_plateau.json``
+        # on Lake at difficulty 1): the production stage reported ``ORDERED`` on
+        # **1157 of 1400** decisions, and because every one of those blocked later
+        # stages, the attack stage never ran. The army therefore never grew past the
+        # ``attack_at_army`` gate it was waiting on, and the episode timed out with
+        # the army idle at home -- the exact passivity the attack stage exists to
+        # prevent.
+        #
+        # The two *build* goals stay together: they do compete for the one builder,
+        # and two construction orders in one dispatch cancel each other (measured:
+        # ``build_progress`` pinned at 0.0 forever while every receipt said
+        # ``accepted: true``).
+        shared = {"build_extractor", "build_structure"}
         return any(
             str(entry.get("kind") or "") in shared
             for entry in order

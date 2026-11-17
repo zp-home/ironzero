@@ -178,6 +178,21 @@ class RwppGameConfig:
     # line only when set, so legacy invocations stay byte-identical.
     win_mode: str = ""  # e.g. "annihilation" -> --win-mode annihilation
     unlock_ai: bool = False  # -> --unlock-ai
+    #: ``--debug-build``: have the bridge print every gate that refuses a build
+    #: order (``canQueueAction=false``, ``isValidNewWaypoint=false``, placement
+    #: illegal at (x,y), "no builder passed every gate").
+    #:
+    #: Exposed because the alternative is guessing. The measured symptom this was
+    #: added for: on Lake at difficulty 1 the expansion stage dispatches
+    #: ``build_extractor`` and the builder's distance to that pool *grows* (894 ->
+    #: 1111 px) before the stage gives up and picks a farther pool, so the map keeps
+    #: one extractor and income stays at 26 for the whole episode. Every order comes
+    #: back ``accepted: true``, so the refusal -- if there is one -- happens inside
+    #: the engine, and only the bridge can say which gate it was.
+    #:
+    #: Off by default: it prints a line per refused order, which is exactly what a
+    #: training run does not need.
+    debug_build: bool = False  # -> --debug-build
     # Behaviour-cloning teacher mode. ``ai_pilot`` hands the *controlled* team to
     # the game's built-in AI (see ``IronZeroBridge.installAiPilot``); the AI's own
     # orders can then be read from ``record_ai_orders`` and used as expert labels.

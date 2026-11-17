@@ -97,6 +97,39 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--enemy-ai-difficulty", type=int, default=None, choices=[-2, -1, 0, 1, 2, 3],
                         help="pin only the enemy teams' difficulty, leaving the player/teacher side "
                              "alone; use it to give the BC teacher real pressure to react to")
+    # Economy ceilings. These were unreachable from the command line, which meant
+    # the web form could not express "this opponent is bigger than the one the
+    # defaults were measured against" -- and that is exactly the situation at
+    # difficulty 1.
+    #
+    # The defaults (army_cap 16, 6 extractors, 2 factories) were derived against an
+    # AI fielding 13-15 units. Measured at difficulty 1 (``.runtime/probe_enemy_composition.py``
+    # on ``[p2]Lake (2p)``): the enemy holds **30-38** units and six structures
+    # including an air factory, while our cap of 16 means the army can never be
+    # larger than half the opposing force **by construction** -- no policy can win
+    # that. The budget is not the limit: income 52/s over 328 s is ~17,000 credits
+    # against a 350-credit tank, i.e. ~48 units of theoretical capacity being capped
+    # at 16.
+    parser.add_argument("--army-cap", type=int, default=RwppGameConfig().economy_army_cap,
+                        help="hard ceiling on living combat units; the factory stops accepting "
+                             "work here. Must exceed the opponent's army or the match cannot be "
+                             "won by production")
+    parser.add_argument("--army-target", type=int, default=RwppGameConfig().economy_army_target,
+                        help="army size at which the curriculum stops adding units so the economy "
+                             "can keep compounding; must be <= --army-cap")
+    parser.add_argument("--max-extractors", type=int, default=RwppGameConfig().economy_max_extractors,
+                        help="extractor ceiling for the expansion stage. Lake has 9 pools; the "
+                             "default 6 leaves a third of the map's economy unreachable")
+    parser.add_argument("--max-factories", type=int, default=RwppGameConfig().economy_max_factories,
+                        help="factory ceiling; each one adds production throughput")
+    parser.add_argument("--production-queue-depth", type=int,
+                        default=RwppGameConfig().economy_production_queue_depth,
+                        help="units a factory may keep queued; the production stage tops the queue "
+                             "up to this many pending units")
+    parser.add_argument("--economy-reserve", type=float,
+                        default=RwppGameConfig().economy_credit_reserve,
+                        help="credits the production stage refuses to spend below, so the builder "
+                             "can always finish the next structure")
     parser.add_argument("--engagement", type=float, default=RwppGameConfig().engagement_coef,
                         help="dense reward for closing distance to the enemy army "
                              f"(default {RwppGameConfig().engagement_coef}: enough to break the "
@@ -145,6 +178,16 @@ def build_game(args: argparse.Namespace) -> RwppGameConfig:
             int(args.enemy_ai_difficulty) if args.enemy_ai_difficulty is not None else None
         ),
         engagement_coef=float(args.engagement),
+        # Economy ceilings, now reachable from the command line. Without these a
+        # web-launched run could not be sized for a harder opponent, and at
+        # difficulty 1 the default ``army_cap`` of 16 caps the army below half the
+        # enemy's 30-38 units -- an unwinnable configuration regardless of policy.
+        economy_army_cap=int(args.army_cap),
+        economy_army_target=int(args.army_target),
+        economy_max_extractors=int(args.max_extractors),
+        economy_max_factories=int(args.max_factories),
+        economy_production_queue_depth=int(args.production_queue_depth),
+        economy_credit_reserve=float(args.economy_reserve),
         frame_ms=max(0, int(args.frame_ms)),
         physics_ms=max(0, int(args.physics_ms)),
         vision_radius=float(args.vision_radius),

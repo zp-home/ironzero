@@ -79,8 +79,8 @@ DEFAULT_PRIORITY_TARGET = "nearest"
 MACRO_GOALS: tuple[str, ...] = (
     "upgrade",
     "extractor",
-    "factory",
     "expansion",
+    "factory",
     "production",
     "defence",
     "attack",

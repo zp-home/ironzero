@@ -345,16 +345,30 @@ class RuleStrategy:
         # which is a multi-hundred-tick investment that pays back too late here.
         if own and own_count < enemy_count:
             target = min(RULE_MAX_ARMY, max(army + 2, enemy_count + 2))
+            # ``attack`` stays in the list, with a gate the army can actually
+            # reach. Removing it was a deadlock, not a defence.
+            #
+            # The original rule dropped ``attack`` entirely while outnumbered, but
+            # the only way to stop being outnumbered is to destroy enemy units,
+            # and with ``attack`` gone the army never leaves home to do it.
+            # Measured on Lake at difficulty 1 with the seven-stage curriculum
+            # (``.runtime/enemy_composition_d1.json``): own army peaked at 16, the
+            # enemy held 30-38, the closest approach was 80 px only because the
+            # *enemy* walked in, and **every** episode timed out at 19674 ticks --
+            # 120 PPO updates produced zero wins because the win condition was
+            # structurally unreachable, not because the policy was weak.
+            #
+            # ``attack_at_army`` therefore drops to the current army size: the same
+            # "go now, you are as ready as you are going to get" semantics Rule 4
+            # already uses, kept above the floor that prevents feeding units in one
+            # at a time.
+            march_now = max(RULE_MIN_ATTACK_ARMY, army)
             return MacroPlan(
-                build_order=tuple(
-                    goal
-                    for goal in _order_with_first(
-                        "production", "defence", "upgrade", "extractor"
-                    )
-                    if goal != "attack"
+                build_order=_order_with_first(
+                    "production", "defence", "upgrade", "extractor"
                 ),
                 army_target=target,
-                attack_at_army=None,
+                attack_at_army=march_now,
             )
 
         # -- Rule 3: rich with an army already at target. Invest the bank. ---

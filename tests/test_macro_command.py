@@ -195,16 +195,43 @@ class RuleMacroPlanTests(unittest.TestCase):
         self.assertIn("defence", plan.build_order)
         self.assertGreaterEqual(plan.army_target or 0, 4)
 
-    def test_outnumbered_keeps_the_tier_ladder_but_stops_marching(self) -> None:
+    def test_outnumbered_keeps_both_the_tier_ladder_and_the_march(self) -> None:
+        """Being outnumbered must keep ``attack`` -- dropping it is a deadlock.
+
+        The original rule removed ``attack`` while outnumbered, on the theory that
+        survival comes first. It is a stable state that can never be escaped: the
+        only way to stop being outnumbered is to destroy enemy units, and with no
+        march the army never leaves home to do it.
+
+        Measured on Lake at difficulty 1 with the seven-stage curriculum
+        (``.runtime/enemy_composition_d1.json``): own army peaked at 16 against an
+        enemy holding 30-38, every episode timed out at 19674 ticks, and 120 PPO
+        updates produced zero wins. The stage's own comments record the same shape
+        from an earlier run: an ``attack_at_army`` the economy could not fund left
+        the army passive at 720.9 px from the enemy base.
+
+        ``attack`` therefore stays in the order, and the march gate drops to the
+        army that actually exists (kept at or above the floor that prevents feeding
+        units in one at a time).
+        """
+
         directive = self.rule.propose(
             _summary(own=4, enemy=6, economy={"funds": 3000.0, "army": 4})
         )
         plan = directive.macro
         self.assertFalse(plan.is_empty)
         assert plan.build_order
-        self.assertNotIn("attack", plan.build_order)
+        self.assertIn("attack", plan.build_order)
         self.assertIn("upgrade", plan.build_order)
         self.assertGreaterEqual(plan.army_target or 0, 6)
+        # The march must be reachable: at or below the army the plan is asking for.
+        self.assertIsNotNone(plan.attack_at_army)
+        self.assertLessEqual(
+            int(plan.attack_at_army or 0),
+            int(plan.army_target or 0),
+            "a march gate above the army target is unreachable, which is the "
+            "passive-army failure this rule exists to avoid",
+        )
 
     def test_large_idle_bank_raises_the_caps_without_reordering_the_build(self) -> None:
         """A rich bank buys *more* extractors, not the right to build them *first*.
