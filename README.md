@@ -173,13 +173,27 @@ start http://127.0.0.1:8000
 
 ![实机训练](docs/assets/platform_real_train.png)
 
-实机地图渲染需要先把本机 1.15 客户端资源复制到本地缓存（`.game_cache/`，已 gitignore，不提交不分发）：
+> 实机地图渲染需要先把本机 1.15 客户端资源复制到本地缓存（`.game_cache/`，已 gitignore，不提交不分发）：
 
 ```powershell
 .\web\scripts\prepare_assets.ps1 -GameDir "E:\path\to\Rusted Warfare1.15PC"
 ```
 
 Dockerfile / compose / API / 目录说明见 [web/README.md](./web/README.md)。
+
+### 沙盘实拍
+
+一场真实 1.15 无头对局（Lake 地图，tick 56821–60001）的沙盘回放：画面内 53–54 个单位，双方兵力 19 : 34 打到 22 : 32，本段落累计 2941 点伤害。
+
+![沙盘推理回放](docs/assets/sandbox-preview.gif)
+
+> 该片段由 [`tools/render_sandbox.py`](./tools/render_sandbox.py) 从 `frames.jsonl` 渲染：地形来自游戏原版 tileset，单位贴图按 `unitSprites` 清单解析，配色与 HUD 与网页沙盘一致。
+> 它不是浏览器截图 —— 截图需要 Chrome，而当前开发沙箱禁止其命名管道 IPC。换素材可用 `--survey` 自动找出交战最密集的窗口：
+>
+> ```powershell
+> python tools\render_sandbox.py --stream rwpp-live-rwpp-21203c65 --survey
+> python tools\render_sandbox.py --stream rwpp-live-rwpp-21203c65 --start 5580 --frames 320 --stride 2 --gif docs\assets\sandbox-preview.gif
+> ```
 
 ## 真机 PPO 训练（策略在环）
 
@@ -193,17 +207,22 @@ python -m ironzero.training.train_rwpp --updates 6 --envs 2 --episode-ticks 900 
 
 - 每实例 = 一个独立无头游戏进程（端口 5140+），`--envs` 控制并行实例数；实例跨 update 复用，只有单局结束才重启 JVM
 - 观测 364 维、动作 5 头 `[kind5, group5, x8, y8, target9]`、策略网络 168k 参数；奖励 = HP 潜势差 + 交战接近 + 与战略目标接近 + 击杀/损失/无效动作/空闲分项 + 终局 ±1（每项都进 `reward_breakdown` 与 PPO live 事件）
-- 加速：`--frame-ms` **只控制每帧墙钟预算**（16=真实时间，2≈快，1≈更快），不改变仿真时长；每局仿真时长 = `--episode-ticks`（60 tick ≈ 1 秒，默认 3600 ≈ 60 秒）。引擎判出胜负会提前结束该局
+- 加速（两个独立旋钮，别相乘）：`--frame-ms` **只控制每帧墙钟预算**，`--physics-ms`（默认 16）把仿真步长钉死，所以 `--frame-ms 0` = 完全不 sleep 而**不改仿真**（实测一整局 20000 tick：`frame_ms=1` 24.0 s → `frame_ms=0` **4.0 s**）；`--fast-forward N` 设引擎原生 `gameSpeed`，每 tick 推进 N 倍游戏时间、一局只需 1/N 的 tick（改保真，默认 1=关闭）。`--lockstep` 让桥接发完观测后等策略应答，把控制周期锁死在 10 tick、不丢帧（训练/评估默认开）。每局仿真时长 = `--episode-ticks`（60 tick ≈ 1 秒），引擎判出胜负会提前结束该局。完整实测与取舍见 [`audit/加速方案_契约.md`](audit/加速方案_契约.md)
 - 胜负上报：桥接每帧轮询原生结算（`TriggerEngine` 的 mainBuilings 目标 + `Team.defeated`），终局 `obs` 带 `result`/`terminated`，`done.result` 为 `victory`/`defeat`/`timeout`；训练评估、推理回放和平台界面都显示真实胜负，不再把失败/胜利记成超时
 - 观测迷雾：默认 `--vision-radius 260`（策略只看我方 260px 内敌人，胜负仍按全量状态）
 - 细节与场景选型见 `docs/平台搭建方案.md` 5.7 节，平台侧在「实机训练」页切到「PPO 真机训练」即可看训练大屏：
 
 ![PPO 真机训练大屏](docs/assets/platform_real_ppo.png)
 
-## 模型推理与 LLM + RL 混合（骨架）
+## 模型推理与 LLM + RL 混合
 
 - **模型推理**：`python scripts/play_rwpp_policy.py --checkpoint runs/rwpp_ppo/checkpoint.pt --ticks 3600` 让 PPO 策略在真机里打一局并生成回放（`meta.result` 为真实胜负）；平台「实机推理」页策略下拉选「PPO 模型」即可
-- **LLM 战略层**：`--use-llm` 开启后每 3 秒调用一次 OpenAI 兼容 LLM（环境变量 `IRONZERO_LLM_BASE_URL / IRONZERO_LLM_API_KEY / IRONZERO_LLM_MODEL`），LLM 只输出 `StrategicDirective`（intent / attack_region / rally_point），**不控制单位级动作**；无 key 或调用失败自动退回规则策略，关闭后 RL 独立运行
+- **指挥层（战略 + 宏观）**：`--use-llm` 开启后每 3 秒调用一次 OpenAI 兼容 LLM（环境变量 `IRONZERO_LLM_BASE_URL / IRONZERO_LLM_API_KEY / IRONZERO_LLM_MODEL`）。指挥层输出 `StrategicDirective`，两部分：
+  - **战术意图**：`intent / attack_region / rally_point` —— 只影响 reward 的势能项，**不控制单位级动作**；
+  - **宏观计划** `macro`：`build_order`（哪些经济目标、按什么优先级：upgrade / extractor / factory / production / defence / expansion / attack）＋ 兵数上下限、矿/厂/升级/炮塔额度、资金地板、`attack_at_army`、`engage_distance`。执行器按它执行，省略某目标即取消它。**只说要什么，不含单位 id、坐标、建造队列**。
+  - 每个字段可为 `null`＝"无意见"，用部署默认值；因此空计划的行为与无指挥层**完全一致**。无 key 或调用失败自动退回规则策略（规则层同样会产出宏观计划），关闭后 RL 独立运行。
+  - 实测（真实引擎三臂 A/B，`.runtime/macro_ab.json`）：取消进攻令 → `attack_move` 272→0；`attack_at_army=2` → 2 个兵就开打。详见 [指挥层掌握宏观](audit/指挥层掌握宏观_20261115.md)。
+- **注意**：经济仍由环境的执行器按计划执行，**PPO 尚未学会自主经营**（`build_extractor` 仍被掩码关闭）；LLM 也尚未在真实运行中启用过（需配 key）。
 - 动作空间：`move_group / attack_move / attack_target / stop / hold` 五类；单位组头真实生效（4 组 + 广播），对齐设计文档 4.2
 
 ## 开发入口

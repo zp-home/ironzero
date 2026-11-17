@@ -502,6 +502,23 @@ class PromptContractTests(unittest.TestCase):
         for phrase in ("do not control units", "unit-level orders", "json object"):
             self.assertIn(phrase, lowered)
 
+    def test_system_prompt_gives_the_macro_vocabulary(self) -> None:
+        """The commander can only plan the economy if it is told the goals.
+
+        A prompt that describes the situation but not the levers produces prose,
+        not a plan -- and prose fails JSON validation, which silently degrades the
+        whole directive to the rule fallback.
+        """
+
+        lowered = SYSTEM_PROMPT.lower()
+        self.assertIn("build_order", lowered)
+        for goal in ("upgrade", "extractor", "factory", "production", "defence",
+                     "expansion", "attack"):
+            self.assertIn(goal, lowered)
+        # The escape hatch must be explicit, or every response invents numbers.
+        self.assertIn("null", lowered)
+        self.assertIn("army_cap >= army_target", lowered)
+
     def test_user_prompt_is_compact_and_deterministic(self) -> None:
         summary = _summary(
             own=[_unit(100.0, 100.0), _unit(300.0, 100.0)],
@@ -513,6 +530,13 @@ class PromptContractTests(unittest.TestCase):
         self.assertIn('"tick": 42', prompt)
         self.assertIn('"count": 2', prompt)
         self.assertIn("JSON object only", prompt)
+
+    def test_user_prompt_includes_the_economy_block(self) -> None:
+        prompt = build_user_prompt(_summary(own=[_unit(100.0, 100.0)]))
+        self.assertIn('"economy"', prompt)
+        # Unreported values must read as unknown, never as zero: ``funds: 0``
+        # would look like a broke economy and drive a wrong plan.
+        self.assertIn('"funds": null', prompt)
 
 
 if __name__ == "__main__":

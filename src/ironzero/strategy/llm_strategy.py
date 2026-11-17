@@ -41,7 +41,13 @@ DEFAULT_MODEL = "deepseek-chat"
 DEFAULT_THROTTLE_SECONDS = 3.0
 DEFAULT_TIMEOUT_SECONDS = 20.0
 DEFAULT_TEMPERATURE = 0.2
-DEFAULT_MAX_TOKENS = 400
+#: Token budget for one directive.
+#:
+#: Raised from 400 when the ``macro`` block was added: the payload now carries up
+#: to ten extra keys, and a truncated response is not a cosmetic failure -- it
+#: fails JSON parsing and degrades the whole directive to the rule fallback, which
+#: silently removes the commander from the loop.
+DEFAULT_MAX_TOKENS = 700
 
 #: Prefix used in ``StrategicDirective.notes`` when a rule fallback was used.
 FALLBACK_NOTE_PREFIX = "fallback:"
@@ -57,12 +63,14 @@ _API_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9._\-]{4,}")
 
 SYSTEM_PROMPT = (
     "You are the strategic commander of IronZero, a Rusted Warfare 1.15 "
-    "reinforcement-learning platform. You choose only the high-level goal. A PPO "
-    "tactical policy executes it at 2-10 Hz and a rule safety layer runs every "
+    "reinforcement-learning platform. You choose the high-level goal and the "
+    "economy plan. A PPO tactical policy executes the fighting at 2-10 Hz, a "
+    "build executor places every structure, and a rule safety layer runs every "
     "tick.\n"
     "STRICT RULES:\n"
     "1. Do NOT control units. Never output unit-level orders, per-unit lists, "
-    "build queues, actions, scripts or mouse/screen coordinates.\n"
+    "entity ids, build-queue entries, actions, scripts or mouse/screen "
+    "coordinates for units. You name *goals* and *budgets*, never placements.\n"
     "2. Output exactly ONE JSON object and nothing else: no markdown, no code "
     "fences, no commentary.\n"
     "3. attack_region and rally_point use map pixel coordinates (x right, y "
@@ -70,13 +78,33 @@ SYSTEM_PROMPT = (
     "4. intent must be one of: push, defend, retreat, harass, regroup. Prefer "
     "retreat when the own HP ratio is below retreat_hp_threshold.\n"
     "5. attack_region is [x, y, radius] with radius > 0; rally_point is [x, y].\n"
+    "6. macro.build_order sets WHICH economy goals run and in what priority. "
+    "Allowed goal names: upgrade (tier up a standing building), extractor "
+    "(claim one resource pool), factory (one production building), production "
+    "(queue combat units), defence (one turret between you and the enemy), "
+    "expansion (claim an extra pool once the factory chain stands), attack "
+    "(march the army). Omit a goal to cancel it. An empty list [] means "
+    "'keep the platform default order'. Never repeat a goal.\n"
+    "7. Every macro field is optional. Use null (or omit it) when you have no "
+    "opinion -- the executor then keeps its configured default. That is "
+    "usually the correct choice; only set a field when the battlefield summary "
+    "gives you a reason.\n"
+    "8. macro constraints: army_cap >= army_target and attack_at_army <= "
+    "army_cap. Credit figures are game credits, distances are map pixels, "
+    "counts are whole numbers.\n"
     "JSON schema:\n"
     '{"intent": "push|defend|retreat|harass|regroup", '
     '"attack_region": [x, y, radius] | null, '
     '"rally_point": [x, y] | null, '
     '"retreat_hp_threshold": 0.0-1.0, '
     '"priority_target": "nearest|artillery|none", '
-    '"notes": "one short sentence"}\n'
+    '"notes": "one short sentence", '
+    '"macro": {"build_order": ["upgrade","extractor","factory","production",'
+    '"defence","expansion","attack"], "army_target": int|null, '
+    '"army_cap": int|null, "max_extractors": int|null, '
+    '"max_factories": int|null, "max_upgrades": int|null, '
+    '"max_turrets": int|null, "credit_reserve": number|null, '
+    '"attack_at_army": int|null, "engage_distance": number|null}}\n'
     "Do not add keys that are not listed."
 )
 
@@ -141,6 +169,46 @@ def _side_stats(units: list[tuple[float, float, float, float]]) -> dict[str, Any
     }
 
 
+def _economy_stats(summary: Mapping[str, Any]) -> dict[str, Any]:
+    """Compress the economy block the commander needs to plan with.
+
+    Without this the model could only see unit positions, so it had no way to
+    know whether the bank was full, how many extractors stood, or whether a
+    build was already in progress -- and "plan the economy" from that information
+    is guessing, not commanding. Every field is optional on input: a bridge that
+    does not report an item simply yields ``None``, which the prompt renders as
+    ``null`` (the model is told ``null`` means "unknown, keep the default").
+    """
+
+    raw = summary.get("economy")
+    economy: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+
+    def number(name: str) -> float | None:
+        value = economy.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        result = float(value)
+        return result if math.isfinite(result) else None
+
+    def count(name: str) -> int | None:
+        value = number(name)
+        return None if value is None else int(max(0.0, value))
+
+    under_construction = economy.get("under_construction")
+    return {
+        "funds": number("funds"),
+        "income": number("income"),
+        "extractors": count("extractors"),
+        "factories": count("factories"),
+        "army": count("army"),
+        "turrets": count("turrets"),
+        "free_resource_slots": count("free_resource_slots"),
+        "under_construction": (
+            bool(under_construction) if under_construction is not None else None
+        ),
+    }
+
+
 def compact_summary(observation_summary: Mapping[str, Any] | None) -> dict[str, Any]:
     """Compress a battlefield summary into the aggregate stats sent to the LLM."""
 
@@ -153,6 +221,7 @@ def compact_summary(observation_summary: Mapping[str, Any] | None) -> dict[str, 
         "map": {"width": width, "height": height},
         "own": _side_stats(_parse_units(summary.get("own_units"))),
         "enemy": _side_stats(_parse_units(summary.get("enemy_units"))),
+        "economy": _economy_stats(summary),
     }
 
 
@@ -163,8 +232,9 @@ def build_user_prompt(observation_summary: Mapping[str, Any] | None) -> str:
     return (
         "Battlefield summary (compressed JSON):\n"
         f"{json.dumps(summary, ensure_ascii=False, sort_keys=True)}\n\n"
-        "Choose the next strategic directive. One JSON object only, no unit-level "
-        "orders, no markdown."
+        "Choose the next strategic directive, including the economy plan. One "
+        "JSON object only, no unit-level orders, no markdown. Use null for any "
+        "macro field you have no reason to change."
     )
 
 
