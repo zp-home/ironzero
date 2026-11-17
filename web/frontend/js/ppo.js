@@ -3,9 +3,10 @@
  */
 
 import { feSetStatusPill, feSetText } from './control.js';
+import { difficultyLabel } from './feMapCatalog.js';
 import { feDrawTrainCharts } from './feInferUi.js';
 import { feRenderTrainDashboard, renderFeTrainArtifacts } from './feTrain.js';
-import { feRenderPpoReward, feRenderPpoStrategy } from './model.js';
+import { feRenderPpoReward, feRenderPpoStartHint, feRenderPpoStrategy } from './model.js';
 import { feDrawPpoCharts } from './ppoCharts.js';
 import { els, state } from './state.js';
 import { basename, num, numOrNull } from './util.js';
@@ -108,7 +109,7 @@ export function feSetPpoRunning(running) {
     els.fePpoStop.hidden = !running;
     els.fePpoStop.disabled = !running || !!ppo.stopRequested;
   }
-  for (const key of ['fePpoUpdates', 'fePpoEnvs', 'fePpoRollout', 'fePpoTicks', 'fePpoDevice', 'fePpoFrameMs', 'fePpoVision', 'fePpoEvalEvery', 'fePpoEvalEpisodes', 'fePpoUseLlm']) {
+  for (const key of ['fePpoUpdates', 'fePpoEnvs', 'fePpoRollout', 'fePpoTicks', 'fePpoDevice', 'fePpoFrameMs', 'fePpoFastForward', 'fePpoVision', 'fePpoEvalEvery', 'fePpoEvalEpisodes', 'fePpoUseLlm', 'fePpoMap', 'fePpoEnemyAiDifficulty']) {
     if (els[key]) els[key].disabled = running;
   }
 }
@@ -118,11 +119,42 @@ export function feSetPpoStatus(label, tone) {
 }
 
 export function fePpoFrameMsLabel(frameMs) {
-  const value = num(frameMs, 2);
+  // Measured on 6000 real ticks with the delta pinned at physics_ms=16:
+  // 16 ms = 1x (real time), 2 ms = 6.5x, 1 ms = 10.7x, 0 ms = 26.5x. The old
+  // "约 16×" for 1 ms never existed on hardware -- 68% of a 1 ms budget is
+  // Thread.sleep wake-up overhead, so 0 ms is only 2.5x faster than 1 ms.
+  const value = num(frameMs, 0);
+  if (value <= 0) return '不限速 0ms（约 26×）';
   if (value === 16) return '真实时间 16ms（1×）';
-  if (value === 2) return '快速 2ms（约 8×）';
-  if (value === 1) return '极速 1ms（约 16×）';
+  if (value === 2) return '快速 2ms（约 6.5×）';
+  if (value === 1) return '极速 1ms（约 10×）';
   return value + 'ms';
+}
+
+/**
+ * 引擎快进倍数的说明文案（fast_forward=1 表示关闭）。
+ *
+ * 与 frame_ms 是两回事：frame_ms 只决定墙钟节奏（physics_ms 钉死步长时不影响
+ * 仿真内容），fast_forward 走引擎自带 gameSpeed，每 tick 推进 N 倍游戏时间，
+ * 一局所需 tick 同比减少 —— 它会改变保真度。
+ */
+export function fePpoFastForwardLabel(fastForward) {
+  const value = num(fastForward, 1);
+  if (value <= 1) return '关闭（1× 原速）';
+  return value + '× 引擎快进（每 tick 推进 ' + value + ' 倍游戏时间）';
+}
+
+/**
+ * 从表单控件读一个整数；缺失或非法时用 fallback。
+ *
+ * 这里刻意不读 `state.fe.ppo`：任务还没启动时那些字段只是"上次用过的默认值"，
+ * 和表单当前显示的值可能完全不同（日志行曾因此显示 `eval=最后/1`，而表单上是
+ * 「每 10 轮 / 4 局」）。
+ */
+function formInt(key, fallback) {
+  const element = els[key];
+  if (!element) return fallback;
+  return numOrNull(element.value) === null ? fallback : Math.round(Number(element.value));
 }
 
 export function feRenderPpoLog() {
@@ -145,10 +177,33 @@ export function feRenderPpoLog() {
   log.textContent = lines.length ? lines.join('\n') : '等待 PPO 训练任务…';
   log.classList.toggle('has-error', !!(ppo.job && ppo.job.error));
   if (els.fePpoLogStatus) {
+    // Before a job exists these fields hold the last app defaults, not what the
+    // form is set to. Reading the live form keeps this line truthful ("每 10 轮 /
+    // 4 局" instead of the stale "最后 / 1") and it switches to the job's own
+    // values once one is running.
+    const running = !!ppo.jobId;
+    const evalEvery = running ? num(ppo.evalEvery, 0) : formInt('fePpoEvalEvery', 10);
+    const evalEpisodes = running ? num(ppo.evalEpisodes, 1) : formInt('fePpoEvalEpisodes', 4);
+    const frameMs = running ? num(ppo.frameMs, 0) : formInt('fePpoFrameMs', 0);
+    const fastForward = running ? num(ppo.fastForward, 1) : formInt('fePpoFastForward', 1);
+    const vision = running ? num(ppo.visionRadius, 0) : formInt('fePpoVision', 0);
+    const useLlm = running ? !!ppo.useLlm : !!(els.fePpoUseLlm && els.fePpoUseLlm.checked);
+    // Scenario: the *resolved* map geometry and difficulty from the host job once
+    // it exists, the live form before that. A run whose geometry was wrong does
+    // not fail — it just trains on skewed observations — so this line is the only
+    // place an operator can notice.
+    const mapLabel = running
+      ? String(ppo.mapName || '—')
+        + (num(ppo.mapWidth, 0) > 0 ? ' · ' + Math.round(num(ppo.mapWidth, 0)) + '×' + Math.round(num(ppo.mapHeight, 0)) + 'px' : '')
+      : String((els.fePpoMap && els.fePpoMap.value) || '—');
+    const difficulty = running ? num(ppo.enemyAiDifficulty, 0) : formInt('fePpoEnemyAiDifficulty', 1);
     els.fePpoLogStatus.textContent = 'status=' + (ppo.status || 'idle')
-      + ' · frame_ms=' + ppo.frameMs + ' · fog=' + (ppo.visionRadius > 0 ? ppo.visionRadius + 'px' : 'off')
-      + ' · llm=' + (ppo.useLlm ? 'on' : 'off')
-      + ' · eval=' + (ppo.evalEvery > 0 ? '每' + ppo.evalEvery + '轮' : '最后') + '/' + ppo.evalEpisodes
+      + ' · map=' + mapLabel
+      + ' · enemy_ai_diff=' + difficulty
+      + ' · frame_ms=' + frameMs + (fastForward > 1 ? ' · ff=' + fastForward + '×' : '')
+      + ' · fog=' + (vision > 0 ? vision + 'px' : 'off')
+      + ' · llm=' + (useLlm ? 'on' : 'off')
+      + ' · eval=' + (evalEvery > 0 ? '每' + evalEvery + '轮' : '最后') + '/' + evalEpisodes
       + ' · events ' + (ppo.events || []).length;
   }
 }
@@ -171,6 +226,17 @@ export function feRenderPpoSummary() {
   const rows = [
     ['总耗时', totalSeconds.toFixed(1) + ' s'],
     ['更新轮数', updates],
+    // Scenario first: which map (and at which pixel size) and which opponent
+    // strength this run actually used. The geometry is the observation's
+    // normalisation denominator — a wrong value never raises, it just makes every
+    // position mean something else.
+    ['地图 / 尺寸', String(ppo.mapName || (ppo.job && ppo.job.map_name) || '—')
+      + (num(ppo.mapWidth, 0) > 0
+        ? ' · ' + Math.round(num(ppo.mapWidth, 0)) + '×' + Math.round(num(ppo.mapHeight, 0)) + ' px'
+        : '')],
+    ['对手难度', numOrNull(ppo.enemyAiDifficulty) === null
+      ? '—'
+      : num(ppo.enemyAiDifficulty, 0) + '（' + difficultyLabel(num(ppo.enemyAiDifficulty, 0)) + '）'],
     ['每轮均秒', updates > 0 ? (totalSeconds / updates).toFixed(1) + ' s' : '—'],
     ['Win / Loss / Timeout', pct(finalEval.win_rate) + ' / ' + pct(finalEval.loss_rate) + ' / ' + pct(finalEval.timeout_rate)],
     ['Final return', num(finalEval.mean_return, 0).toFixed(3)],
@@ -181,6 +247,7 @@ export function feRenderPpoSummary() {
       ? envs + ' 实例并行 · ' + (totalSeconds > 0 ? (updates / totalSeconds).toFixed(2) : '0.00') + ' 轮/s'
       : '单实例'],
     ['仿真速度', fePpoFrameMsLabel(ppo.frameMs)],
+    ['引擎快进', fePpoFastForwardLabel(ppo.fastForward)],
     ['观测迷雾', ppo.visionRadius > 0 ? ppo.visionRadius + ' px' : '关闭'],
     ['评估设置', (ppo.evalEvery > 0 ? '每 ' + ppo.evalEvery + ' 轮' : '仅最后') + ' · ' + ppo.evalEpisodes + ' 局'],
     ['战略层', ppo.useLlm ? 'LLM 启用（缺 key 自动退回规则）' : '关闭'],
@@ -283,6 +350,7 @@ export function feRenderPpoKpis() {
   feSetText(els.fePpoKpiDevice, deviceLabel.toUpperCase());
   if (els.fePpoKpiDeviceFoot) {
     els.fePpoKpiDeviceFoot.textContent = 'frame_ms=' + ppo.frameMs
+      + (num(ppo.fastForward, 1) > 1 ? ' · ff=' + ppo.fastForward + '×' : '')
       + ' · 雾=' + (ppo.visionRadius > 0 ? ppo.visionRadius + 'px' : '关闭')
       + ' · LLM=' + (ppo.useLlm ? 'on' : 'off');
   }
@@ -308,7 +376,28 @@ export function feRenderPpoDashboard() {
   feRenderPpoSummary();
   feRenderPpoReward();
   feRenderPpoStrategy();
+  // Reflect the checkpoint training actually started from; "warmstart" resolves
+  // to a different BC file per tank count and the form cannot know which one.
+  feRenderPpoStartHint();
   feDrawPpoCharts();
+}
+
+/**
+ * 当前表单选中的场景描述，例如「IronZero25 · 25v25 纯坦克」。
+ *
+ * 这行常驻在训练页右上角；写死成 Artillery 时会和正下方的场景下拉框自相矛盾，
+ * 用户没法判断到底会跑哪张图。
+ */
+export function fePpoScenarioLabel() {
+  const map = (els.fePpoMap && els.fePpoMap.value) || 'Lake';
+  const units = num(els.fePpoUnits && els.fePpoUnits.value, 25);
+  if (map.toLowerCase().startsWith('ironzero')) {
+    return map + ' · ' + units + 'v' + units + ' 纯坦克';
+  }
+  if (map.toLowerCase().includes('artillery')) {
+    return 'Artillery · 原版挑战图';
+  }
+  return map;
 }
 
 export function feApplyTrainMode(mode) {
@@ -323,8 +412,10 @@ export function feApplyTrainMode(mode) {
     block.hidden = block.getAttribute('data-train-mode') !== target;
   }
   if (els.feTrainModeNote) {
+    // This banner used to hard-code "Artillery 挑战图（22 vs 25 AI）" regardless of
+    // the map actually selected, while the form above it said IronZero25.
     els.feTrainModeNote.textContent = target === 'ppo'
-      ? 'PPO 真机训练：Strategy-in-the-loop · Artillery 挑战图（22 vs 25 AI）'
+      ? 'PPO 真机训练：Strategy-in-the-loop · ' + fePpoScenarioLabel()
       : '数据采集：多线程录制真机对局（默认）';
   }
   if (target === 'ppo') {
@@ -361,8 +452,24 @@ export function initFePpoState() {
       startedAt: 0,
       stopRequested: false,
       restoreTried: false,
-      frameMs: 2,
-      visionRadius: 260,
+      // These must equal the `selected`/`value=` in index.html. They used to
+      // disagree (frame_ms 2 vs 1, vision 260 vs 0), so the KPI line could
+      // report a pacing/fog setting the run never actually used. frame_ms 0 is
+      // the recommended "unpaced" option (~26.5x with physics_ms pinned);
+      // fast_forward 1 means off (the engine's own gameSpeed).
+      frameMs: 0,
+      fastForward: 1,
+      visionRadius: 0,
+      // Enemy AI difficulty the form starts on. Must equal the `selected` option
+      // in index.html (1 = 困难, x1.40 income). ``None``/0 would mean "the engine
+      // global default", i.e. the easiest real opponent while the form showed a
+      // difficulty setting — that mismatch is what this pins down. Guarded by
+      // tests/test_service_map_catalog.py.
+      enemyAiDifficulty: 1,
+      // Resolved by the host service once a job exists (see fePollPpo): which
+      // checkpoint this run actually started from, and in which mode.
+      initCheckpoint: null,
+      initMode: null,
     },
   });
 }

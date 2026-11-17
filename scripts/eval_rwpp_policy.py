@@ -64,7 +64,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--episodes", type=int, default=20, help="sequential fresh games")
     parser.add_argument("--episode-ticks", type=int, default=3600)
     parser.add_argument("--frame-ms", type=int, default=1,
-                        help="wall-clock ms per simulated frame (1 = fast, 16 = real time)")
+                        help="wall-clock ms per simulated frame (1 = fast, 16 = real time); "
+                             "0 = unpaced, needs --physics-ms > 0")
+    parser.add_argument("--physics-ms", type=int, default=16,
+                        help="pin the engine's simulated delta (16 = real time); --frame-ms then "
+                             "only paces the wall clock")
+    parser.add_argument("--fast-forward", type=int, default=1,
+                        help="engine game speed (1..32); 1 = off, N makes a match need 1/N the ticks")
+    parser.add_argument("--lockstep", action=argparse.BooleanOptionalAction, default=True,
+                        help="block after each observation until the policy answers (no dropped frames)")
+    parser.add_argument("--lockstep-timeout-ms", type=int, default=30000,
+                        help="max lockstep wait before the bridge falls back to free running")
     parser.add_argument("--port-base", type=int, default=5420,
                         help="bridge port for the first evaluation game (avoid 5140/5200/5401/5410)")
     parser.add_argument("--device", default="cpu")
@@ -131,6 +141,10 @@ def main(argv: list[str] | None = None) -> int:
         target_slots=int(micro.target_slots),
         terrain_path=Path(micro.terrain_path) if micro.terrain_path else None,
         frame_ms=max(0, int(args.frame_ms)),
+        physics_ms=max(0, int(args.physics_ms)),
+        fast_forward=max(1, int(args.fast_forward)),
+        lockstep=bool(args.lockstep),
+        lockstep_timeout_ms=int(args.lockstep_timeout_ms),
         vision_radius=float(micro.vision_radius or 0.0),
         win_mode=str(args.win_mode or ""),
         unlock_ai=bool(args.unlock_ai),
@@ -150,6 +164,11 @@ def main(argv: list[str] | None = None) -> int:
                 "vision_radius": micro.vision_radius,
                 "episodes": args.episodes,
                 "map": args.map,
+                "frame_ms": int(game.frame_ms),
+                "physics_ms": int(game.physics_ms),
+                "fast_forward": int(game.fast_forward),
+                "lockstep": bool(game.lockstep),
+                "lockstep_timeout_ms": int(game.lockstep_timeout_ms),
                 "out": str(out_dir),
             },
             ensure_ascii=False,
@@ -227,10 +246,20 @@ def _record_replay(args: argparse.Namespace, out_dir: Path) -> str:
         "--map-name", args.map_name,
         "--map-width", str(args.map_width),
         "--map-height", str(args.map_height),
-        "--frame-ms", str(max(1, int(args.frame_ms))),
+        # Forward the pacing as requested, not ``max(1, ...)``: the play script's
+        # own config pins ``physics_ms=16``, so ``--frame-ms 0`` is a legal
+        # "never sleep" there, and clamping it here made the recorded replay
+        # slower than the evaluation it is supposed to illustrate.
+        "--frame-ms", str(max(0, int(args.frame_ms))),
         "--device", args.device,
         "--out-root", str(out_dir / "record"),
     ]
+    if int(getattr(args, "fast_forward", 1) or 1) != 1:
+        replay_args.extend(["--fast-forward", str(int(args.fast_forward))])
+    if bool(getattr(args, "lockstep", False)):
+        replay_args.append("--lockstep")
+        if int(getattr(args, "lockstep_timeout_ms", 30000) or 30000) != 30000:
+            replay_args.extend(["--lockstep-timeout-ms", str(int(args.lockstep_timeout_ms))])
     if args.terrain:
         replay_args.extend(["--terrain", args.terrain])
     if args.win_mode:

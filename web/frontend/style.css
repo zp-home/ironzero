@@ -3,23 +3,49 @@
    纯静态、无外部字体 / CDN；深色指挥中心风格
    ============================================================ */
 
+/* 配色以「久看不累」为准，全部按 WCAG 2.1 AA 校核（正文 ≥ 4.5:1）。
+ *
+ * 改动前的问题（实测对比度，不是感觉）：
+ *   - `--muted-2: #5d7390` 在面板上只有 3.77:1，而它被 25 处复用，几乎全是
+ *     10–11px 小字（.hint / .meta-list dt / .kpi-unit / .mode-title / .frame-sub …）。
+ *     「小字号 + 低对比 + 深蓝底」是这套界面最费眼的地方。
+ *   - `--bg-0: #04070d` 接近纯黑，与 #d9e8f8 正文形成 16:1 的极端反差，
+ *     长时间扫视时瞳孔反复剧烈收缩。
+ *   - 大面积青色发光（--cyan 描边 + 0.6 阴影）在暗底上产生眩光。
+ *
+ * 现在：底色抬到 #0a0f16（保留深色气质但不贴黑），正文 14.5:1，次要 8.7:1，
+ * 弱化 7.1:1 —— 三档都过 AA 且梯度平缓；发光强度整体减半。
+ */
 :root {
-  --bg-0: #04070d;
-  --bg-1: #070d18;
-  --bg-2: #0b1524;
-  --panel: rgba(11, 21, 36, 0.88);
-  --panel-2: rgba(15, 28, 47, 0.92);
-  --line: #17293f;
-  --line-2: #1f3a59;
-  --cyan: #38e1ff;
-  --cyan-soft: rgba(56, 225, 255, 0.14);
-  --blue: #4da3ff;
-  --red: #ff5f6d;
-  --green: #39e08b;
-  --amber: #ffc35c;
-  --text: #d9e8f8;
-  --muted: #7c93ad;
-  --muted-2: #5d7390;
+  --bg-0: #0a0f16;
+  --bg-1: #0e151f;
+  --bg-2: #121b27;
+  --panel: rgba(18, 27, 39, 0.88);
+  --panel-2: rgba(23, 34, 48, 0.92);
+  --line: #33465f;
+  /* 表单控件（input/select/toggle）没有背景色差，唯一的可供性就是这根描边，
+   * 因此受 WCAG 1.4.11 约束（非文本对比 ≥ 3:1）。原来的 #2f4a68 只有 1.92:1。
+   * #4a688c = 3.05:1（对卡片）/ 3.39:1（对输入框底色）。--line 是纯装饰细线，
+   * 不受该条约束，只从 1.42 提到 1.82 以便在抬亮的底色上还能看见。 */
+  --line-2: #4a688c;
+  /* 强调色统一从 100% 饱和降到 65–77%（色相保持）。全饱和青色在暗底上做 12–13px
+   * 正文级文字（.brand-sub）会触发色差边缘感，长时间看很累；同时全饱和大面积
+   * 发光也是眩光源。降饱和后仍全部通过 AA（对卡片：青 8.9 / 蓝 7.0 / 红 5.9 /
+   * 绿 7.6 / 琥珀 8.9）。 */
+  --cyan: #4fc7e8;
+  --cyan-soft: rgba(79, 199, 232, 0.14);
+  --blue: #6aa8e8;
+  --red: #e8707c;
+  --green: #4fbf8a;
+  --amber: #e0b070;
+  --text: #e2ecf7;
+  --muted: #a8bacc;
+  --muted-2: #93a9bd;
+  /* 青色亮底上的深色文字：渐变亮端 10.8:1、暗端 7.0:1（两者都是**合成后**实测，
+   * 不是按标称色估算的），两端都过 AA。 */
+  --on-accent: #02121c;
+  /* 青色薄底（chip / badge）上的文字，11.2:1。 */
+  --text-on-tint: #9fd8ef;
   --radius: 12px;
 }
 
@@ -32,10 +58,12 @@ body {
   overflow: hidden;
   color: var(--text);
   font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", system-ui, -apple-system, sans-serif;
-  font-size: 13px;
+  /* 13px 在 1080p 上已是可读下限；提到 13.5px 并给出行高，避免密排小字连成一片。 */
+  font-size: 13.5px;
+  line-height: 1.5;
   background:
-    radial-gradient(1200px 700px at 16% -12%, #0d2235 0%, rgba(13, 34, 53, 0) 62%),
-    radial-gradient(900px 620px at 100% 0%, #111c30 0%, rgba(17, 28, 48, 0) 58%),
+    radial-gradient(1200px 700px at 16% -12%, #16283c 0%, rgba(22, 40, 60, 0) 62%),
+    radial-gradient(900px 620px at 100% 0%, #182338 0%, rgba(24, 35, 56, 0) 58%),
     var(--bg-0);
 }
 
@@ -45,8 +73,8 @@ body::before {
   inset: 0;
   pointer-events: none;
   background-image:
-    linear-gradient(rgba(56, 225, 255, 0.028) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(56, 225, 255, 0.028) 1px, transparent 1px);
+    linear-gradient(rgba(56, 225, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 225, 255, 0.02) 1px, transparent 1px);
   background-size: 44px 44px;
   mask-image: radial-gradient(ellipse at 50% 0%, #000 0%, transparent 78%);
   z-index: 0;
@@ -98,11 +126,11 @@ body::before {
   flex: 0 0 auto;
   clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
   background: linear-gradient(155deg, #64f0ff 0%, #1a6fd4 55%, #0b3a7a 100%);
-  color: #02121c;
+  color: var(--on-accent);
   font-weight: 800;
   font-size: 13px;
   letter-spacing: 0.5px;
-  box-shadow: 0 0 22px rgba(56, 225, 255, 0.35);
+  box-shadow: 0 0 14px rgba(56, 225, 255, 0.2);
 }
 
 .brand h1 {
@@ -122,7 +150,7 @@ body::before {
 
 .brand p {
   margin: 3px 0 0;
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: 0.6px;
   color: var(--muted);
 }
@@ -148,7 +176,7 @@ body::before {
 
 .tab-btn .tab-idx {
   margin-right: 7px;
-  font-size: 10px;
+  font-size: 11.5px;
   letter-spacing: 0;
   color: var(--muted-2);
 }
@@ -159,7 +187,7 @@ body::before {
   color: #eaf9ff;
   border-color: rgba(56, 225, 255, 0.55);
   background: linear-gradient(180deg, rgba(56, 225, 255, 0.16), rgba(56, 225, 255, 0.04));
-  box-shadow: 0 0 18px rgba(56, 225, 255, 0.14), inset 0 0 12px rgba(56, 225, 255, 0.08);
+  box-shadow: 0 0 12px rgba(56, 225, 255, 0.09), inset 0 0 10px rgba(56, 225, 255, 0.05);
 }
 
 .tab-btn.active::after {
@@ -219,7 +247,7 @@ body::before {
 .conn-text small {
   display: block;
   margin-top: 1px;
-  font-size: 10px;
+  font-size: 11.5px;
   color: var(--muted);
   max-width: 200px;
   overflow: hidden;
@@ -228,7 +256,7 @@ body::before {
 }
 
 @keyframes conn-pulse {
-  0% { box-shadow: 0 0 0 0 rgba(56, 225, 255, 0.45); }
+  0% { box-shadow: 0 0 0 0 rgba(56, 225, 255, 0.28); }
   70% { box-shadow: 0 0 0 7px rgba(56, 225, 255, 0); }
   100% { box-shadow: 0 0 0 0 rgba(56, 225, 255, 0); }
 }
@@ -259,7 +287,7 @@ body::before {
   border-radius: 4px;
   background: rgba(255, 195, 92, 0.18);
   color: #ffd07a;
-  font-size: 10px;
+  font-size: 11.5px;
   font-weight: 500;
   letter-spacing: 1px;
 }
@@ -340,11 +368,11 @@ body::before {
   height: 12px;
   border-radius: 2px;
   background: linear-gradient(180deg, var(--cyan), #1a6fd4);
-  box-shadow: 0 0 8px rgba(56, 225, 255, 0.6);
+  box-shadow: 0 0 6px rgba(56, 225, 255, 0.3);
 }
 
 .card-head .hint,
-.hint { font-size: 10.5px; color: var(--muted-2); letter-spacing: 0.4px; }
+.hint { font-size: 12px; color: var(--muted-2); letter-spacing: 0.4px; }
 
 .head-actions { display: flex; align-items: center; gap: 8px; }
 
@@ -357,8 +385,8 @@ body::before {
   border: 1px solid var(--line-2);
   border-radius: 20px;
   background: rgba(56, 225, 255, 0.08);
-  color: #9fd8ef;
-  font-size: 11px;
+  color: var(--text-on-tint);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -384,33 +412,41 @@ body::before {
   transition: border-color 0.16s, color 0.16s, background 0.16s, filter 0.16s;
 }
 
-.btn:hover { border-color: rgba(56, 225, 255, 0.5); color: #eaffff; }
+.btn:hover { border-color: rgba(56, 225, 255, 0.5); color: #f2fdff; }
 .btn:active { transform: translateY(1px); }
-.btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+/* 0.45 让 12px 标签落到 3.66:1（不可读）。禁用态虽不受 1.4.3 约束，但读不出字的
+ * 按钮等于没有提示，0.55 → 4.73:1。 */
+.btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
 
 .btn-primary {
   border-color: transparent;
-  background: linear-gradient(180deg, rgba(56, 225, 255, 0.94), rgba(20, 140, 200, 0.88));
-  color: #02121c;
+  /* 暗端 stop 必须**先与卡片底色合成再测**：rgba(20,140,200,0.88) 压在 #111a25 上
+   * 实际是 #147eb4，与 --on-accent 只有 4.23:1（低于 4.5，且 12px/700 不算大字号）。
+   * 原来的注释按未合成的标称色 #148cc8 算出 5.1:1 是错的，漏了 alpha 合成这一步。
+   * 下面是 7.0:1。 */
+  background: linear-gradient(180deg, rgba(56, 225, 255, 0.94), rgba(40, 168, 222, 1));
+  color: var(--on-accent);
   font-weight: 700;
-  box-shadow: 0 4px 18px rgba(56, 225, 255, 0.22);
+  box-shadow: 0 3px 12px rgba(56, 225, 255, 0.14);
 }
 
-.btn-primary:hover { filter: brightness(1.08); color: #02121c; }
+.btn-primary:hover { filter: brightness(1.08); color: var(--on-accent); }
 
 .btn-danger {
   border-color: rgba(255, 95, 109, 0.5);
-  color: #ffb6bc;
+  color: #ffc9ce;
 }
 
 .btn-danger:hover {
   border-color: rgba(255, 95, 109, 0.75);
   background: rgba(255, 95, 109, 0.16);
-  color: #fff;
+  /* 不用纯 #fff：这是全文件唯一的 #ffffff（L=1.0），在主张"避免眩光"的暗色主题里
+   * 自相矛盾。偏一点红仍是 12.2:1，强调感没有损失。 */
+  color: #ffe8ea;
 }
 
 .btn-ghost { background: transparent; }
-.btn-sm { padding: 4px 9px; font-size: 11px; border-radius: 6px; }
+.btn-sm { padding: 4px 9px; font-size: 12px; border-radius: 6px; }
 
 .form-grid {
   display: grid;
@@ -430,7 +466,7 @@ body::before {
 .field-wide { grid-column: 1 / -1; }
 
 .field > span {
-  font-size: 10.5px;
+  font-size: 12px;
   letter-spacing: 0.7px;
   color: var(--muted);
 }
@@ -505,7 +541,7 @@ body::before {
   display: flex;
   gap: 10px;
   margin-top: 4px;
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
@@ -516,7 +552,7 @@ body::before {
   border: 1px solid var(--line-2);
   border-radius: 20px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11.5px;
   letter-spacing: 0.6px;
   white-space: nowrap;
 }
@@ -577,7 +613,7 @@ body::before {
 }
 
 .kpi-label {
-  font-size: 10.5px;
+  font-size: 12px;
   letter-spacing: 1px;
   color: var(--muted);
   text-transform: uppercase;
@@ -590,13 +626,13 @@ body::before {
   line-height: 1.05;
   color: #eafcff;
   font-variant-numeric: tabular-nums;
-  text-shadow: 0 0 18px rgba(56, 225, 255, 0.35);
+  text-shadow: 0 0 10px rgba(56, 225, 255, 0.16);
 }
 
 .kpi-value small { margin-left: 3px; font-size: 12px; font-weight: 500; color: var(--muted); }
 .kpi-foot {
   margin-top: 4px;
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--muted-2);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -633,7 +669,7 @@ body::before {
   flex-wrap: wrap;
   align-items: center;
   gap: 12px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 
@@ -657,7 +693,7 @@ body::before {
   border-radius: 6px;
   background: rgba(6, 14, 25, 0.97);
   color: #dff4ff;
-  font-size: 11px;
+  font-size: 12px;
   white-space: nowrap;
   pointer-events: none;
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5);
@@ -678,7 +714,7 @@ body::before {
 
 .meta-list > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .meta-wide { grid-column: 1 / -1; }
-.meta-list dt { font-size: 10px; letter-spacing: 0.6px; color: var(--muted-2); }
+.meta-list dt { font-size: 11.5px; letter-spacing: 0.6px; color: var(--muted-2); }
 .meta-list dd {
   margin: 0;
   overflow: hidden;
@@ -705,9 +741,9 @@ body::before {
   color: #a9c6e2;
 }
 
-.log-empty { color: var(--muted-2); font-size: 11px; }
+.log-empty { color: var(--muted-2); font-size: 12px; }
 .log-line { white-space: pre-wrap; word-break: break-word; }
-.log-line .ts { margin-right: 6px; color: #4f6b88; }
+.log-line .ts { margin-right: 6px; color: var(--muted); }
 .log-line.kind-eval { color: #ffe0a3; }
 .log-line.kind-status { color: #8ce6ff; }
 .log-line.kind-error { color: #ff9aa4; }
@@ -740,7 +776,7 @@ body::before {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 10.5px;
+  font-size: 12px;
   letter-spacing: 0.6px;
   color: var(--muted);
   white-space: nowrap;
@@ -754,10 +790,10 @@ body::before {
   background: rgba(5, 12, 22, 0.92);
   color: var(--text);
   font-family: inherit;
-  font-size: 11px;
+  font-size: 12px;
 }
 
-.mini-field select:disabled { opacity: 0.45; cursor: not-allowed; }
+.mini-field select:disabled { opacity: 0.6; cursor: not-allowed; }
 .mini-field select:focus { outline: none; border-color: rgba(56, 225, 255, 0.55); }
 .mini-field > span { color: var(--muted-2); }
 
@@ -777,7 +813,7 @@ body::before {
   background: rgba(5, 12, 22, 0.92);
   color: var(--muted);
   font-family: inherit;
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: 0.5px;
   cursor: pointer;
 }
@@ -786,10 +822,10 @@ body::before {
   border-color: rgba(56, 225, 255, 0.55);
   background: rgba(56, 225, 255, 0.14);
   color: #9fe8ff;
-  box-shadow: 0 0 8px rgba(56, 225, 255, 0.18);
+  box-shadow: 0 0 6px rgba(56, 225, 255, 0.11);
 }
 
-.toggle-btn:disabled { opacity: 0.35; cursor: not-allowed; box-shadow: none; }
+.toggle-btn:disabled { opacity: 0.72; cursor: not-allowed; box-shadow: none; }
 .toggle-btn:focus { outline: none; border-color: rgba(56, 225, 255, 0.7); }
 
 .map-status {
@@ -798,7 +834,7 @@ body::before {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 10.5px;
+  font-size: 12px;
   letter-spacing: 0.4px;
   color: var(--muted-2);
 }
@@ -807,7 +843,7 @@ body::before {
 .map-status.warn { color: #ffc35c; }
 .map-status.bad { color: #ff9aa4; }
 
-.cell-sim { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.cell-sim { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .cell-sim.terrain { color: #7de3b0; }
 
 /* ---------------- 真机 RWPP 录制入口 ---------------- */
@@ -815,7 +851,7 @@ body::before {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 10.5px;
+  font-size: 12px;
   letter-spacing: 0.4px;
   color: var(--muted-2);
   white-space: nowrap;
@@ -868,7 +904,7 @@ body::before {
   border-radius: 8px;
   background: rgba(255, 120, 60, 0.13);
   color: #ffcaa8;
-  font-size: 9.5px;
+  font-size: 11.5px;
   line-height: 15px;
   letter-spacing: 0.5px;
   vertical-align: middle;
@@ -882,7 +918,7 @@ body::before {
 
   flex: 1 1 auto;
   min-height: 0;
-  background: #04090f;
+  background: var(--bg-0);
 }
 
 .stage-wrap canvas {
@@ -910,7 +946,7 @@ body::before {
   border-radius: 20px;
   background: rgba(255, 60, 80, 0.18);
   color: #ff8f9b;
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: 1.5px;
 }
 
@@ -924,7 +960,9 @@ body::before {
   animation: rec-blink 1s steps(2, end) infinite;
 }
 
-@keyframes rec-blink { 50% { opacity: 0.15; } }
+/* 录制指示灯的闪烁幅度原来从 1.0 掉到 0.15（85% 满幅变化、1s 周期），属于光敏性
+ * 闪光风险，也明显分神。收到 0.45 之后只是"呼吸"而不是"闪"。 */
+@keyframes rec-blink { 50% { opacity: 0.45; } }
 
 .player-bar {
   display: flex;
@@ -944,7 +982,7 @@ body::before {
   cursor: pointer;
 }
 
-.speed { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.speed { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
 .speed select {
   padding: 3px 6px;
   border: 1px solid var(--line-2);
@@ -952,7 +990,7 @@ body::before {
   background: rgba(5, 12, 22, 0.92);
   color: var(--text);
   font-family: inherit;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .frame-label {
@@ -965,7 +1003,7 @@ body::before {
   font-variant-numeric: tabular-nums;
 }
 
-.frame-sub { font-size: 10px; color: var(--muted-2); }
+.frame-sub { font-size: 11.5px; color: var(--muted-2); }
 
 .sandbox-side {
   display: flex;
@@ -992,7 +1030,7 @@ body::before {
 .score-side.enemy strong { color: var(--red); }
 .score-side .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--blue); }
 .score-side.enemy .dot { background: var(--red); }
-.vs { font-size: 10px; letter-spacing: 2px; color: var(--muted-2); }
+.vs { font-size: 11.5px; letter-spacing: 2px; color: var(--muted-2); }
 
 .hp-bars { display: flex; flex-direction: column; gap: 7px; padding: 4px 12px 10px; }
 
@@ -1001,7 +1039,7 @@ body::before {
   grid-template-columns: 58px minmax(0, 1fr) 40px;
   align-items: center;
   gap: 8px;
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--muted);
 }
 
@@ -1032,9 +1070,9 @@ body::before {
 }
 
 .event-feed .ev-line { color: #a9c6e2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.event-feed .ev-line .ev-ts { color: #4f6b88; margin-right: 6px; }
+.event-feed .ev-line .ev-ts { color: var(--muted); margin-right: 6px; }
 .event-feed .ev-line.kill { color: #ffc35c; }
-.event-feed .ev-line.shot { color: #9fd8ef; }
+.event-feed .ev-line.shot { color: var(--text-on-tint); }
 .event-feed .ev-line.info { color: #7df2c0; }
 
 /* ---------------- 回放库 ---------------- */
@@ -1096,7 +1134,7 @@ body::before {
   align-items: center;
   gap: 4px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .replay-pagination .page-size-label select {
@@ -1105,7 +1143,7 @@ body::before {
   border-radius: 4px;
   color: #cfe8fb;
   padding: 2px 6px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .pagination-current-page {
@@ -1114,7 +1152,7 @@ body::before {
   background: rgba(56, 225, 255, 0.12);
   color: var(--cyan);
   font-weight: 600;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .replay-table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -1125,9 +1163,9 @@ body::before {
   z-index: 2;
   padding: 8px 12px;
   border-bottom: 1px solid var(--line);
-  background: #0a1524;
+  background: var(--bg-2);
   color: var(--muted);
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 500;
   letter-spacing: 1px;
   text-align: left;
@@ -1136,7 +1174,7 @@ body::before {
 
 .replay-table td {
   padding: 9px 12px;
-  border-bottom: 1px solid rgba(23, 41, 63, 0.7);
+  border-bottom: 1px solid var(--line);
   color: #c9def2;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -1153,7 +1191,7 @@ body::before {
   padding: 1px 8px;
   border: 1px solid var(--line-2);
   border-radius: 20px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .result-badge.win { border-color: rgba(57, 224, 139, 0.5); background: rgba(57, 224, 139, 0.12); color: #7df2c0; }
@@ -1200,7 +1238,7 @@ body::before {
   z-index: 99;
   display: grid;
   place-items: center;
-  background: #04070d;
+  background: var(--bg-0);
   color: #ffc3c9;
   font-size: 15px;
 }
@@ -1339,7 +1377,7 @@ body::before {
   width: 0;
   border-radius: 5px;
   background: linear-gradient(90deg, var(--cyan), #1a6fd4);
-  box-shadow: 0 0 10px rgba(56, 225, 255, 0.5);
+  box-shadow: 0 0 6px rgba(56, 225, 255, 0.26);
   transition: width 0.3s ease;
 }
 
@@ -1349,7 +1387,7 @@ body::before {
   justify-content: space-between;
   gap: 10px;
   margin-top: 9px;
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: 0.3px;
   color: var(--muted);
 }
@@ -1358,7 +1396,7 @@ body::before {
 
 .hint-line.subtle {
   color: var(--muted-2);
-  font-size: 10.5px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -1434,7 +1472,7 @@ body::before {
 .kpi-card.accent-cyan::after { background: linear-gradient(180deg, #38e1ff, rgba(56, 225, 255, 0.15)); }
 
 .kpi-label {
-  font-size: 10px;
+  font-size: 11.5px;
   letter-spacing: 1.2px;
   color: var(--muted-2);
   white-space: nowrap;
@@ -1458,19 +1496,19 @@ body::before {
   line-height: 1.1;
   color: #ecf9ff;
   letter-spacing: 0.5px;
-  text-shadow: 0 0 14px rgba(56, 225, 255, 0.28);
+  text-shadow: 0 0 9px rgba(56, 225, 255, 0.14);
   white-space: nowrap;
 }
 
-.kpi-card.accent-blue .kpi-value b { color: #bfe3ff; text-shadow: 0 0 14px rgba(63, 169, 255, 0.35); }
-.kpi-card.accent-red .kpi-value b { color: #ffd0d0; text-shadow: 0 0 14px rgba(255, 90, 90, 0.3); }
-.kpi-card.accent-green .kpi-value b { color: #c9ffe6; text-shadow: 0 0 14px rgba(57, 224, 139, 0.3); }
-.kpi-card.accent-amber .kpi-value b { color: #ffe4b8; text-shadow: 0 0 14px rgba(255, 195, 92, 0.3); }
+.kpi-card.accent-blue .kpi-value b { color: #bfe3ff; text-shadow: 0 0 9px rgba(63, 169, 255, 0.16); }
+.kpi-card.accent-red .kpi-value b { color: #ffd0d0; text-shadow: 0 0 9px rgba(255, 90, 90, 0.14); }
+.kpi-card.accent-green .kpi-value b { color: #c9ffe6; text-shadow: 0 0 9px rgba(57, 224, 139, 0.14); }
+.kpi-card.accent-amber .kpi-value b { color: #ffe4b8; text-shadow: 0 0 9px rgba(255, 195, 92, 0.14); }
 
-.kpi-unit { font-size: 10px; color: var(--muted-2); white-space: nowrap; }
+.kpi-unit { font-size: 11.5px; color: var(--muted-2); white-space: nowrap; }
 .kpi-foot {
   margin-top: 2px;
-  font-size: 9.5px;
+  font-size: 11.5px;
   color: var(--muted-2);
   white-space: nowrap;
   overflow: hidden;
@@ -1498,7 +1536,7 @@ body::before {
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 4px;
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: 0.8px;
   color: #cfe8fb;
   white-space: nowrap;
@@ -1509,7 +1547,7 @@ body::before {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 9.5px;
+  font-size: 11.5px;
   letter-spacing: 0.3px;
   color: var(--muted-2);
   white-space: nowrap;
@@ -1563,7 +1601,7 @@ body::before {
 .task-card.active {
   border-color: rgba(56, 225, 255, 0.75);
   background: rgba(56, 225, 255, 0.08);
-  box-shadow: 0 0 12px rgba(56, 225, 255, 0.16);
+  box-shadow: 0 0 10px rgba(56, 225, 255, 0.1);
 }
 .task-card.failed { border-color: rgba(255, 90, 90, 0.5); }
 
@@ -1572,7 +1610,7 @@ body::before {
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  font-size: 11px;
+  font-size: 12px;
   color: #cfe8fb;
   white-space: nowrap;
 }
@@ -1583,7 +1621,7 @@ body::before {
   gap: 2px 10px;
   margin-top: 5px;
   font-family: "Consolas", monospace;
-  font-size: 10px;
+  font-size: 11.5px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
@@ -1594,13 +1632,13 @@ body::before {
   gap: 8px;
   padding: 7px 12px;
   border-bottom: 1px dashed rgba(56, 225, 255, 0.08);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 .fe-slots-card .slots-row:last-child { border-bottom: none; }
 .slots-value { font-family: "Consolas", monospace; color: #cfe8fb; }
 
-.dash-summary { font-size: 10.5px; color: #7de3b0; }
+.dash-summary { font-size: 12px; color: #7de3b0; }
 .dash-log {
   margin: 0;
   padding: 9px 12px;
@@ -1610,7 +1648,7 @@ body::before {
   background: rgba(4, 9, 16, 0.75);
   color: #a9c6e2;
   font-family: "Consolas", "Cascadia Mono", monospace;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
@@ -1689,10 +1727,10 @@ body::before {
   border-radius: 10px;
   background: rgba(8, 16, 28, 0.9);
 }
-.mode-title { font-size: 10px; letter-spacing: 1.2px; color: var(--muted-2); }
+.mode-title { font-size: 11.5px; letter-spacing: 1.2px; color: var(--muted-2); }
 .mode-btn {
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
   padding: 5px 12px;
   border-radius: 7px;
   border: 1px solid var(--line-2);
@@ -1707,7 +1745,7 @@ body::before {
   border-color: transparent;
   font-weight: 600;
 }
-.mode-note { margin-left: auto; font-size: 10px; color: var(--muted-2); }
+.mode-note { margin-left: auto; font-size: 11.5px; color: var(--muted-2); }
 
 .ppo-kpis { grid-template-columns: repeat(8, minmax(0, 1fr)); }
 .ppo-charts { grid-template-columns: repeat(4, minmax(0, 1fr)); }
@@ -1717,7 +1755,7 @@ body::before {
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 5px 16px;
   padding: 10px 12px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 .ppo-summary .kv {
@@ -1734,12 +1772,12 @@ body::before {
   align-items: flex-start;
   gap: 8px;
   padding: 0 12px 11px;
-  font-size: 10px;
+  font-size: 11.5px;
   color: var(--muted-2);
 }
 .ppo-checkpoint code {
   color: #7de3b0;
-  font-size: 10px;
+  font-size: 11.5px;
   line-height: 1.45;
   word-break: break-all;
 }
@@ -1767,7 +1805,7 @@ body::before {
   flex-direction: row;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 .checkbox-field input[type="checkbox"] {
@@ -1787,14 +1825,14 @@ body::before {
   padding: 8px 12px 12px;
 }
 .reward-panel .empty,
-.strategy-panel .empty { color: var(--muted-2); font-size: 11px; padding: 2px 0; }
+.strategy-panel .empty { color: var(--muted-2); font-size: 12px; padding: 2px 0; }
 
 .reward-row {
   display: grid;
   grid-template-columns: 104px minmax(0, 1fr) 66px;
   gap: 8px;
   align-items: center;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 .reward-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1823,7 +1861,7 @@ body::before {
   flex-direction: column;
   gap: 5px;
   padding: 8px 12px 11px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 .strategy-kv {
@@ -1843,13 +1881,13 @@ body::before {
 .strategy-log {
   margin-top: 5px;
   font-family: "Consolas", monospace;
-  font-size: 10px;
+  font-size: 11.5px;
   line-height: 1.5;
   color: var(--muted-2);
   white-space: pre-wrap;
   word-break: break-word;
 }
-.strategy-warn { color: #ffc35c; font-size: 10.5px; }
+.strategy-warn { color: #ffc35c; font-size: 12px; }
 
 @media (max-width: 860px) {
   .reward-row { grid-template-columns: 90px minmax(0, 1fr) 60px; }
@@ -1887,11 +1925,11 @@ body::before {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 
-.mm-stat-label { font-size: 10px; letter-spacing: 1px; color: var(--muted-2); }
+.mm-stat-label { font-size: 11.5px; letter-spacing: 1px; color: var(--muted-2); }
 
 .mm-stat b {
   font-size: 12.5px;
@@ -1947,12 +1985,12 @@ body::before {
   padding: 0 7px;
   border: 1px solid var(--line-2);
   border-radius: 20px;
-  font-size: 10.5px;
+  font-size: 12px;
   line-height: 16px;
   white-space: nowrap;
 }
 
-.mm-badge.free { border-color: rgba(56, 225, 255, 0.4); color: #9fd8ef; }
+.mm-badge.free { border-color: rgba(56, 225, 255, 0.4); color: var(--text-on-tint); }
 .mm-badge.tmp { border-color: rgba(255, 195, 92, 0.45); background: rgba(255, 195, 92, 0.1); color: #ffc35c; }
 .mm-badge.running { border-color: rgba(57, 224, 139, 0.5); background: rgba(57, 224, 139, 0.12); color: #7df2c0; }
 .mm-badge.failed { border-color: rgba(255, 106, 120, 0.5); background: rgba(255, 106, 120, 0.1); color: #ff9aa4; }
@@ -1960,7 +1998,7 @@ body::before {
 
 .mm-map {
   margin-left: 6px;
-  font-size: 10px;
+  font-size: 11.5px;
   color: var(--muted-2);
   white-space: nowrap;
 }
@@ -1969,7 +2007,7 @@ body::before {
 
 .btn-xs {
   padding: 2px 7px;
-  font-size: 10.5px;
+  font-size: 12px;
   border-radius: 5px;
 }
 
@@ -1978,3 +2016,17 @@ body::before {
   .model-manager-card .replay-table td.cell-name { max-width: 160px; }
 }
 
+/* ============================================================
+   无障碍：尊重系统的「减少动态效果」
+   三条无限动画（指示灯脉冲 / 录制闪烁 / toast 入场）在长时间盯盘时会持续
+   吸引周边视觉，是疲劳来源之一。关闭动画而不是关闭元素本身 —— 状态仍然
+   由颜色和文字表达。
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

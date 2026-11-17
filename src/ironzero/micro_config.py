@@ -53,9 +53,100 @@ class MicroDuelConfig:
     # Fog of war: 0 disables it (default). When > 0, enemies farther than this
     # distance from every friendly unit are hidden from observations/targeting.
     vision_radius: float = 0.0
+    # Keep the builder out of the policy's tactical group head.
+    #
+    # Every real order cancels the in-flight one, so a tactical order addressed to
+    # the builder's group stops whatever it was constructing. Measured
+    # (``.runtime/ppo_interference.json``): a policy issuing one order per decision
+    # sends it while a structure is unfinished on **1949 of 1949** decisions, the
+    # episode ends with ``occupied = 1`` / ``income = 26`` / 3 entities, and its win
+    # rate was 43.75% -- against 93.75% for a policy that issues **nothing** with the
+    # same curriculum. The policy was destroying the economy that builds its army.
+    #
+    # ``True`` closes groups that contain *only* builders (and the broadcast slot
+    # when every living unit is a builder). Mixed groups stay open, because closing
+    # them would disable part of the army. Set ``False`` to reproduce the
+    # unshielded behaviour and measure the difference.
+    protect_builder: bool = True
+    # Let the curriculum own the two *build* action kinds while it is running.
+    #
+    # Closing the builder's tactical group is not sufficient: ``build_extractor``
+    # and ``build_structure`` decode into orders that address the builder directly,
+    # so the policy can still cancel construction through the kind head. Measured
+    # with only the group protected: ``occupied = 1``, ``income = 26``, three
+    # entities at the tick cap (``.runtime/mask_reach.json``).
+    #
+    # The curriculum issues exactly those two kinds, so re-learning them adds no
+    # decision the environment is not already making, while every duplicate order
+    # resets the build. With this on, the agent's decisions are the ones the
+    # curriculum does not make: what to produce, where to go, whom to attack.
+    #
+    # Off by default: it is only meaningful together with an active curriculum, and
+    # turning it on changes what the action space *means*, so it must be opt-in
+    # rather than silently true. ``RwppGameConfig.micro_config`` enables it when the
+    # opening curriculum is on.
+    curriculum_owns_build_kinds: bool = False
+    # How many independent action *slots* one decision carries.
+    #
+    # ``1`` -- the historical layout: one flat vector, so one decision issues at
+    # most one order. That makes the economy and the army mutually exclusive at the
+    # decision level: a ``build_extractor`` and a ``move_group`` can never be
+    # chosen together, and neither can ``produce_unit`` and ``attack_move``. Every
+    # order also addresses the builder or the army, and *every* real order cancels
+    # the in-flight one, so a tactical decision taken while the builder is working
+    # silently destroys construction. Measured end to end: the trained policy
+    # reached 43.75% while a policy that issued **nothing** reached 93.75% on the
+    # same curriculum -- the policy's measured contribution was negative, because
+    # it kept cancelling the economy that builds its own army
+    # (``.runtime/ppo_interference.json``, and the note in ``rwpp/stepping.py``).
+    #
+    # ``2`` -- the two-slot layout: an **economy** slot and a **tactical** slot,
+    # each with its own kind vocabulary (``rwpp.decoding.ECONOMY_ACTION_KINDS`` /
+    # ``TACTICAL_ACTION_KINDS``) and each able to say "nothing this decision". One
+    # decision therefore expresses "keep building the factory AND move group 2"
+    # -- which is what a human player does, and what makes the economy a *decision*
+    # rather than something a scripted stage performs on the agent's behalf.
+    #
+    # Default ``1`` on purpose: this changes what the action vector *means*, so a
+    # checkpoint saved under one layout cannot be interpreted under the other. An
+    # opt-in flag keeps every existing checkpoint, test and measurement valid, and
+    # makes the A/B honest (same policy class, same reward, one variable).
+    action_slots: int = 1
 
     # Observation / action shape
+    #
+    # ``max_entities`` is the **enemy visibility budget**. The default stays ``8``
+    # because it is the *historical* layout: every shipped checkpoint, the mock
+    # engine's fixtures and the reference measurements are expressed in it, and
+    # changing it silently would reinterpret all of them
+    # (``tests/test_two_slot_actions.py::test_default_is_the_old_layout`` pins this
+    # contract deliberately).
+    #
+    # ``8`` is also too small to play on, and that is a measured defect rather than
+    # a preference. On ``[p2]Lake (2p)`` a 1200-frame replay
+    # (``runs/platform/real-rwpp-20261116-133006-d97c5a``) dropped **26.1%** of all
+    # enemy unit-frames, and **61.7% of the slots that were kept went to buildings**
+    # -- because the enemy block is deliberately *not* reordered (the target head
+    # indexes it, see ``observation.encoding``), so it keeps the engine's spawn
+    # order, in which the map-placed command centre, builders, factories and
+    # extractors all have lower ids than every produced combat unit.
+    #
+    # The consequence was not subtle: ``c_artillery`` -- 290 px range against a
+    # tank's 130, i.e. the unit that decides an exchange -- was visible on **0 of
+    # 500** unit-frames it existed for. "The policy does not focus the enemy's high
+    # output units" measured as an *observation* defect, not a strategy one.
+    #
+    # The fix therefore lives in the **training/eval entry points**
+    # (``training.train_rwpp``, ``training.rwpp_ppo``, ``scripts.eval_rwpp_policy``),
+    # which default to :data:`WIDE_MAX_ENTITIES` and stay consistent with each other
+    # so a checkpoint's layout is always reproduced at inference time. Raising it
+    # here instead would have broken every existing checkpoint for no gain, since a
+    # run that wants the narrow layout can still ask for it explicitly.
     max_entities: int = 8
+    # ``target_slots`` is the shared target head: enemy slots + menu entries +
+    # the "no target" fallback. It must be at least ``max_entities + 1`` or the
+    # policy can see an enemy it cannot name; the encoder and the mask both size
+    # themselves from this number.
     target_slots: int = 9  # 8 enemy slots + "no target"
     position_grid: int = 8
     map_channels: int = 3
@@ -98,7 +189,36 @@ class MicroDuelConfig:
     # how much hp it had, but not whether it could shoot -- observed as a builder
     # walking straight into the enemy base to die. Columns 7/8 are
     # ``can_attack`` and ``attack_range / ATTACK_RANGE_SCALE``.
-    type_features: int = 9
+    #
+    # 9 -> 17: eight more columns, again appended at the tail, for the attributes
+    # a real-time-strategy decision actually needs and the bridge did not expose:
+    #
+    # ==== ==============================================================
+    # 9    ``move_speed / MOVE_SPEED_SCALE``  -- 追不追得上 / 跑不跑得掉
+    # 10   ``tech_level / 3``                 -- 等级: 对方是不是已经升了 T2/T3
+    # 11   ``can_attack_air``                 -- 能不能打飞机 (空军是否安全)
+    # 12   ``is_defence``                     -- 防御建筑: 静止的威胁
+    # 13   ``shield / max_shield``            -- 护盾, 先要打掉的那层
+    # 14   ``shoot_delay / SHOOT_DELAY_SCALE``-- 射速 (真实 DPS 的一半信息)
+    # 15   ``queue_length / QUEUE_SCALE``     -- 建造队列: 工厂在造几个
+    # 16   ``queue_progress``                 -- 建造队列: 当前这个造到哪了
+    # ==== ==============================================================
+    #
+    # Column 9 answers "can I catch it / can I outrun it", which no other column
+    # can: a turret and a tank with identical hp and range are opposite problems.
+    # Columns 15/16 are the bridge's answer to "what is this factory producing",
+    # the information whose absence made behaviour cloning impossible -- the
+    # built-in AI's army grows from 2 to 13 units while the recorded order stream
+    # contains zero production orders, because production lives in the build queue
+    # rather than in waypoints.
+    #
+    # Note on 防御/armour: this engine has no per-unit armour *stat*. Defence is
+    # (a) a shield pool (columns 13) and (b) per-*projectile* damage multipliers
+    # (``hullDamageMultiplier`` etc. on ``Projectile``). There is therefore no
+    # honest "armour number" to emit per unit, and inventing one would be worse
+    # than omitting it. Shield plus ``can_attack_air`` plus range is the real
+    # defensive profile the engine exposes.
+    type_features: int = 17
     # Fixed module-level denominator for the ``attack_range`` column (mirrored in
     # ``observation.features.ATTACK_RANGE_SCALE``). It is deliberately *not* a
     # config field: the map width changes per scenario, and a scenario-dependent
@@ -150,13 +270,33 @@ class MicroDuelConfig:
     opponent: str = "scripted"  # scripted | idle | random
 
     @property
-    def action_nvec(self) -> tuple[int, int, int, int, int]:
+    def is_two_slot(self) -> bool:
+        """Whether this contract uses the two-slot (economy + tactical) layout."""
+
+        return int(self.action_slots) == 2
+
+    @property
+    def action_nvec(self) -> tuple[int, ...]:
         """Per-head action cardinalities, derived from the single source of truth.
+
+        Two layouts, selected by :attr:`action_slots`:
+
+        * ``1`` -- ``[kind, group, x, y, target]``, the historical single slot;
+        * ``2`` -- ``[econ_* x5, tac_* x5]``, economy slot first, exactly the
+          order :func:`ironzero.rwpp.decoding.multi_action_nvec` returns.
 
         The ``kind`` head must stay in lock-step with ``mock_engine.ACTION_KINDS``
         (which defines the action id order) *and* with the Java bridge dispatch.
-        ``ACTION_KINDS`` is imported lazily to avoid a circular import.
+        ``ACTION_KINDS`` is imported lazily to avoid a circular import, and the
+        two-slot branch imports its own vocabulary for the same reason --
+        ``rwpp.decoding`` imports this module, so a top-level import would close
+        the cycle.
         """
+
+        if int(self.action_slots) == 2:
+            from .rwpp.decoding import multi_action_nvec
+
+            return multi_action_nvec(self)
 
         from .mock_engine import ACTION_KINDS
 
@@ -199,3 +339,23 @@ class MicroDuelConfig:
 
 
 DEFAULT_CONFIG = MicroDuelConfig()
+
+#: Enemy visibility budget the **real-game training and evaluation paths** use.
+#:
+#: ``MicroDuelConfig``'s own default of ``8`` is the historical layout and is
+#: deliberately left alone (every shipped checkpoint and the mock engine's
+#: fixtures are expressed in it). It is also too small to play on: a 1200-frame
+#: Lake replay (``runs/platform/real-rwpp-20261116-133006-d97c5a``) dropped 26.1%
+#: of enemy unit-frames and kept 61.7% buildings, so ``c_artillery`` -- the
+#: longest-range land unit -- was visible on 0 of the 500 frames it existed for.
+#:
+#: ``32`` covers the population actually observed: that replay peaks at 16, and
+#: ``runs/platform/twoslot-mask-long/eval_report.json`` records ``enemy_alive``
+#: peaks of 29-41 on the same map. ``target_slots`` is ``+1`` for the "no target"
+#: fallback the target head needs to stay samplable.
+#:
+#: Keeping this beside ``DEFAULT_CONFIG`` (rather than editing it) is what lets a
+#: run opt back into the narrow layout for an A/B without the library contract
+#: moving underneath the checkpoints.
+WIDE_MAX_ENTITIES: int = 32
+WIDE_TARGET_SLOTS: int = WIDE_MAX_ENTITIES + 1

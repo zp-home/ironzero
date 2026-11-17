@@ -33,6 +33,26 @@ import { stopCurrentRun, submitStartRun } from './trainRuns.js';
 import { clamp, clampInt, num } from './util.js';
 import { applyViewMode, resetSandboxView, selectMap, syncCameraUi, syncMapToggles } from './view.js';
 
+/**
+ * 刷新权重按钮的收尾提示。
+ *
+ * 不能无条件说「共发现 N 个模型」：读取失败时 N 是旧值或 0，这句提示会把一次
+ * 真实的后端/网络错误伪装成「目录里没有权重」。所以先看错误，再报数字。
+ */
+function toastCheckpointRefreshResult() {
+  const fe = state.fe;
+  if (fe.checkpointsError) {
+    toast('读取 Checkpoint 列表失败：' + String(fe.checkpointsError).slice(0, 160), 'error');
+    return;
+  }
+  const count = (fe.checkpointList || []).length;
+  if (!count) {
+    toast('扫描完成，但没有找到 checkpoint 权重文件', 'info');
+    return;
+  }
+  toast('已刷新 Checkpoint 列表，共发现 ' + count + ' 个模型', 'ok');
+}
+
 export function bindEvents() {
   const tabButtons = document.querySelectorAll('.tab-btn');
   for (const button of tabButtons) {
@@ -176,16 +196,14 @@ export function bindEvents() {
     els.feCheckpointRefresh.addEventListener('click', async () => {
       toast('正在重新扫描 Checkpoint 权重目录…', 'info');
       await loadFeCheckpoints(true);
-      const count = (state.fe.checkpointList || []).length;
-      toast('已刷新 Checkpoint 列表，共发现 ' + count + ' 个模型', 'ok');
+      toastCheckpointRefreshResult();
     });
   }
   if (els.fePpoCheckpointRefresh) {
     els.fePpoCheckpointRefresh.addEventListener('click', async () => {
       toast('正在重新扫描 Checkpoint 权重目录…', 'info');
       await loadFeCheckpoints(true);
-      const count = (state.fe.checkpointList || []).length;
-      toast('已刷新 Checkpoint 列表，共发现 ' + count + ' 个模型', 'ok');
+      toastCheckpointRefreshResult();
     });
   }
   if (els.feTrainPolicy) els.feTrainPolicy.addEventListener('change', feSyncTrainPolicyUi);
@@ -420,7 +438,7 @@ export function bindEvents() {
   window.addEventListener('resize', () => {
     if (state.tab === 'infer' || state.tab === 'sandbox') {
       drawSandbox();
-      feDrawInferCharts();
+      feDrawInferCharts(true);
     } else if (state.tab === 'train') {
       feDrawTrainCharts();
     }

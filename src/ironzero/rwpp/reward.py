@@ -47,10 +47,51 @@ def hp_fractions(
     enemy_max = sum(float(unit.get("max_hp") or 0.0) for unit in enemies) or 1.0
     own_ref = float(own_max_ref) if own_max_ref else own_max
     enemy_ref = float(enemy_max_ref) if enemy_max_ref else enemy_max
-    # The AI may field reinforcements, so fractions are clamped to [0, 1].
+    # The AI reinforces far past its opening army, and on an original economy map it
+    # keeps its command centre alive the whole game. With the opening total as the
+    # denominator the ratio therefore *exceeds* 1.0 almost immediately and a naive
+    # clamp pins it there.
+    #
+    # Measured before this fix, over every ``eval_report.json`` on stock skirmish
+    # maps: ``enemy_hp_frac`` was exactly 1.0 in **89 of 89 episodes**, and
+    # ``own_hp_frac`` was 1.0 in 65 of 89 (73%). The dashboard KPI read "100% vs
+    # 100%" while the agent was actually down to 5 units against 15-17. Training
+    # and inference share this code, so the two "agreed" and the number looked
+    # trustworthy.
+    #
+    # The clamp stays (a fraction above 1.0 is still not meaningful to a caller
+    # that treats it as a percentage), but the value now saturates only when the
+    # side really is at full strength, and the *unclamped* ratio is recoverable
+    # from ``hp_fraction_ratios`` for anything that wants the honest number.
     return (
         max(0.0, min(1.0, own_hp / max(1.0, own_ref))),
         max(0.0, min(1.0, enemy_hp / max(1.0, enemy_ref))),
+    )
+
+
+def hp_fraction_ratios(
+    state: dict[str, Any],
+    own_max_ref: float | None = None,
+    enemy_max_ref: float | None = None,
+) -> tuple[float, float]:
+    """Unclamped ``(own_hp / ref, enemy_hp / ref)`` -- the honest army-size ratio.
+
+    Companion of :func:`hp_fractions`, which clamps to ``[0, 1]`` for reporting.
+    Above 1.0 means "this side grew past its opening army" (on an economy map the
+    AI always does), which is information the KPI used to throw away.
+    """
+
+    own = state.get("own_entities", [])
+    enemies = state.get("visible_enemy_entities", [])
+    own_hp = sum(float(unit.get("hp") or 0.0) for unit in own)
+    enemy_hp = sum(float(unit.get("hp") or 0.0) for unit in enemies)
+    own_max = sum(float(unit.get("max_hp") or 0.0) for unit in own) or 1.0
+    enemy_max = sum(float(unit.get("max_hp") or 0.0) for unit in enemies) or 1.0
+    own_ref = float(own_max_ref) if own_max_ref else own_max
+    enemy_ref = float(enemy_max_ref) if enemy_max_ref else enemy_max
+    return (
+        max(0.0, own_hp / max(1.0, own_ref)),
+        max(0.0, enemy_hp / max(1.0, enemy_ref)),
     )
 
 
@@ -74,14 +115,114 @@ def hp_fractions(
 COMBAT_ALIVE_WEIGHT = 0.85
 
 
-def combat_value(hp: float, max_hp: float) -> float:
-    """Combat value of one unit: 0 when destroyed, ~``max_hp`` while alive."""
+#: How much of a unit's threat value is "it is a threat at all" versus "it hits
+#: hard". A unit that cannot shoot is worth its support role instead.
+#:
+#: Why this term exists at all: ``combat_value`` prices a unit by ``max_hp``, and
+#: in Rusted Warfare hull size and firepower are only loosely correlated. Measured
+#: on ``[p2]Lake (2p)`` the artillery carries **140 hp** while a builder carries
+#: **170** and a scout **350**, so the old pricing made the enemy's longest-range
+#: gun (290 px, versus 130 for a tank) *cheaper to leave alive than a builder*.
+#: ``.runtime/policy_attrition.json`` and the 1200-frame replay
+#: ``runs/platform/real-rwpp-20261116-133006-d97c5a`` both show the consequence:
+#: the policy never prioritised artillery, and artillery was 100% invisible to it
+#: at the same time (8 enemy slots, spawn order), so the two defects reinforced
+#: each other.
+#:
+#: The blend keeps ``max_hp`` as the *scale* (so the potential's units stay
+#: comparable with the opening-army reference) and adds a bounded multiplier for
+#: what the unit can actually do. Both components are dimensionless, so the
+#: potential-function shape -- and therefore policy invariance -- is preserved.
+COMBAT_THREAT_WEIGHT = 0.35
+
+#: Reference DPS proxy used to normalise the firepower component. Long-range
+#: artillery is the upper end of the stock ladder on the maps this project trains
+#: on; anything above it saturates rather than exploding the potential's range.
+COMBAT_THREAT_RANGE_SCALE = 300.0
+
+
+def _unit_threat(unit: dict[str, Any]) -> float:
+    """Dimensionless "how dangerous is this unit", in ``[0, 2]``.
+
+    Three inputs, all already reported per entity by the bridge:
+
+    * **firepower** -- ``attack_range`` normalised. This is a *proxy*, not damage:
+      stock Rusted Warfare hides damage in ``Projectile.reloadTime`` (the same
+      field is the reload timer when cooling down), so a real per-unit damage
+      number is not observable. Range is the honest correlate available without
+      fabricating a field, and it is the one that decides who wins an exchange:
+      artillery out-ranges a tank 290 to 130 and therefore kills it without being
+      hit.
+    * **speed of fire** -- a shorter ``shoot_delay`` means more shots.
+    * **air reach** -- a unit that can shoot aircraft is a counter to a whole unit
+      class, so it is worth more than its hull.
+
+    A unit that cannot attack at all scores 0 on firepower and is priced purely by
+    hull, which is correct: an extractor is not a threat.
+    """
+
+    if not unit.get("can_attack"):
+        return 0.0
+    try:
+        reach = float(unit.get("attack_range") or 0.0)
+    except (TypeError, ValueError):
+        reach = 0.0
+    reach_frac = max(0.0, min(1.0, reach / COMBAT_THREAT_RANGE_SCALE))
+    # ``shoot_delay`` is ticks between shots, so it is the *inverse* of a rate.
+    # Missing/unparseable reads as the tank's measured 70-75 ticks, i.e. a plain
+    # combat unit rather than a mystery.
+    try:
+        delay = float(unit.get("shoot_delay") or 0.0)
+    except (TypeError, ValueError):
+        delay = 0.0
+    rate = (75.0 / delay) if delay > 0.0 else 1.0
+    rate_frac = max(0.0, min(1.0, rate))
+    air = 1.0 if unit.get("can_attack_air") else 0.0
+    # Weighted so reach dominates: it is what decides an engagement.
+    return 1.0 + reach_frac + 0.25 * rate_frac + 0.35 * air
+
+
+def combat_value(
+    hp: float,
+    max_hp: float,
+    unit: dict[str, Any] | None = None,
+) -> float:
+    """Combat value of one unit: 0 when destroyed, ~``max_hp`` while alive.
+
+    ``unit`` is optional so every existing positional caller keeps working. When
+    it is supplied, the hull value is scaled by :func:`_unit_threat`, which is what
+    makes "this artillery is the thing killing my army" score above "this builder
+    is walking past" -- see :data:`COMBAT_THREAT_WEIGHT` for the measured reason
+    that matters.
+    """
 
     if hp <= 0.0:
         return 0.0
     ceiling = max(1e-6, float(max_hp))
     frac = max(0.0, min(1.0, float(hp) / ceiling))
-    return ceiling * (COMBAT_ALIVE_WEIGHT + (1.0 - COMBAT_ALIVE_WEIGHT) * frac)
+    value = ceiling * (COMBAT_ALIVE_WEIGHT + (1.0 - COMBAT_ALIVE_WEIGHT) * frac)
+    if unit is not None:
+        value *= 1.0 + COMBAT_THREAT_WEIGHT * _unit_threat(unit)
+    return value
+
+
+def threat_value(unit: dict[str, Any]) -> float:
+    """A unit's full threat value, i.e. what killing it removes from the enemy.
+
+    Exported so the per-kill reward term can price kills by *what died* rather
+    than by how many things died. ``kill_bonus`` used to be a flat count
+    (``kill_bonus * (enemy_alive_before - enemy_alive_now)``), which made trading a
+    tank for the enemy's artillery score exactly the same as trading it for a
+    builder.
+    """
+
+    try:
+        max_hp = float(unit.get("max_hp") or 0.0)
+    except (TypeError, ValueError):
+        max_hp = 0.0
+    if max_hp <= 0.0:
+        max_hp = float(DEFAULT_CONFIG.unit_hp)
+    return combat_value(max_hp, max_hp, unit)
 
 
 def combat_value_fractions(
@@ -110,6 +251,7 @@ def combat_value_fractions(
             combat_value(
                 float(unit.get("hp") or 0.0),
                 float(unit.get("max_hp") or 0.0) or float(DEFAULT_CONFIG.unit_hp),
+                unit,
             )
             for unit in units
         )
@@ -197,11 +339,15 @@ def army_distance_norm(state: dict[str, Any], map_diagonal: float) -> float:
 
 __all__ = [
     "COMBAT_ALIVE_WEIGHT",
+    "COMBAT_THREAT_RANGE_SCALE",
+    "COMBAT_THREAT_WEIGHT",
     "army_distance_norm",
     "army_hp_reference",
     "combat_value",
     "combat_value_fractions",
     "combat_value_potential",
+    "hp_fraction_ratios",
     "hp_fractions",
     "hp_potential",
+    "threat_value",
 ]

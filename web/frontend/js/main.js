@@ -48,7 +48,7 @@ export async function boot() {
     await loadReplays();
     await refreshRwppStatus(true);
     await loadFeCheckpoints();
-    feRenderInferDashboard();
+    feRenderInferDashboard(true);
     feApplyTrainMode(state.fe.trainMode);
     feRenderTrainDashboard(null);
     feRenderPpoDashboard();
@@ -59,10 +59,10 @@ export async function boot() {
   }
   renderConn();
   updatePlayerUi(true);
-  feRenderInferDashboard();
+  feRenderInferDashboard(true);
   feRenderTrainDashboard(null);
   setTimeout(() => {
-    feDrawInferCharts();
+    feDrawInferCharts(true);
     feDrawTrainCharts();
     feDrawPpoCharts();
   }, 120);

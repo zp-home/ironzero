@@ -10,9 +10,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..micro_config import MicroDuelConfig
+from ..micro_config import DEFAULT_CONFIG, MicroDuelConfig
 from ..mock_engine import ORDER_IDS
-
 GROUP_DIM = 4  # matches the four unit groups in the micro-duel scenario
 
 #: Denominator for the ``attack_range`` identity column.
@@ -25,9 +24,37 @@ GROUP_DIM = 4  # matches the four unit groups in the micro-duel scenario
 #: and anything longer is clamped to 1.0 so the block keeps its [0, 1] contract.
 ATTACK_RANGE_SCALE = 1000.0
 
+#: Denominator for the ``move_speed`` identity column.
+#:
+#: Engine speeds are expressed in world pixels per tick at the fixed 60 Hz loop
+#: (``OrderableUnit.getMoveSpeed()`` returns ``1.0`` for a stock tank, and the
+#: engine applies ``position += speed * throttle * frameDelta``). The stock 1.15
+#: ladder runs from ~0.4 (heavy tanks / mammoth) to ~2.6 (scouts, hover), so 3.0
+#: covers it with headroom and anything faster clamps to 1.0. Fixed rather than
+#: derived from the map for the same reason as ``ATTACK_RANGE_SCALE``.
+MOVE_SPEED_SCALE = 3.0
+
+#: Denominator for the ``shoot_delay`` column, in ticks between shots.
+#:
+#: A stock tank's ``getTurretShootDelay(0)`` is 75 ticks (1.25 s); artillery and
+#: heavier turrets sit in the 90-150 range. 180 ticks (3 s) is the top of the
+#: stock ladder, so a slower weapon clamps to 1.0 (which reads as "slowest").
+SHOOT_DELAY_SCALE = 180.0
+
+#: Denominator for the ``queue_length`` column (items a factory has queued).
+#:
+#: Ten is deliberately far above the stock build queue limit so the column keeps
+#: resolution where it matters (0, 1, 2 items) and saturates only in a case the
+#: engine does not normally allow. Used as ``min(count, scale) / scale`` rather
+#: than a hard clamp so "2 vs 3 queued" stays distinguishable.
+QUEUE_SCALE = 10.0
+
 __all__ = [
     "ATTACK_RANGE_SCALE",
     "GROUP_DIM",
+    "MOVE_SPEED_SCALE",
+    "QUEUE_SCALE",
+    "SHOOT_DELAY_SCALE",
     "TYPE_ONE_HOT_NAMES",
     "_cell",
     "_entity_features",
@@ -150,7 +177,7 @@ def _type_id(unit: dict) -> int:
 
 
 def _entity_type_features(unit: dict) -> np.ndarray:
-    """Identity features: what *kind* of thing this entity is, and can it shoot.
+    """Identity features: what *kind* of thing this entity is, and what it can do.
 
     The geometric ``_entity_features`` block is type-blind by construction: it
     encodes position, hp fraction, order and distance only, so a command center
@@ -159,7 +186,7 @@ def _entity_type_features(unit: dict) -> np.ndarray:
     observe that it owned a factory, that a builder was still alive, or that an
     enemy turret was a turret.
 
-    Layout (``MicroDuelConfig.type_features`` = 9):
+    Layout (``MicroDuelConfig.type_features`` = 17):
 
     ===== =========================================================
     0     occupancy (mirrors the geometric block, so a padded slot
@@ -172,15 +199,48 @@ def _entity_type_features(unit: dict) -> np.ndarray:
     6     hashed type id         -- 其余类型之间的区分
     7     ``can_attack``         -- 能不能打 (0/1)
     8     ``attack_range`` / 1000 -- 打多远 (clamp 到 [0, 1])
+    9     ``move_speed`` / 3.0    -- 移动速度 (追不追得上)
+    10    ``tech_level`` / 3      -- 等级 / 建筑等级
+    11    ``can_attack_air``      -- 能不能打空中
+    12    ``is_defence``          -- 防御建筑 (静止的威胁)
+    13    ``shield`` / ``max_shield`` -- 护盾剩余
+    14    ``shoot_delay`` / 180   -- 射速 (越大越慢)
+    15    ``queue_length`` / 10   -- 建造队列长度
+    16    ``queue_progress``      -- 建造队列当前进度
     ===== =========================================================
 
     Columns 7 and 8 exist because the block could describe *where* an entity was
     and *how much hp* it had, but not whether walking into range of it is fatal.
     The policy therefore had to induce "the thing with hash 0.236 kills me" from
     reward alone -- which is why a builder was observed walking straight into the
-    enemy base to die. The two columns are appended at the **tail** so the first
-    seven keep their exact meaning for an older checkpoint (see
-    ``MicroDuelConfig.type_features``).
+    enemy base to die.
+
+    Columns 9-16 are the rest of what a decision in this genre needs. They are all
+    *appended at the tail*, so every earlier column keeps its exact offset and an
+    older checkpoint's weights stay attached to the feature they were trained on
+    (``training.ppo._column_source`` re-maps them slot by slot and zeroes the
+    appended ones -- see ``tests/test_checkpoint_stride_migration.py``).
+
+    ============ ===============================================================
+    9  速度        A turret and a tank with identical hp and range are opposite
+                  problems: one can be outrun, the other cannot. Nothing else in
+                  the observation distinguishes them.
+    10 等级        ``getTechLevel()``: a T2 factory produces a different army, and
+                  an upgraded extractor earns more. Without it "the enemy is
+                  suddenly fielding T2" is invisible until it arrives.
+    11 防空        ``canAttackFlyingUnits()``. Whether a threat can reach aircraft
+                  decides if an air unit is a counter or a gift.
+    12 防御        A building that can shoot *is* the game's defence structure.
+    13 护盾        ``Unit.damage`` spends shield before hull, so a shield pool is
+                  the only "extra hp" the engine models; 0/0 means no shield.
+    14 射速        ``getTurretShootDelay`` is half of DPS (the other half is the
+                  projectile's damage, which is per-projectile, not per unit).
+    15/16 建造队列 The bridge reports a factory's real queue. Its absence is why
+                  behaviour cloning had no production labels at all: the built-in
+                  AI's army grows 2 -> 13 units while its recorded order stream
+                  contains zero production orders, because production lives in the
+                  build queue rather than in waypoints.
+    ============ ===============================================================
 
     A payload that omits the fields reads as "cannot attack, range 0", which is
     the safe default: the mock engine has no weapon model, and a missing field
@@ -190,6 +250,23 @@ def _entity_type_features(unit: dict) -> np.ndarray:
     contract as the rest of the observation.
     """
 
+    def _number(raw: object, default: float = 0.0) -> float:
+        """Parse one numeric payload field into a finite, non-negative float.
+
+        Any unparseable / non-finite / negative value reads as ``default`` rather
+        than as a NaN or a negative that would poison the whole vector. This is the
+        single place that rule is applied, so every appended column inherits it
+        instead of each one re-implementing (and getting subtly wrong) the guard.
+        """
+
+        try:
+            value = float(raw if raw is not None else default)
+        except (TypeError, ValueError):
+            return default
+        if not np.isfinite(value) or value < 0.0:
+            return default
+        return value
+
     building = 1.0 if unit.get("is_building") else 0.0
     factory = 1.0 if (unit.get("is_factory") or unit.get("is_factory_building")) else 0.0
     builder = 1.0 if unit.get("is_builder") else 0.0
@@ -197,13 +274,7 @@ def _entity_type_features(unit: dict) -> np.ndarray:
     # A finished unit reports 1.0 (the bridge sends 1.0 for non-buildings); a
     # structure mid-construction reports its real fraction. Clamped so a stray
     # engine value cannot push the observation out of range.
-    try:
-        progress = float(unit.get("build_progress", 1.0))
-    except (TypeError, ValueError):
-        progress = 1.0
-    if not np.isfinite(progress):
-        progress = 1.0
-    progress = float(min(1.0, max(0.0, progress)))
+    progress = min(1.0, max(0.0, _number(unit.get("build_progress"), 1.0)))
     # Hash the raw id into [0, 1). Deterministic across runs and platforms
     # (Python's int hash on a fixed seed is not, so use an explicit mix) and
     # monotone-free: we only need "different types look different".
@@ -214,17 +285,73 @@ def _entity_type_features(unit: dict) -> np.ndarray:
     # unparseable / non-finite / negative reads as 0 (no reach) rather than as a
     # NaN that would poison the whole vector; the upper end is clamped so a mod
     # with a 5000 px artillery cannot break the [0, 1] contract.
-    try:
-        attack_range = float(unit.get("attack_range", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        attack_range = 0.0
-    if not np.isfinite(attack_range) or attack_range < 0.0:
-        attack_range = 0.0
-    attack_range = float(min(1.0, attack_range / ATTACK_RANGE_SCALE))
-    return np.array(
-        [1.0, building, factory, builder, air, progress, hashed, can_attack, attack_range],
+    attack_range = float(min(1.0, _number(unit.get("attack_range")) / ATTACK_RANGE_SCALE))
+    # --- columns 9..16 ---------------------------------------------------
+    move_speed = float(min(1.0, _number(unit.get("move_speed")) / MOVE_SPEED_SCALE))
+    # ``tech_level`` is 1-based in the engine (``Unit.getTechLevel()`` defaults to
+    # 1), so a payload without it reads as a plain T1 unit rather than as 0 --
+    # 0 would look like "a tier below anything", a state that does not exist.
+    tech_level = float(min(1.0, _number(unit.get("tech_level"), 1.0) / 3.0))
+    can_attack_air = 1.0 if unit.get("can_attack_air") else 0.0
+    is_defence = 1.0 if unit.get("is_defence") else 0.0
+    # A shield *fraction*: raw shield points are meaningless without the maximum
+    # ("12 shield" is full on a scout and empty on a battleship). A unit with no
+    # shield at all reports 0.0, which is also what 0/0 would give if it were
+    # allowed to divide.
+    shield_points = _number(unit.get("shield"))
+    shield_max = _number(unit.get("max_shield"))
+    shield_fraction = (
+        float(min(1.0, shield_points / shield_max)) if shield_max > 0.0 else 0.0
+    )
+    shoot_delay = float(
+        min(1.0, _number(unit.get("shoot_delay")) / SHOOT_DELAY_SCALE)
+    )
+    # ``min(count, scale) / scale`` keeps 0/1/2 queue items distinguishable while
+    # saturating an absurd value; a plain clamp would flatten everything above 1.
+    queue_length = float(min(_number(unit.get("queue_length")), QUEUE_SCALE) / QUEUE_SCALE)
+    queue_progress = float(min(1.0, _number(unit.get("queue_progress"))))
+    features = np.array(
+        [
+            1.0,
+            building,
+            factory,
+            builder,
+            air,
+            progress,
+            hashed,
+            can_attack,
+            attack_range,
+            move_speed,
+            tech_level,
+            can_attack_air,
+            is_defence,
+            shield_fraction,
+            shoot_delay,
+            queue_length,
+            queue_progress,
+        ],
         dtype=np.float32,
     )
+    # The stride is declared twice -- once here as a literal array, once as
+    # ``MicroDuelConfig.type_features`` -- because this function deliberately takes
+    # no config (it is a pure per-record transform). The two drifting apart is
+    # silent and severe: ``encode_observation`` slices ``cfg.type_features`` floats
+    # per slot, so a *longer* array raises a numpy broadcast error on the first
+    # occupied slot while a *shorter* one pads with zeros and quietly drops every
+    # record's tail. Check it here, once per call, so the failure names the cause
+    # instead of surfacing as a shape mismatch three frames later.
+    #
+    # ``DEFAULT_CONFIG.type_features`` and not ``MicroDuelConfig.type_features``:
+    # the dataclass uses ``slots=True``, so the *class* attribute is a member
+    # descriptor, not a number.
+    expected = DEFAULT_CONFIG.type_features
+    if features.shape[0] != expected:
+        raise ValueError(
+            f"_entity_type_features produced {features.shape[0]} columns but "
+            f"MicroDuelConfig.type_features is {expected}; the identity-block "
+            f"stride must match the encoder's declared stride"
+        )
+    return features
 
 
 def _cell(unit: dict, cfg: MicroDuelConfig) -> tuple[int, int]:

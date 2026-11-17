@@ -70,10 +70,20 @@ python -m uvicorn web.backend.app:app --host 127.0.0.1 --port 8000 --reload
 
 ### 实机训练
 
-- 配置地图、策略、局数（1–50）、每局 ticks，点「开始实机训练」
-- 当前阶段为**真机数据采集**：逐局拉起真实 1.15 对局并用脚本策略驱动，录制训练数据
-- 进度卡实时显示状态、进度条（x/y 局）、当前局、耗时；完成后列出本任务的真机回放产物，点「播放」跳回实机推理页播放
-- 说明：PPO 真机训练器接入后复用同一进度区（下一步）
+「实机训练」页有两种模式，用页内的模式切换：
+
+- **数据采集**：配置地图、策略、局数（1–50）、每局 ticks、并发路数，逐局拉起真实
+  1.15 对局并用脚本/模型策略驱动，录制训练数据。完成后列出本任务的真机回放产物，
+  点「播放」跳回实机推理页播放。
+- **PPO 真机训练**：配置场景（IronZero5/10/15/20/25 竞技场或原版图）、初始权重
+  （预热 BC / 指定 Checkpoint / 从零）、`updates` × `envs` × `rollout_steps`、每局 ticks、
+  仿真速度 `frame_ms`、观测迷雾、评估间隔等，点「开始 PPO 真机训练」。控制台实时显示
+  进度、胜率曲线、奖励分解与事件日志；汇总卡给出最终评估与 checkpoint 路径。
+  - `frame_ms` 只影响墙钟节奏；每局仿真时长由 `episode_ticks` 决定（前端固定传
+    `physics_ms=16`，即 1 tick = 1 游戏 tick）。
+  - 初始权重「预热策略」由**后端按当前坦克数**解析（`runs/experiments/bc_ironzero{5,10,…,25}`），
+    控制台会显示本次实际使用的文件；找不到时会明说「实际从零开始」，不再静默。
+  - 每次只能跑一个 PPO 任务；有实机推理/采集在跑时会被拒绝（409），先停掉再开始。
 
 ![实机训练 · 数据采集](../docs/assets/platform_real_train.png)
 
@@ -122,6 +132,24 @@ python scripts\rwpp_real_service.py --port 8300
 | POST | `/api/rwpp/train` | 实机训练数据采集 `{episodes, ticks, policy, map_name}` |
 | POST | `/api/rwpp/record` | 一键录制真实对局 `{ticks, policy}`（兼容旧入口） |
 | GET | `/api/rwpp/jobs/{id}` | 真机任务状态/进度/产物 |
+| POST | `/api/rwpp/ppo` | 实机 PPO 训练（见下方契约） |
+| GET | `/api/rwpp/ppo/{id}/events?after=N` | PPO 实时事件 + 任务投影 |
+| POST | `/api/rwpp/ppo/{id}/stop` | 停止 PPO 训练 |
+
+### 5.1 `/api/rwpp/ppo` 的字段契约
+
+请求体由 `web/backend/app/models.py::RwppPpoRequest` 校验后**逐字转发**给宿主机服务，
+字段清单与语义见 [`scripts/rwpp_service/README.md` §3.1](../scripts/rwpp_service/README.md)。
+三条不变式（都有回归测试 `tests/test_web_ppo_contract.py`）：
+
+1. **不许静默丢字段**：模型设了 `extra="forbid"`，多传未知 key 得 422，而不是 200 后
+   悄悄按别的配置训练。历史上这里缺 13 个字段（`ai_pilot` / `physics_ms` / `arena` …），
+   前端勾了也完全不生效。
+2. **`/app/...` 要改写**：容器里列出的权重路径是 `/app/runs/...`，宿主机没有 `/app`。
+   `_host_path()` 负责剥前缀，`/infer` `/record` `/train` `/ppo` 四条路径共用。
+3. **找不到显式权重 = 400**：`init_mode=checkpoint` 指到一个不存在的文件时报错，
+   不会静默从零开始。任务记录里回填**已解析**的 `init_mode` / `init_checkpoint`，
+   控制台据此显示「本次实际起点」。
 
 ## 6. 目录
 
@@ -148,7 +176,18 @@ runs/                   产物（已 gitignore）
 
 ## 8. 边界
 
-- 平台当前围绕**真实 1.15 无头对局**：实机推理由脚本策略驱动、帧实时回传；实机训练当前阶段是**真机数据采集**（逐局录制），PPO 真机训练器是下一步。
+- 平台围绕**真实 1.15 无头对局**：实机推理与实机 PPO 训练都在宿主机跑真机对局，
+  帧实时回传；「实机训练」页另有纯数据采集模式（逐局录制，不更新权重）。
+- **PPO 真机训练已可用**：`实机训练 → PPO 真机训练` 页会拉起
+  `ironzero.training.train_rwpp`，训练在环、逐轮更新、真机盲测评估，产物写到
+  `runs/platform/rwpp-ppo-<id>/`（`checkpoint*.pt` / `live.jsonl` / `train.log` /
+  `rwpp_summary.json`）。
+- 训练能跑起来有两个**前置条件**（缺一个就会立刻失败，且原因会明确报出来）：
+  1. 宿主机真机服务在跑：`python scripts\rwpp_real_service.py --port 8300`；
+  2. RWPP runtime 找得到：`IRONZERO_RWPP_RUNTIME` 指向真实 1.15 构建（默认
+     `E:\IronZeroBuild\rwpp-runtime-1.15`），arena 地图由它生成并安装。
+- 旧 checkpoint（`global_dim=12` 时代）可以直接用于推理与预热：`load_policy` 只从
+  存档继承**场景**（坦克数、实体槽、通道），布局常量一律取当前代码，权重按块重映射。
 - 离线参考引擎（8v8 微操、PPO 训练闭环）的接口仍保留在后端，但已从主导航移除。
 - 真实游戏画面录像需要带图形客户端 + 窗口捕获；这里提供的是真实状态级回放。
 - 平台默认只在本机/内网使用，不要暴露到公网。

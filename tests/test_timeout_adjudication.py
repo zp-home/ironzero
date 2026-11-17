@@ -87,7 +87,14 @@ def test_a_native_victory_is_a_terminated_win() -> None:
     assert shaping.terminated
     assert not shaping.truncated
     assert shaping.last_result == "victory"
-    assert shaping.components["terminal"] == pytest.approx(1.0)
+    # The magnitude comes from the config, not from a literal. ``RwppGameConfig``
+    # now overrides the micro-duel's +/-1.0 with the flow-derived terminal
+    # weights (see ``RwppGameConfig.win_reward``); what this test pins is that the
+    # engine's verdict is paid *at the configured weight*, not that the weight is
+    # any particular number.
+    assert shaping.components["terminal"] == pytest.approx(
+        RwppGameConfig().micro_config().win_reward
+    )
 
 
 def test_a_native_defeat_is_a_terminated_loss() -> None:
@@ -95,7 +102,9 @@ def test_a_native_defeat_is_a_terminated_loss() -> None:
     assert shaping.terminated
     assert not shaping.truncated
     assert shaping.last_result == "defeat"
-    assert shaping.components["terminal"] == pytest.approx(-1.0)
+    assert shaping.components["terminal"] == pytest.approx(
+        RwppGameConfig().micro_config().loss_reward
+    )
 
 
 def test_the_engine_verdict_beats_the_army_counts() -> None:
@@ -107,13 +116,17 @@ def test_the_engine_verdict_beats_the_army_counts() -> None:
 
     shaping = _shaping(bridge_result="victory", own_alive=1, enemy_alive=6)
     assert shaping.last_result == "victory"
-    assert shaping.components["terminal"] == pytest.approx(1.0)
+    assert shaping.components["terminal"] == pytest.approx(
+        RwppGameConfig().micro_config().win_reward
+    )
 
 
 def test_the_engine_verdict_is_not_awarded_a_win_bonus_on_defeat() -> None:
     shaping = _shaping(bridge_result="defeat", own_alive=6, enemy_alive=1)
     assert shaping.last_result == "defeat"
-    assert shaping.components["terminal"] == pytest.approx(-1.0)
+    assert shaping.components["terminal"] == pytest.approx(
+        RwppGameConfig().micro_config().loss_reward
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -241,9 +254,32 @@ def test_recommended_cap_is_long_enough_for_a_real_match() -> None:
 def test_zero_episode_ticks_derives_the_cap() -> None:
     game = RwppGameConfig(map_width_px=2600.0, map_height_px=2600.0)
     assert game.episode_ticks == 0
+    # The derived cap is scaled by ``episode_tick_multiplier`` (see that field:
+    # the derived cap is consumed in full and is too short for the built-in AI to
+    # finish a march, so the real-game default doubles it).
+    base = recommended_episode_ticks(2600.0, 2600.0, game.num_teams)
+    assert game.resolved_episode_ticks() == int(
+        round(base * game.episode_tick_multiplier)
+    )
+    assert game.resolved_episode_ticks() > base
+
+
+def test_a_multiplier_of_one_reproduces_the_historical_cap() -> None:
+    """The opt-out must give back the exact pre-multiplier number."""
+
+    game = RwppGameConfig(
+        map_width_px=2600.0, map_height_px=2600.0, episode_tick_multiplier=1.0
+    )
     assert game.resolved_episode_ticks() == recommended_episode_ticks(
         2600.0, 2600.0, game.num_teams
     )
+
+
+def test_an_explicit_cap_is_never_multiplied() -> None:
+    """``--episode-ticks N`` must mean exactly N, or the flag lies."""
+
+    game = RwppGameConfig(episode_ticks=40000, episode_tick_multiplier=3.0)
+    assert game.resolved_episode_ticks() == 40000
 
 
 def test_explicit_episode_ticks_is_respected() -> None:

@@ -1,15 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
 """Optional strategic layer (LLM or rule based) for :class:`RwppDuelEnv`.
 
-The strategy layer only nudges reward shaping: it produces a directive whose
-target point is turned into a potential term. It never emits low-level actions
-(doc 12.4 / stage 5), and any failure inside it must degrade to "no shaping"
-instead of breaking training.
+The strategy layer owns two things and neither of them is a unit order:
+
+* a **directive** whose target point becomes a potential term in the reward
+  (doc 12.4 / stage 5 -- the commander never emits low-level actions);
+* a **macro plan** (:class:`~ironzero.strategy.directive.MacroPlan`) that the
+  build stages execute: which economy goals run, in what priority, within what
+  budgets and when the march begins.
+
+Before the macro plan existed the second half was hard-coded in ``env.py`` and no
+directive could change it, so "the commander" could not touch the economy at all.
+The plan is resolved through :mod:`ironzero.rwpp.macro`, which also guarantees the
+no-directive case is bit-identical to the configured behaviour.
 
 These are free functions taking the environment as ``env`` so they can live
 outside the (already long) ``env.py``; :class:`RwppDuelEnv` still exposes the
 historical method names ``_strategy_summary`` / ``_refresh_strategy`` /
-``_strategy_potential`` as thin delegates.
+``_strategy_potential`` as thin delegates. Any failure inside them must degrade to
+"no shaping, default economy" instead of breaking training.
 """
 
 from __future__ import annotations
@@ -18,13 +27,30 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from .macro import economy_summary, resolve_macro
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .env import RwppDuelEnv
 
 
 def strategy_summary(env: "RwppDuelEnv") -> dict[str, Any]:
+    """Everything the strategist is allowed to see, as a plain mapping.
+
+    Deliberately *not* the observation tensor: the commander reasons about
+    aggregates (counts, a bank, a centroid), and the two consumers want different
+    things. Note what is **absent**: no entity ids, no target slots, no action
+    indices. A strategist that can name an entity id can start emitting unit
+    orders, which is the one thing doc 12.4 forbids.
+
+    ``economy`` is the macro block. It is what makes an economy plan possible at
+    all -- without it the strategist had unit positions and nothing else, so
+    "plan the build order" was guesswork.
+    """
+
     own = env.state.get("own_entities", [])
     enemies = env.state.get("visible_enemy_entities", [])
+    macro_state = economy_summary(env.state)
+    env.macro_state = macro_state
     return {
         "tick": int(env.state.get("tick", 0)),
         "own_units": [
@@ -46,19 +72,30 @@ def strategy_summary(env: "RwppDuelEnv") -> dict[str, Any]:
             for unit in enemies
         ],
         "map": {"width": float(env.micro.map_width), "height": float(env.micro.map_height)},
+        "economy": macro_state,
     }
 
 
 def refresh_strategy(env: "RwppDuelEnv") -> None:
-    if env.strategy is None:
-        return
-    propose = getattr(env.strategy, "propose", None)
-    if propose is None:
-        return
-    try:
-        env.directive = propose(env._strategy_summary())
-    except Exception:  # noqa: BLE001 - strategy must never break training
-        env.directive = None
+    """Ask the strategist for a new directive and resolve its macro plan.
+
+    Two independent failures are contained here:
+
+    * a strategist that raises must not break the episode -- the directive is
+      cleared, which makes the reward term 0 and (via :func:`resolve_macro`) the
+      economy plan the configured default;
+    * a directive without a usable macro plan (an old object, a broken payload)
+      resolves to the same configured default rather than an exception.
+    """
+
+    if env.strategy is not None:
+        propose = getattr(env.strategy, "propose", None)
+        if propose is not None:
+            try:
+                env.directive = propose(env._strategy_summary())
+            except Exception:  # noqa: BLE001 - strategy must never break training
+                env.directive = None
+    env.macro = resolve_macro(env.game, env.directive)
 
 
 def strategy_potential(env: "RwppDuelEnv") -> float | None:

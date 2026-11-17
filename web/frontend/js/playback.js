@@ -207,36 +207,54 @@ export function renderEventFeed() {
   box.scrollTop = box.scrollHeight;
 }
 
+/**
+ * 把相邻两帧的单位按 ``fraction`` 插值成一组可绘制单位（不修改入参）。
+ *
+ * 每帧都会调用一次，且每个单位都会新建一个对象字面量：25v25 地图 149 个单位
+ * 在 60fps 下是每秒近 9000 次小对象分配，是 GC 抖动的来源之一。这里改为复用
+ * 一个按 id 维护的对象池 —— 绘制层只读这些字段，不持有引用，所以跨帧复用是
+ * 安全的；同时省掉原来「先建 Map 再二次遍历」的中间结构。
+ */
+const interpolatedPool = new Map();
+
 export function interpolateUnits(frame, nextFrame, fraction) {
-  const merged = new Map();
-  for (const unit of frame.units) merged.set(unit.id, { unit: unit, next: null });
+  const blend = clamp(fraction, 0, 1);
+  const nextById = new Map();
   if (nextFrame && nextFrame !== frame) {
-    for (const unit of nextFrame.units) {
-      const hit = merged.get(unit.id);
-      if (hit) hit.next = unit;
-    }
+    for (const unit of nextFrame.units) nextById.set(unit.id, unit);
   }
   const result = [];
-  for (const entry of merged.values()) {
-    const unit = entry.unit;
-    const next = entry.next;
-    const blend = clamp(fraction, 0, 1);
-    result.push({
-      id: unit.id,
-      team: unit.team,
-      group: unit.group,
-      x: next ? unit.x + (next.x - unit.x) * blend : unit.x,
-      y: next ? unit.y + (next.y - unit.y) * blend : unit.y,
-      hp: next ? unit.hp + (next.hp - unit.hp) * blend : unit.hp,
-      maxHp: unit.maxHp,
-      order: next ? next.order : unit.order,
-      target: next ? next.target : unit.target,
-      // 贴图相关字段逐字段透传（类型不会中途变化，取左帧值）
-      unitType: unit.unitType,
-      isBuilding: unit.isBuilding,
-      isBuilder: unit.isBuilder,
-      isFactory: unit.isFactory,
-    });
+  const live = new Set();
+  for (const unit of frame.units) {
+    const next = nextById.get(unit.id) || null;
+    let out = interpolatedPool.get(unit.id);
+    if (!out) {
+      out = {};
+      interpolatedPool.set(unit.id, out);
+    }
+    live.add(unit.id);
+    out.id = unit.id;
+    out.team = unit.team;
+    out.group = unit.group;
+    out.x = next ? unit.x + (next.x - unit.x) * blend : unit.x;
+    out.y = next ? unit.y + (next.y - unit.y) * blend : unit.y;
+    out.hp = next ? unit.hp + (next.hp - unit.hp) * blend : unit.hp;
+    out.maxHp = unit.maxHp;
+    out.order = next ? next.order : unit.order;
+    out.target = next ? next.target : unit.target;
+    // 贴图相关字段逐字段透传（类型不会中途变化，取左帧值）
+    out.unitType = unit.unitType;
+    out.isBuilding = unit.isBuilding;
+    out.isBuilder = unit.isBuilder;
+    out.isFactory = unit.isFactory;
+    result.push(out);
+  }
+  // Drop ids that no longer appear, so a long replay does not leak one object per
+  // dead unit for the lifetime of the page.
+  if (interpolatedPool.size > live.size) {
+    for (const id of interpolatedPool.keys()) {
+      if (!live.has(id)) interpolatedPool.delete(id);
+    }
   }
   return result;
 }

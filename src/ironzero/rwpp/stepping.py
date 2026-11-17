@@ -17,22 +17,96 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from ..observations import build_masks
-from .decoding import decode_action, merge_done_message, observation_to_state
+from ..observations import build_masks_for_config as build_masks
+from .decoding import decode_action, decode_action_multi, merge_done_message, observation_to_state
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .env import RwppDuelEnv
 
 
-def send_step(env: "RwppDuelEnv", action: np.ndarray) -> tuple[list[dict[str, Any]], bool]:
+def send_step(
+    env: "RwppDuelEnv",
+    action: np.ndarray,
+    extra_actions: list[dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
     """Decode ``action``, send it to the bridge; return ``(actions, disconnected)``.
 
     Decoding happens against ``env.obs_state`` on purpose: with fog enabled the
     target slots index the *visible* enemy list (as masked in ``obs_state``), so
     using the ground-truth list here would fire at the wrong enemy.
+
+    ``extra_actions`` are already-decoded ``ironzero/1`` orders that must be
+    dispatched **in the same step**, after the policy's own orders. They carry the
+    opening curriculum (see ``RwppDuelEnv._curriculum_actions``).
+
+    Why they ride along instead of being sent as a second message
+    ------------------------------------------------------------
+    A second ``step`` message is a *second dispatch on a later tick*, not an extra
+    order in the same decision. Measured on a masked-random Lake episode
+    (``.runtime/extractor_trace.json``, 220 decisions): the curriculum re-issued
+    ``build_extractor`` on every decision and the extractor's ``build_progress``
+    stayed at exactly **0.0000** the whole time, because the policy's own tactical
+    order (``attack_move``/``move_group``/``stop``, ~half of all sampled kinds)
+    reached the builder first, cancelled the in-flight construction, and only then
+    did the curriculum re-issue it. Progress was reset before it could accumulate,
+    so the build never completed and nothing downstream could fire.
+
+    Sharing one dispatch makes "last order wins" apply the way it does for a human
+    player: the policy's order is queued first and the curriculum's last, so the
+    builder keeps building while the rest of the army obeys the policy.
+
+    Note the limit of this mechanism, measured rather than assumed: appending the
+    curriculum order last does **not** prevent the policy's own tactical order from
+    reaching the builder, because each entry in one dispatch is applied to whoever
+    it addresses. On a masked-random Lake episode
+    (``.runtime/group_collision.json``, 900 decisions) **289 of 995** policy orders
+    (29%) targeted the builder's group or the broadcast group, and the factory
+    stayed at ``build_progress`` 0.0 for the whole episode. Silently rewriting the
+    policy's order (e.g. re-addressing it away from the builder) would be worse
+    than the symptom: the executed action would no longer be the sampled action,
+    so the PPO ratio and the advantage would both be computed against an action the
+    environment never took. The exploration barrier is therefore closed for
+    *deterministic* helpers and for a policy that already tends to leave the builder
+    alone, and remains open for a uniformly random one -- which is a property of the
+    task, not something a flag can paper over.
+
+    What this costs, measured end to end
+    ------------------------------------
+    ``.runtime/ppo_interference.json`` sends one order per decision (which is what
+    an untrained PPO policy does) and records that the order arrives while a
+    structure is unfinished on **1949 of 1949** decisions. Final state: ``occupied
+    = 1``, ``income = 26``, three own entities. The noop baseline -- same map, same
+    seed family, same curriculum, but issuing *nothing* -- reaches ``occupied =
+    3-4``, ``income = 42-50`` and a 93% win rate.
+
+    So on this map the trained policy's measured contribution was **negative**:
+    43.75% (7 wins / 16, ``runs/platform/rwpp-ppo-ppo-*``) against 93.75% for the
+    do-nothing policy. The gap is not a tuning problem; it is the policy cancelling
+    the construction that produces its own army. Two honest fixes exist and neither
+    is a flag: (a) a two-slot action layout so an economy order and a tactical order
+    can coexist (``decoding.ECONOMY_ACTION_KINDS`` already exists, unused), or (b)
+    train with the builder masked out of the policy's tactical groups.
     """
 
-    actions = decode_action(action, env.obs_state, env.micro)
+    # Layout dispatch. This is the *only* place the main ``step`` path decodes the
+    # policy's action, so it is the one seam that has to know about the two-slot
+    # layout (``env.py``'s other ``decode_action`` call is the opening
+    # curriculum's, which always speaks the single-slot vocabulary).
+    #
+    # Why an explicit dispatch instead of one decoder: ``decode_action`` validates
+    # the vector length against ``len(config.action_nvec)`` (10 under the two-slot
+    # layout, so *validation passes*) and then ``_decode_heads`` reads only
+    # ``vector[0..4]``. A 10-head vector would therefore be silently decoded as
+    # if its first five entries were a single slot -- the tactical slot dropped,
+    # no exception raised, and PPO computing ratios against an order the
+    # environment never executed. Measured: ``[5,0,0,0,0, 1,1,3,3,0]`` decoded to
+    # one ``build_extractor`` and lost the ``attack_move``.
+    if getattr(env.micro, "is_two_slot", False):
+        actions = decode_action_multi(action, env.obs_state, env.micro)
+    else:
+        actions = decode_action(action, env.obs_state, env.micro)
+    if extra_actions:
+        actions = list(actions) + list(extra_actions)
     decision_id = f"d-{env.episode_id}-{env.episode_steps}"
     payload = {
         "protocol": "ironzero/1",
@@ -79,7 +153,15 @@ def absorb_message(env: "RwppDuelEnv", message: dict[str, Any]) -> dict[str, Any
 
 
 def strategy_payload(env: "RwppDuelEnv") -> dict[str, Any] | None:
-    """JSON-safe view of the current directive (``None`` when absent/broken)."""
+    """JSON-safe view of the current directive (``None`` when absent/broken).
+
+    The *resolved* macro plan is attached next to the raw directive payload, and
+    the two are deliberately different objects: ``macro`` in the directive is what
+    the commander asked for (possibly empty), ``resolved_macro`` is what the
+    executor actually ran with after falling back and clamping. Logging only the
+    first would make "the commander said nothing" and "the commander said
+    something the executor overrode" indistinguishable in ``live.jsonl``.
+    """
 
     if env.directive is None:
         return None
@@ -87,9 +169,21 @@ def strategy_payload(env: "RwppDuelEnv") -> dict[str, Any] | None:
     if not callable(to_payload):
         return None
     try:
-        return to_payload()
+        payload = to_payload()
     except Exception:  # noqa: BLE001 - never break the env on logging
         return None
+    if isinstance(payload, dict):
+        resolved = getattr(env, "macro", None)
+        resolved_payload = getattr(resolved, "to_payload", None)
+        if callable(resolved_payload):
+            try:
+                payload["resolved_macro"] = resolved_payload()
+            except Exception:  # noqa: BLE001 - logging must not break the env
+                pass
+        economy = getattr(env, "macro_state", None)
+        if isinstance(economy, dict):
+            payload["economy"] = dict(economy)
+    return payload
 
 
 def build_step_info(env: "RwppDuelEnv", ctx: dict[str, Any]) -> dict[str, Any]:

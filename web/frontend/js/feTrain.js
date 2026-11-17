@@ -5,6 +5,7 @@
 import { Api } from './api.js';
 import { feSetStatusPill, feSetText } from './control.js';
 import { switchTab, toast } from './dashboard.js';
+import { feCatalogMap, feMapCatalog, loadFeMapCatalog } from './feMapCatalog.js';
 import { feDrawTrainCharts, handleFeError } from './feInferUi.js';
 import { resultMeta } from './normalize.js';
 import { loadReplays } from './replays.js';
@@ -147,6 +148,12 @@ export async function feStartTrain() {
     toast('请选择地图', 'error');
     return;
   }
+  // The map's real pixel size has to travel with the request: the observation
+  // normalises every position by it, and `_start` used to default to a constant
+  // that was wrong for eight of the nine stock maps. Resolve from the catalog
+  // (loaded from GET /maps) rather than sending nothing.
+  if (!feMapCatalog()) await loadFeMapCatalog();
+  const catalogMap = feCatalogMap(mapName);
   const episodes = clampInt(els.feTrainEpisodes && els.feTrainEpisodes.value, 1, 50, 3);
   const ticks = clampInt(els.feTrainTicks && els.feTrainTicks.value, 120, 216000, 1200);
   const concurrency = clampInt(els.feTrainConcurrency && els.feTrainConcurrency.value, 1, 10, 2);
@@ -172,14 +179,24 @@ export async function feStartTrain() {
   feDrawTrainCharts();
   feSetText(els.feTrainSummary, '—');
   try {
-    const response = await Api.rwppTrain({
+    const config = {
       episodes: episodes,
       ticks: ticks,
       policy: policy,
       checkpoint: checkpoint,
       map_name: mapName,
       concurrency: concurrency,
-    });
+    };
+    // Path + real size come from the catalog. Omitted (not null) when the map is
+    // not in it: `RwppRecordRequest.map_width` is a required *number* on the
+    // backend, so a null would turn the whole request into a 422 instead of the
+    // host resolving the geometry itself.
+    if (catalogMap) {
+      config.map_path = catalogMap.map_path;
+      config.map_width = num(catalogMap.map_width, 0);
+      config.map_height = num(catalogMap.map_height, 0);
+    }
+    const response = await Api.rwppTrain(config);
     const jobId = response && (response.job_id || response.id);
     if (!jobId) throw new Error('后端未返回训练任务 id');
     fe.trainJobId = String(jobId);

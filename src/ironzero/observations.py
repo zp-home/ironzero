@@ -10,18 +10,26 @@ from __future__ import annotations
 
 from .observation import (  # noqa: F401
     GROUP_DIM,
+    MULTI_MASK_KEYS,
     build_masks,
+    build_masks_for_config,
+    build_masks_multi,
     encode_observation,
     flat_mask_vector,
     masks_as_lists,
+    multi_mask_keys,
     terrain_passable_channel,
 )
 
 __all__ = [
     "GROUP_DIM",
+    "MULTI_MASK_KEYS",
     "build_masks",
+    "build_masks_for_config",
+    "build_masks_multi",
     "encode_observation",
     "flat_mask_vector",
     "masks_as_lists",
+    "multi_mask_keys",
     "terrain_passable_channel",
 ]

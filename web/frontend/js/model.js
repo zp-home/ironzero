@@ -4,6 +4,7 @@
 
 import { loadFeCheckpoints } from './checkpoint.js';
 import { feSetText } from './control.js';
+import { feCatalogMap } from './feMapCatalog.js';
 import { fePpoUpdateEvents } from './ppo.js';
 import { els, state } from './state.js';
 import { num } from './util.js';
@@ -14,18 +15,29 @@ export function feSyncTrainPolicyUi() {
 }
 
 export function feSyncPpoConfigUi() {
-  const mapChoice = (els.fePpoMap && els.fePpoMap.value) || 'IronZero25';
+  const mapChoice = (els.fePpoMap && els.fePpoMap.value) || 'Lake';
   const isIronZero = mapChoice.toLowerCase().startsWith('ironzero');
   const isArtillery = mapChoice.toLowerCase().includes('artillery');
+  // One of the nine stock 2p maps from `GET /maps`.
+  const stockMap = feCatalogMap(mapChoice);
 
   if (els.fePpoUnitsField) {
-    els.fePpoUnitsField.hidden = !isIronZero;
+    els.fePpoUnitsField.hidden = !isIronZero && !isArtillery && !stockMap;
   }
   if (els.fePpoMapHint) {
     if (isIronZero) {
       els.fePpoMapHint.textContent = '竞技场纯微操：开局双方自动生成指定数量的纯坦克部队，直接进行集火与拉扯对决。';
     } else if (isArtillery) {
       els.fePpoMapHint.textContent = '原版战役挑战：开局双方预置 22 辆火炮部队与阵地建筑，直接爆发大兵团炮火决战。';
+    } else if (stockMap) {
+      // State the real geometry: it is what the observation normalises by, so an
+      // operator watching a run should be able to see which size was used.
+      els.fePpoMapHint.textContent = '原版 2p 遭遇战地图：' + stockMap.name + ' · '
+        + Math.round(num(stockMap.map_width, 0)) + '×' + Math.round(num(stockMap.map_height, 0)) + ' px'
+        + ' · 水域 ' + Math.round(num(stockMap.water_ratio, 0) * 100) + '%'
+        + '（尺寸由观测层用于坐标归一化，取自 GET /maps，不再写死 2700×2500）。'
+        + '初始部队严格遵循原版地图设定（双方各 1 个主基地 + 1 辆建造车 + 地图货币点），'
+        + '可训练采矿/造工厂/造兵/升级等宏观运营；对手会持续补兵，前期打不过属于正常。';
     } else {
       els.fePpoMapHint.textContent = '原版遭遇战规则：初始部队严格遵循原版地图设定（双方各 1 个主基地 + 1 辆建造车 + 地图货币点）。此页已支持采矿/造工厂/造兵/升级等宏观运营指令，可训练经济运营与建造技能；对手会持续补兵，前期打不过属于正常。';
     }
@@ -56,13 +68,43 @@ export function feSyncPpoConfigUi() {
   }
   if (els.fePpoInitHint) {
     if (initMode === 'warmstart') {
-      els.fePpoInitHint.textContent = '预热策略基于真实对战规则蒸馏（BC），坦克开局会自动集火与编队推进，可避免从零探索在前几百轮毫无击杀的问题。';
+      els.fePpoInitHint.textContent = '预热策略基于真实对战规则蒸馏（BC），坦克开局会自动集火与编队推进，可避免从零探索在前几百轮毫无击杀的问题。'
+        + hintResolvedStart();
     } else if (initMode === 'checkpoint') {
       els.fePpoInitHint.textContent = '在上方选定的 Checkpoint 权重基础上继续进行 PPO 在环对抗强化学习。';
     } else {
       els.fePpoInitHint.textContent = '从完全随机参数的神经网络从零探索。RTS 微操动作空间庞大，初始几十轮胜率提升较慢。';
     }
   }
+}
+
+/**
+ * 运行中的任务实际用哪个权重起步（宿主服务回报的**已解析**路径）。
+ *
+ * 预热权重按坦克数不同（bc_ironzero5/10/…/25），只有后端知道这次选中了哪一个。
+ * 不显示出来，「预热」就可能悄悄等于「从零」——这正是之前找不到权重时静默退回
+ * None 留下的坑。
+ */
+function hintResolvedStart() {
+  const ppo = state.fe.ppo || {};
+  if (!ppo.jobId) return '';
+  if (ppo.initMode === 'scratch') return ' 本次：从零随机（未使用预热权重）。';
+  if (!ppo.initCheckpoint) {
+    return ppo.initMode === 'warmstart'
+      ? ' 本次：未找到匹配当前坦克数的预热权重，实际从零开始。'
+      : '';
+  }
+  const name = String(ppo.initCheckpoint).replace(/\\/g, '/').split('/').slice(-2).join('/');
+  return ' 本次实际起点：' + name + '。';
+}
+
+/** 只刷新「初始权重」那一行说明；轮询期间每帧都会走到这里。 */
+export function feRenderPpoStartHint() {
+  if (!els.fePpoInitHint) return;
+  const initMode = (els.fePpoInitMode && els.fePpoInitMode.value) || 'warmstart';
+  if (initMode !== 'warmstart') return;
+  const base = '预热策略基于真实对战规则蒸馏（BC），坦克开局会自动集火与编队推进，可避免从零探索在前几百轮毫无击杀的问题。';
+  els.fePpoInitHint.textContent = base + hintResolvedStart();
 }
 
 /** 推理页状态栏的默认文案（与 index.html#fe-infer-status 的初始值一致） */

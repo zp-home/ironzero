@@ -118,6 +118,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--map-width", type=float, default=2700.0)
     parser.add_argument("--map-height", type=float, default=2500.0)
     parser.add_argument("--frame-ms", type=int, default=16, help="16 = real time playback, 2 = fast")
+    parser.add_argument("--fast-forward", type=int, default=1,
+                        help="engine game speed (1..32); 1 = off, N makes a match need 1/N the ticks")
+    parser.add_argument("--lockstep", action=argparse.BooleanOptionalAction, default=True,
+                        help="block after each observation until the policy answers (no dropped frames)")
+    parser.add_argument("--lockstep-timeout-ms", type=int, default=30000,
+                        help="max lockstep wait before the bridge falls back to free running")
     parser.add_argument("--terrain", default="",
                         help="override the checkpoint's terrain JSON path (same obs_dim only)")
     parser.add_argument("--win-mode", default="", help="bridge --win-mode passthrough (e.g. annihilation)")
@@ -173,6 +179,9 @@ def main(argv: list[str] | None = None) -> int:
         target_slots=int(micro.target_slots),
         terrain_path=Path(micro.terrain_path) if micro.terrain_path else None,
         frame_ms=max(0, int(args.frame_ms)),
+        fast_forward=max(1, int(args.fast_forward)),
+        lockstep=bool(args.lockstep),
+        lockstep_timeout_ms=int(args.lockstep_timeout_ms),
         # Inference parity: the policy was trained (and evaluated) with this fog
         # radius, so the replay must not hand it a different observation.
         vision_radius=float(micro.vision_radius or 0.0),
@@ -305,6 +314,11 @@ def main(argv: list[str] | None = None) -> int:
                 "seconds": round(time.time() - started, 1),
                 "result": result,
                 "return": round(total_reward, 4),
+                "frame_ms": int(game.frame_ms),
+                "physics_ms": int(game.physics_ms),
+                "fast_forward": int(game.fast_forward),
+                "lockstep": bool(game.lockstep),
+                "lockstep_timeout_ms": int(game.lockstep_timeout_ms),
                 "eval": summary,
             },
             ensure_ascii=False,

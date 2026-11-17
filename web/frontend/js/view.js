@@ -235,12 +235,25 @@ export function computeFollowRegion(sandbox, detail, units, screenW, screenH) {
   return sandbox.cameraRegion;
 }
 
+/**
+ * 单位是否落在任一我方单位的视野半径内（迷雾开启时决定可见性）。
+ *
+ * 每次 `drawSandbox` 会对**所有**非我方单位调用一次，所以内层循环是每帧
+ * 「我方数 × 敌方数」次比较：25v25 的 149 个单位约 5.5 千次 hypot。改用平方
+ * 距离省掉开方，并先做一次廉价的包围盒剪枝 —— 绝大多数远距离单位连乘法
+ * 都不用做。
+ */
 export function isUnitVisible(sandbox, unit, ownUnits) {
   if (!sandbox.fogEnabled) return true;
   if (unit.team === 'own') return true;
   const radius = num(sandbox.visionRadius, 260);
+  const radiusSq = radius * radius;
   for (const own of ownUnits) {
-    if (Math.hypot(unit.x - own.x, unit.y - own.y) <= radius) return true;
+    const dx = unit.x - own.x;
+    const dy = unit.y - own.y;
+    // Cheap axis rejection first: no multiply, no sqrt.
+    if (dx > radius || dx < -radius || dy > radius || dy < -radius) continue;
+    if (dx * dx + dy * dy <= radiusSq) return true;
   }
   return false;
 }

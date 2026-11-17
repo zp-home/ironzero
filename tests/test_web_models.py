@@ -862,13 +862,36 @@ class WarmstartResolverTests(unittest.TestCase):
         expected = self._bc("runs", 10)
         self.assertEqual(self.ppo.resolve_bc_checkpoint(10), expected)
 
-    def test_prefers_the_exact_unit_count_then_falls_back_to_25(self) -> None:
+    def test_prefers_the_exact_unit_count_and_does_not_fall_back(self) -> None:
+        """A 25v25 BC weight must NOT be handed to a 7v7 run.
+
+        The fallback looked harmless ("always finds something") but it silently
+        gave the user a policy trained to command 25 units on a map where they
+        start with 7. Weight migration does make it *load* (the trunk is re-mapped
+        column by column, measured 99% coverage), which is exactly why the mistake
+        was invisible: nothing crashed, the run just started from a policy that
+        had learned a different game.
+        """
+
         exact = self._bc("runs/experiments", 20)
         fallback = self._bc("runs/experiments", 25)
         self.assertEqual(self.ppo.resolve_bc_checkpoint(20), exact)
-        # No 7v7 weights: fall back to the 25v25 ones rather than nothing.
-        self.assertEqual(self.ppo.resolve_bc_checkpoint(7), fallback)
-        self.assertEqual(self.ppo.resolve_bc_checkpoint(None), fallback)
+        # No 7v7 weights: return nothing, so ``resolve_init_state`` can say so.
+        self.assertIsNone(self.ppo.resolve_bc_checkpoint(7))
+        self.assertIsNone(self.ppo.resolve_bc_checkpoint(None))
+        # The 25v25 file still exists and is still used when 25 is what was asked.
+        self.assertEqual(self.ppo.resolve_bc_checkpoint(25), fallback)
+
+    def test_missing_warmstart_is_reported_not_silent(self) -> None:
+        """``init_mode=warmstart`` with no matching weight must say "from scratch"."""
+
+        self._bc("runs/experiments", 25)
+        state = self.ppo.resolve_init_state({"init_mode": "warmstart"}, 7)
+        self.assertIsNone(state["checkpoint"])
+        self.assertEqual(state["mode"], "warmstart")
+        self.assertFalse(state["error"], "this is not a user error, it is a note")
+        self.assertTrue(state["warning"], "the dashboard needs to know it starts random")
+        self.assertIn("7", state["warning"])
 
     def test_scratch_and_explicit_paths_are_unchanged(self) -> None:
         self._bc("runs/experiments", 25)

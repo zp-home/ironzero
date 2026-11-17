@@ -552,6 +552,23 @@ def test_component_key_order_is_unchanged(combat: bool) -> None:
         "timeout",
         "bonus_produce",
         "building_lost",
+        # Appended for the repair of the "never upgrades / never builds turrets"
+        # defects. Order matters here (``reward`` is ``sum(components.values())``
+        # and float addition is order sensitive), so new terms must always be
+        # appended at the tail -- never inserted before an existing key.
+        "bonus_upgrade",
+        "bonus_defence",
+        # Appended so a permanent increase in the income *rate* is paid at the
+        # moment it happens: the historical ``income`` term was worth 0.04 for a
+        # whole extractor against a +/-1.0 terminal, which the policy could not
+        # learn from (measured: zero extractors after 34 updates).
+        "income_growth",
+        # Potential-based shaping on the income *level*. Measured cause: the
+        # policy's funds sat at 100-650 while an extractor costs 700, so it never
+        # saved, while a 250-credit tank paid 0.10 immediately. PBRS is proven not
+        # to change the optimal policy, so this makes saving visible rather than
+        # teaching a different objective.
+        "income_potential",
     ]
 
 

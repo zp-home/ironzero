@@ -10,7 +10,11 @@ These guard three separate regressions:
    is booting must report a zero-reward self-loop instead of a fabricated
    observation;
 3. ``--physics-ms`` must reach the game process only when explicitly requested,
-   so existing training runs keep their exact behaviour.
+   so existing training runs keep their exact behaviour -- and, because the delta
+   is then pinned, ``--frame-ms 0`` becomes a legal "never sleep" budget instead
+   of being clamped to 1.
+4. ``--fast-forward`` / ``--lockstep`` / ``--lockstep-timeout-ms`` are opt-in on
+   the command line and must exist in the deployed bridge jar.
 """
 
 from __future__ import annotations
@@ -395,6 +399,87 @@ def test_physics_ms_is_passed_to_the_game_only_when_requested() -> None:
     assert pinned[pinned.index("--frame-ms") + 1] == "2"
 
 
+def test_frame_ms_zero_is_legal_once_physics_ms_pins_the_delta() -> None:
+    """The old clamp reason ("0 ms = zero engine step") no longer applies.
+
+    1 ms used to be the floor because ``--frame-ms`` was *also* the frame delta
+    passed to ``updateFrameInternal``, and a delta of 0 advances nothing
+    (measured then: the same policy and seed lost/timed out at 0 ms and won at
+    1 ms). With ``--physics-ms`` the delta is pinned independently, so
+    ``frame_ms`` is only a ``Thread.sleep`` budget and 0 is a legal "never
+    sleep". Measured at 6000 ticks / ``physics_ms=16``: 9.35 s at 1 ms
+    (10.7x real time) vs 3.78 s at 0 ms (26.5x) -- the 1 ms budget was ~68%
+    wake-up overhead, i.e. pure loss.
+    """
+
+    from ironzero.rwpp.process import effective_frame_ms
+
+    assert effective_frame_ms(0, 16) == 0, "physics_ms pins the delta; 0 = do not sleep"
+    assert effective_frame_ms(-1, 16) == 0
+    assert effective_frame_ms(4, 16) == 4
+    # Without a pinned delta, ``frame_ms`` *is* the delta again: keep clamping.
+    assert effective_frame_ms(0, 0) == 1
+    assert effective_frame_ms(-5) == 1, "the one-argument call keeps the legacy clamp"
+    assert effective_frame_ms(2) == 2
+
+
+def test_the_double_clamp_warning_survives() -> None:
+    """Clamping must stay loud: a silent 0 -> 1 makes "unpaced" a no-op."""
+
+    import ironzero.rwpp.process as process
+
+    original = process.FRAME_MS_WARNED
+    process.FRAME_MS_WARNED = False
+    try:
+        assert process.effective_frame_ms(0, 0) == 1
+        assert process.FRAME_MS_WARNED is True, "the warning flag must be set"
+    finally:
+        process.FRAME_MS_WARNED = original
+
+
+def test_default_frame_ms_is_unpaced() -> None:
+    """The default build must not sleep: ``physics_ms=16`` already fixes the sim."""
+
+    from ironzero.rwpp.config import RwppGameConfig
+    from ironzero.rwpp.process import _bridge_command
+
+    game = RwppGameConfig()
+    assert game.frame_ms == 0
+    assert game.fast_forward == 1
+    assert game.lockstep is False
+    assert game.lockstep_timeout_ms == 30000
+    # ... and the resolved command line really says 0, not a silently clamped 1.
+    command = _bridge_command(Path("rwpp-server.bat"), 5130, game)
+    assert command[command.index("--frame-ms") + 1] == "0"
+
+
+def test_acceleration_flags_are_opt_in() -> None:
+    """Default command line stays byte-identical; each flag only appears when set."""
+
+    from ironzero.rwpp.config import RwppGameConfig
+    from ironzero.rwpp.process import _bridge_command
+
+    def line(**kwargs) -> list[str]:
+        return _bridge_command(Path("rwpp-server.bat"), 5130, RwppGameConfig(**kwargs))
+
+    plain = line()
+    for flag in ("--fast-forward", "--lockstep", "--lockstep-timeout-ms"):
+        assert flag not in plain, f"{flag} must stay opt-in"
+
+    forwarded = line(fast_forward=2)
+    assert forwarded[forwarded.index("--fast-forward") + 1] == "2"
+    assert "--fast-forward" not in line(fast_forward=1), "1 = off, not a flag"
+
+    locked = line(lockstep=True)
+    assert "--lockstep" in locked
+    assert "--lockstep-timeout-ms" not in locked, "30000 is the bridge default"
+
+    tuned = line(lockstep=True, lockstep_timeout_ms=5000)
+    assert tuned[tuned.index("--lockstep-timeout-ms") + 1] == "5000"
+    # The timeout alone means nothing: it is only sent together with --lockstep.
+    assert "--lockstep-timeout-ms" not in line(lockstep_timeout_ms=5000)
+
+
 def test_train_cli_exposes_physics_ms() -> None:
     from ironzero.training.train_rwpp import build_parser
 
@@ -402,6 +487,68 @@ def test_train_cli_exposes_physics_ms() -> None:
     assert args.physics_ms == 16
     # The CLI default mirrors the config default (real-time physics).
     assert build_parser().parse_args([]).physics_ms == 16
+
+
+def test_train_cli_defaults_to_unpaced_lockstep() -> None:
+    """Training must not sleep, and must not drop frames while doing it."""
+
+    from ironzero.training.train_rwpp import build_game, build_parser
+
+    args = build_parser().parse_args([])
+    assert args.frame_ms == 0
+    assert args.fast_forward == 1
+    assert args.lockstep is True
+    assert args.lockstep_timeout_ms == 30000
+    game = build_game(args)
+    assert game.frame_ms == 0 and game.lockstep is True
+
+    off = build_parser().parse_args(
+        ["--no-lockstep", "--lockstep-timeout-ms", "8000", "--fast-forward", "3"]
+    )
+    assert off.lockstep is False
+    assert off.lockstep_timeout_ms == 8000
+    assert off.fast_forward == 3
+    assert build_game(off).fast_forward == 3
+
+
+def test_recorder_defaults_to_free_running() -> None:
+    """``record_rwpp_replay`` sends an order every 4th obs, so lockstep must be off.
+
+    A lockstep bridge blocks after *every* observation until the client answers.
+    The recorder answers one in four, so three of four frames would wait out the
+    whole ``--lockstep-timeout-ms`` and the recording would crawl.
+    """
+
+    import importlib.util
+
+    path = REPO / "scripts" / "record_rwpp_replay.py"
+    spec = importlib.util.spec_from_file_location("record_rwpp_replay", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    args = module.build_parser().parse_args(["--ticks", "10"])
+    assert args.lockstep is False
+    assert args.fast_forward == 1
+    assert args.lockstep_timeout_ms == 30000
+    assert module.build_parser().parse_args(["--lockstep"]).lockstep is True
+
+
+def test_recorder_paces_against_its_physics_passthrough() -> None:
+    """``--frame-ms 0`` is only legal when the trailing ``-- --physics-ms`` pins the delta."""
+
+    import importlib.util
+
+    path = REPO / "scripts" / "record_rwpp_replay.py"
+    spec = importlib.util.spec_from_file_location("record_rwpp_replay", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.effective_frame_ms(0, 16) == 0
+    assert module.effective_frame_ms(0, 0) == 1
+    assert module._flag_value(["--physics-ms", "16"], "--physics-ms") == 16
+    assert module._flag_value([], "--physics-ms") is None
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +590,9 @@ def test_deployed_bridge_jar_knows_the_flags_python_sends() -> None:
         RwppGameConfig(physics_ms=16),
         RwppGameConfig(win_mode="annihilation"),
         RwppGameConfig(unlock_ai=True),
+        RwppGameConfig(fast_forward=2),
+        RwppGameConfig(lockstep=True),
+        RwppGameConfig(lockstep=True, lockstep_timeout_ms=5000),
     ):
         line = _bridge_command(Path("rwpp-server.bat"), 5130, config)
         line = line[line.index("--") + 1 :]  # drop launcher args, as above
@@ -451,6 +601,10 @@ def test_deployed_bridge_jar_knows_the_flags_python_sends() -> None:
         assert new, f"{config} emitted no new flag; the helper is not exercised"
         optional |= new
     assert "--physics-ms" in optional, "the helper no longer emits --physics-ms"
+    # The acceleration contract (audit/加速方案_契约.md §1) lives in the bridge
+    # jar: if the builder can emit these, the deployed jar must parse them.
+    for flag in ("--fast-forward", "--lockstep", "--lockstep-timeout-ms"):
+        assert flag in optional, f"{flag} is no longer exercised by this test"
 
     candidates = [
         REPO / ".runtime" / "rwpp-runtime-1.15",

@@ -1,0 +1,141 @@
+category,kind,relative_path,size_bytes,note
+logs,file,runs/_rwpp_ppo/game-21203-77966.log,10062,JVM spawn log
+logs,file,runs/_rwpp_ppo/game-21204-77966.log,10062,JVM spawn log
+logs,file,runs/_rwpp_ppo/game-21205-96813.log,10060,JVM spawn log
+logs,file,runs/_rwpp_ppo/game-21206-96822.log,10062,JVM spawn log
+logs,file,runs/_rwpp_ppo/game-21207-15311.log,10180,JVM spawn log
+logs,file,runs/_rwpp_ppo/game-21208-15312.log,10061,JVM spawn log
+stale-runs,file,runs/econ_fix_long/checkpoint.pt,807458,一次性 run 的权重
+stale-runs,file,runs/econ_fix_long/checkpoint_latest.pt,804398,一次性 run 的权重
+stale-runs,file,runs/econ_fix_long/live.jsonl,62527,一次性 run 的事件流
+stale-runs,file,runs/econ_fix_verify/checkpoint.pt,806754,一次性 run 的权重
+stale-runs,file,runs/econ_fix_verify/checkpoint_best.pt,806854,一次性 run 的权重
+stale-runs,file,runs/econ_fix_verify/checkpoint_latest.pt,804398,一次性 run 的权重
+stale-runs,file,runs/econ_fix_verify/live.jsonl,26402,一次性 run 的事件流
+stale-runs,file,runs/p1_adjudication/checkpoint.pt,1093282,一次性 run 的权重
+stale-runs,file,runs/p1_adjudication/checkpoint_best.pt,1092550,一次性 run 的权重
+stale-runs,file,runs/p1_adjudication/checkpoint_latest.pt,1091182,一次性 run 的权重
+stale-runs,file,runs/p1_adjudication/live.jsonl,29377,一次性 run 的事件流
+stale-runs,file,runs/p1_after_fix3/checkpoint.pt,1096482,一次性 run 的权重
+stale-runs,file,runs/p1_after_fix3/checkpoint_best.pt,1093382,一次性 run 的权重
+stale-runs,file,runs/p1_after_fix3/checkpoint_latest.pt,1091182,一次性 run 的权重
+stale-runs,file,runs/p1_after_fix3/live.jsonl,80791,一次性 run 的事件流
+stale-runs,file,runs/p1_dynamic_cap/checkpoint.pt,1092834,一次性 run 的权重
+stale-runs,file,runs/p1_dynamic_cap/checkpoint_best.pt,1092358,一次性 run 的权重
+stale-runs,file,runs/p1_dynamic_cap/checkpoint_latest.pt,1091182,一次性 run 的权重
+stale-runs,file,runs/p1_dynamic_cap/live.jsonl,23018,一次性 run 的事件流
+stale-runs,file,runs/p1_rejections/checkpoint.pt,1092834,一次性 run 的权重
+stale-runs,file,runs/p1_rejections/checkpoint_best.pt,1092358,一次性 run 的权重
+stale-runs,file,runs/p1_rejections/checkpoint_latest.pt,1091182,一次性 run 的权重
+stale-runs,file,runs/p1_rejections/live.jsonl,19290,一次性 run 的事件流
+stale-runs,file,runs/p1_rejections2/checkpoint.pt,1092898,一次性 run 的权重
+stale-runs,file,runs/p1_rejections2/checkpoint_best.pt,1092358,一次性 run 的权重
+stale-runs,file,runs/p1_rejections2/checkpoint_latest.pt,1091182,一次性 run 的权重
+stale-runs,file,runs/p1_rejections2/live.jsonl,18633,一次性 run 的事件流
+stale-runs,file,runs/p1_validation/checkpoint.pt,1093410,一次性 run 的权重
+stale-runs,file,runs/p1_validation/checkpoint_best.pt,1093510,一次性 run 的权重
+stale-runs,file,runs/p1_validation/checkpoint_latest.pt,1091182,一次性 run 的权重
+stale-runs,file,runs/p1_validation/live.jsonl,16049,一次性 run 的事件流
+stale-runs,file,runs/p1_validation_long/checkpoint.pt,1094050,一次性 run 的权重
+stale-runs,file,runs/p1_validation_long/checkpoint_best.pt,1092358,一次性 run 的权重
+stale-runs,file,runs/p1_validation_long/checkpoint_latest.pt,1091182,一次性 run 的权重
+stale-runs,file,runs/p1_validation_long/live.jsonl,42479,一次性 run 的事件流
+dup-latest,file,runs/platform/rwpp-ppo-ppo-038ca590/checkpoint_latest.pt,680102,与 checkpoint.pt 同权重 (upd 2)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-09ff36b5/checkpoint_latest.pt,680102,与 checkpoint.pt 同权重 (upd 2)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-19b49f54/checkpoint_latest.pt,680102,与 checkpoint.pt 同权重 (upd 2)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-1a19c587/checkpoint_latest.pt,836646,与 checkpoint.pt 同权重 (upd 40)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-28302aa2/checkpoint_latest.pt,680230,与 checkpoint.pt 同权重 (upd 8)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-33ab05e9/checkpoint_latest.pt,836454,与 checkpoint.pt 同权重 (upd 20)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-3b887448/checkpoint_latest.pt,680102,与 checkpoint.pt 同权重 (upd 3)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-3d6f164e/checkpoint_latest.pt,680102,与 checkpoint.pt 同权重 (upd 6)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-416be241/checkpoint_latest.pt,680102,与 checkpoint.pt 同权重 (upd 4)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-54b5a7da/checkpoint_latest.pt,680102,与 checkpoint.pt 同权重 (upd 2)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-54ebbdc8/checkpoint_latest.pt,967526,与 checkpoint.pt 同权重 (upd 24)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-5f4dcf59/checkpoint_latest.pt,680102,与 checkpoint.pt 同权重 (upd 2)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-5f6ead19/checkpoint_latest.pt,836646,与 checkpoint.pt 同权重 (upd 40)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-61b92fb5/checkpoint_latest.pt,836454,与 checkpoint.pt 同权重 (upd 20)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-6ada9834/checkpoint_latest.pt,836454,与 checkpoint.pt 同权重 (upd 24)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-6df125a1/checkpoint_latest.pt,967526,与 checkpoint.pt 同权重 (upd 24)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-72c5509a/checkpoint_latest.pt,680102,与 checkpoint.pt 同权重 (upd 2)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-7330bf71/checkpoint_latest.pt,836646,与 checkpoint.pt 同权重 (upd 3)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-7e8973b6/checkpoint_latest.pt,680102,与 checkpoint.pt 同权重 (upd 2)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-870b2680/checkpoint_latest.pt,680230,与 checkpoint.pt 同权重 (upd 20)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-8b0cf4c8/checkpoint_latest.pt,680230,与 checkpoint.pt 同权重 (upd 4)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-9a428100/checkpoint_latest.pt,836454,与 checkpoint.pt 同权重 (upd 20)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-a5/checkpoint_latest.pt,1874094,与 checkpoint.pt 同权重 (upd 40)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-a5b/checkpoint_latest.pt,1874094,与 checkpoint.pt 同权重 (upd 40)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-b5/checkpoint_latest.pt,1874094,与 checkpoint.pt 同权重 (upd 40)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-bc135158/checkpoint_latest.pt,680102,与 checkpoint.pt 同权重 (upd 4)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-d3a3b5e6/checkpoint_latest.pt,836646,与 checkpoint.pt 同权重 (upd 70)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-e379ab1b/checkpoint_latest.pt,680102,与 checkpoint.pt 同权重 (upd 2)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-e4567505/checkpoint_latest.pt,680102,与 checkpoint.pt 同权重 (upd 2)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-edf56b75/checkpoint_latest.pt,836646,与 checkpoint.pt 同权重 (upd 2)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-ffad7dc2/checkpoint_latest.pt,836454,与 checkpoint.pt 同权重 (upd 12)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-final/checkpoint_latest.pt,1874094,与 checkpoint.pt 同权重 (upd 60)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-p0fix/checkpoint_latest.pt,1120942,与 checkpoint.pt 同权重 (upd 100)
+dup-latest,file,runs/platform/rwpp-ppo-ppo-p0fix-phys16/checkpoint_latest.pt,1874158,与 checkpoint.pt 同权重 (upd 100)
+dup-latest,file,runs/platform/train-20261106-034951-8afd3b/checkpoint_latest.pt,680622,与 checkpoint.pt 同权重 (upd 3)
+dup-latest,file,runs/platform/train-20261106-035632-d56e6c/checkpoint_latest.pt,680622,与 checkpoint.pt 同权重 (upd 200)
+dup-latest,file,runs/platform/train-20261106-045322-03e3e9/checkpoint_latest.pt,680622,与 checkpoint.pt 同权重 (upd 200)
+dup-latest,file,runs/platform/train-20261106-071445-3fe768/checkpoint_latest.pt,680686,与 checkpoint.pt 同权重 (upd 20)
+dup-latest,file,runs/platform/train-20261106-114524-e24746/checkpoint_latest.pt,680102,与 checkpoint.pt 同权重 (upd 3)
+stale-weights,file,runs/platform/rwpp-ppo-ppo-038ca590/checkpoint.pt,680358,作业 rwpp-ppo-ppo-038ca590 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-09ff36b5/checkpoint.pt,680358,作业 rwpp-ppo-ppo-09ff36b5 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-19b49f54/checkpoint.pt,680358,作业 rwpp-ppo-ppo-19b49f54 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-1a19c587/checkpoint.pt,840102,作业 rwpp-ppo-ppo-1a19c587 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-1a19c587/checkpoint_best.pt,838694,作业 rwpp-ppo-ppo-1a19c587 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-28302aa2/checkpoint.pt,680806,作业 rwpp-ppo-ppo-28302aa2 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-33ab05e9/checkpoint.pt,837542,作业 rwpp-ppo-ppo-33ab05e9 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-33ab05e9/checkpoint_best.pt,837542,作业 rwpp-ppo-ppo-33ab05e9 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-3b887448/checkpoint.pt,680422,作业 rwpp-ppo-ppo-3b887448 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-3d6f164e/checkpoint.pt,680550,作业 rwpp-ppo-ppo-3d6f164e 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-416be241/checkpoint.pt,680422,作业 rwpp-ppo-ppo-416be241 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-54b5a7da/checkpoint.pt,680358,作业 rwpp-ppo-ppo-54b5a7da 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-54ebbdc8/checkpoint.pt,968614,作业 rwpp-ppo-ppo-54ebbdc8 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-54ebbdc8/checkpoint_best.pt,968614,作业 rwpp-ppo-ppo-54ebbdc8 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-5f4dcf59/checkpoint.pt,680358,作业 rwpp-ppo-ppo-5f4dcf59 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-5f6ead19/checkpoint.pt,840102,作业 rwpp-ppo-ppo-5f6ead19 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-5f6ead19/checkpoint_best.pt,840102,作业 rwpp-ppo-ppo-5f6ead19 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-61b92fb5/checkpoint.pt,837542,作业 rwpp-ppo-ppo-61b92fb5 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-61b92fb5/checkpoint_best.pt,837542,作业 rwpp-ppo-ppo-61b92fb5 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-6ada9834/checkpoint.pt,837542,作业 rwpp-ppo-ppo-6ada9834 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-6ada9834/checkpoint_best.pt,837542,作业 rwpp-ppo-ppo-6ada9834 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-6df125a1/checkpoint.pt,968614,作业 rwpp-ppo-ppo-6df125a1 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-6df125a1/checkpoint_best.pt,968614,作业 rwpp-ppo-ppo-6df125a1 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-72c5509a/checkpoint.pt,680358,作业 rwpp-ppo-ppo-72c5509a 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-7330bf71/checkpoint.pt,838182,作业 rwpp-ppo-ppo-7330bf71 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-7330bf71/checkpoint_best.pt,838182,作业 rwpp-ppo-ppo-7330bf71 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-7e8973b6/checkpoint.pt,680358,作业 rwpp-ppo-ppo-7e8973b6 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-870b2680/checkpoint.pt,681382,作业 rwpp-ppo-ppo-870b2680 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-8b0cf4c8/checkpoint.pt,680614,作业 rwpp-ppo-ppo-8b0cf4c8 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-9a428100/checkpoint.pt,837542,作业 rwpp-ppo-ppo-9a428100 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-9a428100/checkpoint_best.pt,837542,作业 rwpp-ppo-ppo-9a428100 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-a5/checkpoint.pt,1877858,作业 rwpp-ppo-ppo-a5 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-a5/checkpoint_best.pt,1875462,作业 rwpp-ppo-ppo-a5 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-a5b/checkpoint.pt,1877858,作业 rwpp-ppo-ppo-a5b 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-a5b/checkpoint_best.pt,1877958,作业 rwpp-ppo-ppo-a5b 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-b5/checkpoint.pt,1877858,作业 rwpp-ppo-ppo-b5 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-b5/checkpoint_best.pt,1876294,作业 rwpp-ppo-ppo-b5 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-bc135158/checkpoint.pt,680422,作业 rwpp-ppo-ppo-bc135158 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-beea60ce/checkpoint.pt,839078,作业 rwpp-ppo-ppo-beea60ce 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-beea60ce/checkpoint_best.pt,838182,作业 rwpp-ppo-ppo-beea60ce 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-beea60ce/checkpoint_latest.pt,836646,作业 rwpp-ppo-ppo-beea60ce 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-d3a3b5e6/checkpoint.pt,843750,作业 rwpp-ppo-ppo-d3a3b5e6 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-d3a3b5e6/checkpoint_best.pt,840998,作业 rwpp-ppo-ppo-d3a3b5e6 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-e379ab1b/checkpoint.pt,680358,作业 rwpp-ppo-ppo-e379ab1b 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-e4567505/checkpoint.pt,680358,作业 rwpp-ppo-ppo-e4567505 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-edf56b75/checkpoint.pt,838182,作业 rwpp-ppo-ppo-edf56b75 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-edf56b75/checkpoint_best.pt,838182,作业 rwpp-ppo-ppo-edf56b75 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-ffad7dc2/checkpoint.pt,837542,作业 rwpp-ppo-ppo-ffad7dc2 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-ffad7dc2/checkpoint_best.pt,837542,作业 rwpp-ppo-ppo-ffad7dc2 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-final/checkpoint.pt,1879522,作业 rwpp-ppo-ppo-final 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-final/checkpoint_best.pt,1877958,作业 rwpp-ppo-ppo-final 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-p0fix/checkpoint.pt,1129634,作业 rwpp-ppo-ppo-p0fix 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-p0fix/checkpoint_best.pt,1127302,作业 rwpp-ppo-ppo-p0fix 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-p0fix-phys16/checkpoint.pt,1882914,作业 rwpp-ppo-ppo-p0fix-phys16 未被引用
+stale-weights,file,runs/platform/rwpp-ppo-ppo-p0fix-phys16/checkpoint_best.pt,1878022,作业 rwpp-ppo-ppo-p0fix-phys16 未被引用
+stale-weights,file,runs/platform/train-20261106-034951-8afd3b/checkpoint.pt,680738,作业 train-20261106-034951-8afd3b 未被引用
+stale-weights,file,runs/platform/train-20261106-035632-d56e6c/checkpoint.pt,681378,作业 train-20261106-035632-d56e6c 未被引用
+stale-weights,file,runs/platform/train-20261106-045322-03e3e9/checkpoint.pt,682466,作业 train-20261106-045322-03e3e9 未被引用
+stale-weights,file,runs/platform/train-20261106-071445-3fe768/checkpoint.pt,680866,作业 train-20261106-071445-3fe768 未被引用
+stale-weights,file,runs/platform/train-20261106-114524-e24746/checkpoint.pt,680294,作业 train-20261106-114524-e24746 未被引用

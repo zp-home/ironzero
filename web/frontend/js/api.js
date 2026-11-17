@@ -85,6 +85,22 @@ function selectedQuery(selected) {
   return text ? '?selected=' + encodeURIComponent(text) : '';
 }
 
+/**
+ * 拼接帧流的查询串。
+ *
+ * ``limit`` 省略时后端返回「after 之后的全部记录」——这是回放加载的语义，
+ * 必须保持（`feLoadTaskFramesOnce` 靠它一次性取回整局）。
+ * 传 ``0`` 表示「服务端自行决定一个合适的块大小」（后端取 500 条 / 1.5MB
+ * 先到者），传 N 表示最多 N 条。live 跟随时用 ``0``，这样单次轮询的解析量
+ * 和响应体都不随对局时长增长。
+ */
+function frameQuery(after, limit) {
+  const cursor = 'after=' + Math.max(0, Math.floor(after || 0));
+  if (limit === undefined || limit === null) return cursor;
+  const bounded = Math.max(0, Math.floor(limit));
+  return cursor + '&limit=' + bounded;
+}
+
 export const Api = {
   health: () => api('/api/health'),
   runs: () => api('/api/runs'),
@@ -108,11 +124,17 @@ export const Api = {
   ),
   startInfer: (config) => api('/api/infer', { method: 'POST', body: config }),
   infer: (id) => api('/api/infer/' + encodeURIComponent(id)),
-  inferFrames: (id, after) => api('/api/infer/' + encodeURIComponent(id) + '/frames?after=' + Math.max(0, Math.floor(after || 0))),
+  inferFrames: (id, after, limit) => api('/api/infer/' + encodeURIComponent(id) + '/frames?' + frameQuery(after, limit)),
   replays: () => api('/api/replays'),
   replay: (id) => api('/api/replays/' + encodePathId(id)),
   deleteReplay: (id) => api('/api/replays/' + encodePathId(id), { method: 'DELETE' }),
   maps: () => api('/api/maps', { timeout: 35000 }),
+  // Training-map registry (nine stock 2p maps + their real pixel sizes + the AI
+  // difficulty choices). Separate from `maps()`: that one answers "what can the
+  // sandbox render", this one answers "which map may a run be pointed at, and how
+  // big is it in pixels" — the number the observation normalises every position
+  // by, so it must not be guessed from a constant.
+  mapCatalog: () => api('/api/maps/catalog', { timeout: 15000 }),
   mapDetail: (id) => api('/api/maps/' + encodeURIComponent(id), { timeout: 35000 }),
   assetUrl: (relative) => apiBase() + '/api/assets/' + String(relative || '').split('/').map(encodeURIComponent).join('/'),
   rwppStatus: () => api('/api/rwpp/status', { timeout: 5000 }),
@@ -120,7 +142,7 @@ export const Api = {
   rwppJob: (id) => api('/api/rwpp/jobs/' + encodeURIComponent(id), { timeout: 5000 }),
   rwppJobs: () => api('/api/rwpp/jobs', { timeout: 8000 }),
   rwppInfer: (config) => api('/api/rwpp/infer', { method: 'POST', body: config, timeout: 20000 }),
-  rwppInferFrames: (id, after) => api('/api/rwpp/infer/' + encodeURIComponent(id) + '/frames?after=' + Math.max(0, Math.floor(after || 0)), { timeout: 10000 }),
+  rwppInferFrames: (id, after, limit) => api('/api/rwpp/infer/' + encodeURIComponent(id) + '/frames?' + frameQuery(after, limit), { timeout: 10000 }),
   rwppTrain: (config) => api('/api/rwpp/train', { method: 'POST', body: config, timeout: 20000 }),
   rwppPpo: (config) => api('/api/rwpp/ppo', { method: 'POST', body: config, timeout: 30000 }),
   rwppPpoEvents: (id, after) => api('/api/rwpp/ppo/' + encodeURIComponent(id) + '/events?after=' + Math.max(0, Math.floor(after || 0)), { timeout: 10000 }),

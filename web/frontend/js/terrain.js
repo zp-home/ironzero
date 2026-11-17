@@ -3,6 +3,7 @@
  */
 
 import { Api } from './api.js';
+import { loadFeMapCatalog } from './feMapCatalog.js';
 import { renderFeMapControls } from './feMaps.js';
 import { loadImage, preloadUnitSprites } from './sprites.js';
 import { els, state } from './state.js';
@@ -37,6 +38,15 @@ export async function loadMaps(force) {
     state.maps.available = false;
     state.maps.list = [];
     state.maps.error = error.message || String(error);
+  }
+  // The training catalog is a separate endpoint (the host's nine stock maps with
+  // their real pixel sizes). Load it here, before the controls are rendered, so
+  // the map dropdowns are built from it on the first pass instead of being
+  // re-rendered later — and so `feStartPpo`/`feStartTrain` can read the sizes.
+  try {
+    await loadFeMapCatalog();
+  } catch (error) {
+    // best effort: `loadFeMapCatalog` already records its own fallback
   }
   renderMapOptions();
   renderFeMapControls();
