@@ -63,6 +63,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--terrain", default="configs/maps/IronZero25.terrain.json")
     parser.add_argument("--episode-ticks", type=int, default=4800)
     parser.add_argument("--frame-ms", type=int, default=1)
+    parser.add_argument("--physics-ms", type=int, default=16,
+                        help="pin the engine's simulated delta (16 = real time); --frame-ms then "
+                             "only paces the wall clock, so 0 = never sleep")
+    parser.add_argument("--fast-forward", type=int, default=1,
+                        help="engine game speed (1..32); 1 = off, N makes a match need 1/N the ticks")
+    parser.add_argument("--lockstep", action=argparse.BooleanOptionalAction, default=True,
+                        help="block after each observation until the client answers (no dropped frames)")
+    parser.add_argument("--lockstep-timeout-ms", type=int, default=30000,
+                        help="max lockstep wait before the bridge falls back to free running")
     parser.add_argument("--vision-radius", type=float, default=0.0)
     parser.add_argument("--envs", type=int, default=3)
     parser.add_argument("--episodes", type=int, default=24)
@@ -93,6 +102,19 @@ def build_game(args: argparse.Namespace) -> tuple[RwppGameConfig, MicroDuelConfi
         map_channels=4 if terrain is not None else 3,
         terrain_path=str(terrain) if terrain is not None else None,
     )
+    # This teacher emits a *single-slot* action: ``teacher_action`` builds one
+    # 5-head order per decision, and every ``MASK_KEYS`` use below indexes that
+    # layout. Under ``action_slots=2`` the policy would expect 10 heads and the
+    # recorded dataset would be silently unusable (the masks it stores have no
+    # ``econ_*``/``tac_*`` keys, so PPO would KeyError later, far from here).
+    # Fail at the entry point with an actionable message instead.
+    if int(getattr(micro, "action_slots", 1) or 1) != 1:
+        raise SystemExit(
+            "bc_warmstart_rwpp.py teaches the single-slot action layout only "
+            f"(MicroDuelConfig.action_slots={micro.action_slots!r}). A two-slot "
+            "warm start needs a two-slot teacher: the expert orders would have to be "
+            "split into economy/tactical heads first."
+        )
     game = RwppGameConfig(
         runtime=Path(args.runtime),
         java_home=Path(args.java_home),
@@ -108,6 +130,10 @@ def build_game(args: argparse.Namespace) -> tuple[RwppGameConfig, MicroDuelConfi
         win_mode=str(args.win_mode or ""),
         unlock_ai=bool(args.unlock_ai),
         frame_ms=max(0, int(args.frame_ms)),
+        physics_ms=max(0, int(args.physics_ms)),
+        fast_forward=max(1, int(args.fast_forward)),
+        lockstep=bool(args.lockstep),
+        lockstep_timeout_ms=int(args.lockstep_timeout_ms),
         vision_radius=float(args.vision_radius),
     )
     return game, micro
@@ -311,6 +337,11 @@ def main() -> int:
                 "envs": args.envs,
                 "transitions": args.transitions,
                 "out": args.out,
+                "frame_ms": int(game.frame_ms),
+                "physics_ms": int(game.physics_ms),
+                "fast_forward": int(game.fast_forward),
+                "lockstep": bool(game.lockstep),
+                "lockstep_timeout_ms": int(game.lockstep_timeout_ms),
             },
             ensure_ascii=False,
         ),
@@ -348,6 +379,11 @@ def main() -> int:
             "checkpoint": str(checkpoint),
             "map": args.map,
             "terrain": args.terrain,
+            "frame_ms": int(game.frame_ms),
+            "physics_ms": int(game.physics_ms),
+            "fast_forward": int(game.fast_forward),
+            "lockstep": bool(game.lockstep),
+            "lockstep_timeout_ms": int(game.lockstep_timeout_ms),
             "completed_results": [
                 episode.get("result") for episode in dataset["completed_episodes"]
             ],

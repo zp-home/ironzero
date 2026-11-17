@@ -7,6 +7,7 @@
 路径                         方法    说明
 ===========================  ======  =========================================
 ``/health``                  GET     服务健康 + 任务计数 + 空闲端口数
+``/maps``                    GET     九张原版 2p 地图目录 + 难度选项（只读）
 ``/jobs``                    GET     最近 50 个任务（``{"jobs": [...]}``）
 ``/jobs/{id}``               GET     单任务记录（running 时刷新 elapsed）
 ``/ppo/{id}/events``         GET     PPO 实时事件增量（``?after=<seq>``）
@@ -30,6 +31,7 @@ from http.server import BaseHTTPRequestHandler
 
 from . import state
 from .launch import StartMixin
+from .maps import maps_payload
 from .paths import REPO_ROOT
 from .ppo import _read_live_events
 from .proc import stop_all_jobs, stop_job
@@ -83,6 +85,13 @@ class Handler(StartMixin, BaseHTTPRequestHandler):
                 }
             )
             return
+        if self.path.split("?")[0].rstrip("/") == "/maps":
+            # Read-only catalog for the map dropdown: it is the only place that
+            # knows the nine stock maps' pixel sizes, and the form must submit the
+            # real ones or every normalised position is skewed. Stateless, so no
+            # job table access and no locking.
+            self._send(maps_payload())
+            return
         if self.path.startswith("/ppo/") and "/events" in self.path:
             job_id = self.path.split("?")[0].split("/ppo/")[1].split("/")[0]
             query = self.path.split("?", 1)[1] if "?" in self.path else ""
@@ -125,11 +134,33 @@ class Handler(StartMixin, BaseHTTPRequestHandler):
                             "frame_ms",
                             "vision_radius",
                             "map_name",
+                            # The *resolved* geometry and opponent difficulty: the
+                            # dashboard must be able to show what actually ran, not
+                            # echo the form. A wrong pixel size skews every
+                            # normalised position without failing, so it has to be
+                            # visible somewhere.
+                            "map_path",
+                            "map_width",
+                            "map_height",
+                            "enemy_ai_difficulty",
+                            "win_mode",
                             "elapsed",
                             "latest_update",
                             "evaluations",
                             "summary",
                             "error",
+                            # Which weights this run actually started from. The
+                            # dashboard shows it so "warmstart" cannot silently
+                            # mean "from scratch".
+                            "init_mode",
+                            "init_checkpoint",
+                            "units_per_team",
+                            "physics_ms",
+                            # Acceleration actually in effect, so the console can
+                            # state the real pacing instead of echoing the form.
+                            "fast_forward",
+                            "lockstep",
+                            "lockstep_timeout_ms",
                         )
                     },
                 }

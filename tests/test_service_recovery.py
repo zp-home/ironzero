@@ -276,6 +276,99 @@ def test_map_name_falls_back_to_the_map_file_stem(service) -> None:
     assert record["map_name"] == "Artillery"
 
 
+def test_acceleration_survives_a_restart(service) -> None:
+    """``fast_forward`` / ``lockstep`` must ride the same path as ``frame_ms``.
+
+    A restart swallows ``JOBS``; the persisted record is the only thing that says
+    the adopted run was a 2x lockstep one instead of a default one, and the
+    console has to show the truth.
+    """
+
+    recover, paths, state, _tmp = service
+
+    state.JOBS["ppo-fast"] = {
+        "id": "ppo-fast",
+        "kind": "ppo",
+        "status": "running",
+        "started_ts": time.time(),
+        "out_dir": "runs/platform/rwpp-ppo-ppo-fast",
+        "replays": [],
+        "fast_forward": 4,
+        "lockstep": True,
+        "lockstep_timeout_ms": 45000,
+    }
+    paths._update("ppo-fast")
+
+    on_disk = json.loads((paths.JOB_STATE_DIR / "ppo-fast.json").read_text(encoding="utf-8"))
+    assert on_disk["fast_forward"] == 4
+    assert on_disk["lockstep"] is True
+    assert on_disk["lockstep_timeout_ms"] == 45000
+
+    state.JOBS.clear()
+    assert recover.load_persisted_jobs() == 1
+    restored = state.JOBS["ppo-fast"]
+    assert restored["fast_forward"] == 4
+    assert restored["lockstep"] is True
+    assert restored["lockstep_timeout_ms"] == 45000
+
+
+def test_acceleration_is_read_back_from_the_trainers_command_line(service) -> None:
+    """An adopted run's real flags only survive in its argv (or the summary)."""
+
+    recover, _paths, _state, tmp_path = service
+
+    job_dir = tmp_path / "rwpp-ppo-ppo-accel"
+    _write_live(job_dir, updates=1)
+    cmdline = [
+        "python", "-m", "ironzero.training.train_rwpp",
+        "--out", str(job_dir),
+        "--frame-ms", "0",
+        "--physics-ms", "16",
+        "--fast-forward", "2",
+        "--lockstep",
+        "--lockstep-timeout-ms", "45000",
+    ]
+    record = recover._job_from_live(job_dir, cmdline)
+    assert record is not None
+    assert record["fast_forward"] == 2
+    assert record["lockstep"] is True
+    assert record["lockstep_timeout_ms"] == 45000
+
+
+def test_default_acceleration_is_reported_when_the_flags_are_absent(service) -> None:
+    """Both flags are opt-in: absent means "1x, free running", not "unknown"."""
+
+    recover, _paths, _state, tmp_path = service
+
+    job_dir = tmp_path / "rwpp-ppo-ppo-default"
+    _write_live(job_dir, updates=1)
+    record = recover._job_from_live(job_dir, ["--out", str(job_dir), "--frame-ms", "1"])
+    assert record is not None
+    assert record["fast_forward"] == 1
+    assert record["lockstep"] is False
+    assert record["lockstep_timeout_ms"] == 30000
+
+
+def test_acceleration_falls_back_to_the_summary_game_block(service) -> None:
+    """No psutil/no cmdline: the trainer's ``rwpp_summary.json`` still has it."""
+
+    recover, _paths, state, tmp_path = service
+
+    job_dir = tmp_path / "rwpp-ppo-ppo-summary"
+    _write_live(job_dir, updates=1)
+    (job_dir / "rwpp_summary.json").write_text(
+        json.dumps({"game": {"fast_forward": 8, "lockstep": True, "lockstep_timeout_ms": 12000}}),
+        encoding="utf-8",
+    )
+    (job_dir / "rwpp_summary.json").unlink()  # adoption requires no summary yet
+    summary = {"game": {"fast_forward": 8, "lockstep": True}}
+    assert recover._fast_forward_from([], summary) == 8
+    assert recover._lockstep_from([], summary) is True
+    # And the live-only path (no argv, no game block) reports the defaults.
+    assert recover._fast_forward_from([], {}) == 1
+    assert recover._lockstep_from([], {}) is False
+
+
 def test_recover_does_not_duplicate_or_adopt_twice(service) -> None:
     recover, _paths, state, tmp_path = service
 

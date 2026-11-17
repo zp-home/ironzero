@@ -53,6 +53,7 @@ import argparse
 import base64
 import gzip
 import json
+import os
 import struct
 import sys
 import xml.etree.ElementTree as ET
@@ -62,7 +63,34 @@ from pathlib import Path
 from typing import Any, Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RUNTIME = REPO_ROOT / ".runtime" / "rwpp-runtime-1.15"
+# The real-game runtime must resolve to the *same* directory the training env
+# launches (``ironzero.rwpp.DEFAULT_RUNTIME``), otherwise ``ensure_arena_map``
+# looks for ``Artillery.tmx`` under a runtime that does not exist and the whole
+# request dies (see ``resolve_repo_runtime``).
+_LEGACY_RUNTIME = REPO_ROOT / ".runtime" / "rwpp-runtime-1.15"
+
+
+def resolve_repo_runtime() -> Path:
+    """The RWPP runtime directory, resolved exactly like ``ironzero.rwpp``.
+
+    ``IRONZERO_RWPP_RUNTIME`` wins; the historical ``E:\\IronZeroBuild`` build is
+    the default, and the repository-local copy is only a last resort. Sharing one
+    rule matters because this module *installs* generated arena maps into the
+    runtime's asset tree while the trainer *reads* them back out of it: two
+    different answers means "map missing" forever, and re-generation then fails
+    on a source map that only exists in the real build.
+    """
+
+    configured = os.environ.get("IRONZERO_RWPP_RUNTIME")
+    if configured:
+        return Path(configured)
+    build = Path(r"E:\IronZeroBuild\rwpp-runtime-1.15")
+    if build.is_dir():
+        return build
+    return _LEGACY_RUNTIME
+
+
+DEFAULT_RUNTIME = resolve_repo_runtime()
 SOURCE_MAP_REL = "maps/challenge/Artillery.tmx"
 TARGET_MAP_REL = "maps/ironzero/IronZero25.tmx"
 

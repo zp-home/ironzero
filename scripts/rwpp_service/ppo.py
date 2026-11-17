@@ -29,14 +29,18 @@ import sys
 import time
 from pathlib import Path
 
-from .paths import REPO_ROOT, RUNS, _relative, _update
+from .paths import REPO_ROOT, RUNS, _relative, _strip_container_prefix, _update
+from .proc import _accel_flags
 from .state import PPO_PROCESSES, PPO_STOP
 
 __all__ = [
+    "build_ppo_command",
     "run_ppo",
     "_read_live_events",
     "resolve_preset",
+    "resolve_init_state",
     "resolve_init_checkpoint",
+    "resolve_bc_checkpoint",
 ]
 
 
@@ -57,8 +61,10 @@ def _read_live_events(path: Path) -> list[dict]:
     return events
 
 
-def run_ppo(
-    job_id: str,
+def build_ppo_command(
+    *,
+    job_dir: Path,
+    live_path: Path,
     updates: int,
     envs: int,
     rollout_steps: int,
@@ -70,6 +76,9 @@ def run_ppo(
     map_height: float,
     frame_ms: int = 2,
     physics_ms: int = 16,
+    fast_forward: int = 1,
+    lockstep: bool = True,
+    lockstep_timeout_ms: int = 30000,
     vision_radius: float = 260.0,
     eval_every: int = 0,
     eval_episodes: int = 1,
@@ -85,12 +94,24 @@ def run_ppo(
     ai_difficulty: int | None = None,
     enemy_ai_difficulty: int | None = None,
     init_checkpoint: str | None = None,
-) -> None:
-    job_dir = RUNS / f"rwpp-ppo-{job_id}"
-    job_dir.mkdir(parents=True, exist_ok=True)
-    live_path = job_dir / "live.jsonl"
-    log_path = job_dir / "train.log"
-    summary_path = job_dir / "rwpp_summary.json"
+) -> list[str]:
+    """The ``ironzero.training.train_rwpp`` command line for one ``/ppo`` job.
+
+    Pure (no filesystem, no subprocess) so the *exact* argv a web request produces
+    can be asserted in a test. That matters more than it looks: three separate
+    regressions in this file were "the payload said X, the command said Y":
+
+    * the map pixel size was the constant ``2700x2500`` on every map;
+    * a dropped request key sent no flag at all and still answered 200;
+    * ``enemy_ai_difficulty`` was only forwarded when the caller happened to set
+      it, so omitting it made the engine fall back to its global default of 0
+      (the easiest real opponent) while the form showed a difficulty box.
+
+    ``enemy_ai_difficulty`` is therefore written whenever it is not ``None`` --
+    ``launch.py`` resolves "not supplied" to the intended default (1) *before*
+    calling this, so the flag is always on the command line in practice.
+    """
+
     command = [
         sys.executable,
         "-m",
@@ -129,8 +150,14 @@ def run_ppo(
     # Always pin the simulation delta explicitly: the trainer's own default has
     # already moved twice, and a web-launched run must not silently inherit it.
     # ``--physics-ms`` fixes what one episode simulates, so ``--frame-ms`` is free
-    # to only pace the wall clock (2 ms pacing + 16 ms physics ≈ 8x real time).
+    # to only pace the wall clock (0 ms = never sleep, measured 26.5x real time vs
+    # 10.7x at 1 ms; both simulate exactly the same battle).
     command.extend(["--physics-ms", str(max(0, int(physics_ms)))])
+    # Engine-native acceleration. Opt-in only, so the default command line stays
+    # byte-identical; the trainer's own defaults already are ``--fast-forward 1``
+    # and ``--lockstep`` on, but they are stated explicitly here so a web run
+    # never silently inherits a changed default.
+    command.extend(_accel_flags(fast_forward, lockstep, lockstep_timeout_ms))
     if use_llm:
         command.append("--use-llm")
     # Arena scenarios (e.g. the 25-vs-25 IronZero25 map) need the wider
@@ -162,6 +189,82 @@ def run_ppo(
         command.extend(["--enemy-ai-difficulty", str(int(enemy_ai_difficulty))])
     if init_checkpoint:
         command.extend(["--init-checkpoint", str(init_checkpoint)])
+    return command
+
+
+def run_ppo(
+    job_id: str,
+    updates: int,
+    envs: int,
+    rollout_steps: int,
+    episode_ticks: int,
+    device: str,
+    map_name: str,
+    map_path: str,
+    map_width: float,
+    map_height: float,
+    # Defaults mirror ``launch.py::_start_ppo`` and ``RwppPpoRequest``: a direct
+    # caller that omits the key gets the historical 2 ms, while the dashboard
+    # sends 0 explicitly (unpaced, measured 26.5x with ``physics_ms=16``).
+    frame_ms: int = 2,
+    physics_ms: int = 16,
+    fast_forward: int = 1,
+    lockstep: bool = True,
+    lockstep_timeout_ms: int = 30000,
+    vision_radius: float = 260.0,
+    eval_every: int = 0,
+    eval_episodes: int = 1,
+    use_llm: bool = False,
+    units_per_team: int | None = None,
+    max_entities: int | None = None,
+    target_slots: int | None = None,
+    terrain: str | None = None,
+    win_mode: str = "",
+    unlock_ai: bool = False,
+    ai_pilot: bool = False,
+    record_ai_orders: bool = False,
+    ai_difficulty: int | None = None,
+    enemy_ai_difficulty: int | None = None,
+    init_checkpoint: str | None = None,
+) -> None:
+    job_dir = RUNS / f"rwpp-ppo-{job_id}"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    live_path = job_dir / "live.jsonl"
+    log_path = job_dir / "train.log"
+    summary_path = job_dir / "rwpp_summary.json"
+    command = build_ppo_command(
+        job_dir=job_dir,
+        live_path=live_path,
+        updates=updates,
+        envs=envs,
+        rollout_steps=rollout_steps,
+        episode_ticks=episode_ticks,
+        device=device,
+        map_name=map_name,
+        map_path=map_path,
+        map_width=map_width,
+        map_height=map_height,
+        frame_ms=frame_ms,
+        physics_ms=physics_ms,
+        fast_forward=fast_forward,
+        lockstep=lockstep,
+        lockstep_timeout_ms=lockstep_timeout_ms,
+        vision_radius=vision_radius,
+        eval_every=eval_every,
+        eval_episodes=eval_episodes,
+        use_llm=use_llm,
+        units_per_team=units_per_team,
+        max_entities=max_entities,
+        target_slots=target_slots,
+        terrain=terrain,
+        win_mode=win_mode,
+        unlock_ai=unlock_ai,
+        ai_pilot=ai_pilot,
+        record_ai_orders=record_ai_orders,
+        ai_difficulty=ai_difficulty,
+        enemy_ai_difficulty=enemy_ai_difficulty,
+        init_checkpoint=init_checkpoint,
+    )
     started = time.time()
     handle = log_path.open("w", encoding="utf-8", errors="replace")
     environment = dict(os.environ)
@@ -233,7 +336,18 @@ def run_ppo(
 
 
 def resolve_preset(payload: dict, map_name: str, map_path: str) -> dict:
-    """把 payload 里的 arena 相关字段收敛成 trainer 可用的确定值。"""
+    """把 payload 里的 arena 相关字段收敛成 trainer 可用的确定值。
+
+    返回字典里的 ``arena_error`` 是**非空字符串**时表示 arena 地图准备失败，
+    调用方必须把它变成 400 拒绝请求而不是照常开跑：训练器一旦拿不到 arena
+    tmx，只会在子进程里报一个看不懂的错，或者干脆跑到一张不存在的地图上。
+
+    这里必须捕获 ``BaseException``：``make_ironzero_map`` 的失败路径全是
+    ``raise SystemExit(...)``（找不到源图、tileset 缺失、连通性检查不过），
+    而 ``SystemExit`` 不是 ``Exception`` 子类。原来只写 ``except Exception``，
+    于是 SystemExit 直接逃出 HTTP handler 线程 —— 客户端只看到连接被关掉，
+    前端弹的却是「真机服务未启动」，真正的失败原因（runtime 路径不对）完全丢失。
+    """
 
     units_per_team = payload.get("units_per_team")
     arena = (
@@ -246,6 +360,7 @@ def resolve_preset(payload: dict, map_name: str, map_path: str) -> dict:
     terrain = str(payload.get("terrain") or "")
     win_mode = str(payload.get("win_mode") or "")
     unlock_ai = bool(payload.get("unlock_ai", False))
+    arena_error = ""
     if arena:
         if units_per_team is not None:
             units_per_team = max(1, min(25, int(units_per_team)))
@@ -263,8 +378,14 @@ def resolve_preset(payload: dict, map_name: str, map_path: str) -> dict:
             _, rel_path, arena_map_name = ensure_arena_map(units_per_team)
             map_path = rel_path
             map_name = arena_map_name
-        except Exception:
-            pass
+        except (Exception, SystemExit) as exc:  # noqa: BLE001 - SystemExit included on purpose
+            # Keep the original map so the payload still describes what was asked
+            # for, and let the caller refuse the request with this message.
+            arena_error = (
+                f"arena map preparation failed for units_per_team={units_per_team}: "
+                f"{str(exc) or type(exc).__name__}"
+            )
+            print(f"[ppo] {arena_error}", file=sys.stderr, flush=True)
         terrain = terrain or str(REPO_ROOT / "configs" / "maps" / f"{map_name}.terrain.json")
         if not Path(terrain).is_file():
             terrain = str(REPO_ROOT / "configs" / "maps" / "IronZero25.terrain.json")
@@ -279,9 +400,19 @@ def resolve_preset(payload: dict, map_name: str, map_path: str) -> dict:
                 terrain = str(candidate_terrain)
             else:
                 terrain = ""
+        # Stock skirmish maps declare ``type=skirmish`` and carry no
+        # ``winCondition``, so on the original maps the native win channel only
+        # fires when the enemy is erased down to its last unit. Measured over
+        # 7129 native-mode games: zero victories. The bridge's ``objective`` mode
+        # scores the engine's own skirmish objectives instead (main buildings,
+        # then "no factory and no builder"), which IS reachable on an economy map.
+        # Default it for non-arena runs unless the caller pinned something.
+        if not win_mode:
+            win_mode = "objective"
 
     return {
         "arena": arena,
+        "arena_error": arena_error,
         "units_per_team": units_per_team,
         "max_entities": max_entities,
         "target_slots": target_slots,

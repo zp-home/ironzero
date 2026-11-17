@@ -161,6 +161,39 @@ def _float_or_none(value: object) -> float | None:
         return None
 
 
+def _fast_forward_from(cmdline: list[str], summary: dict) -> int:
+    """``--fast-forward`` of an adopted run; 1 when the flag is absent.
+
+    Same recovery path as ``frame_ms``: prefer the live process's own argv (the
+    only place an *adopted* run's real value survives -- the trainer's startup
+    log line predates these flags) and fall back to the summary. ``--fast-forward``
+    is opt-in, so "absent" genuinely means the default of 1, not "unknown".
+    """
+
+    if cmdline:
+        value = _int_or_none(_flag(cmdline, "--fast-forward"))
+        if value is not None:
+            return max(1, min(32, value))
+    game = summary.get("game") if isinstance(summary.get("game"), dict) else {}
+    value = _int_or_none(summary.get("fast_forward", game.get("fast_forward")))
+    return max(1, min(32, value)) if value is not None else 1
+
+
+def _lockstep_from(cmdline: list[str], summary: dict) -> bool:
+    """Whether an adopted run uses ``--lockstep``.
+
+    ``--lockstep`` is a bare switch (the bridge has no ``--no-lockstep``), so its
+    presence in argv is the answer. The trainer summary records the resolved
+    boolean under ``game.lockstep``, which is the fallback when psutil cannot see
+    the command line.
+    """
+
+    if cmdline:
+        return "--lockstep" in cmdline
+    game = summary.get("game") if isinstance(summary.get("game"), dict) else {}
+    return bool(summary.get("lockstep", game.get("lockstep", False)))
+
+
 def _read_events(path: Path) -> list[dict]:
     events: list[dict] = []
     try:
@@ -259,6 +292,15 @@ def _job_from_live(job_dir: Path, cmdline: list[str] | None = None) -> dict | No
         "map_name": map_name or summary.get("map"),
         "map_path": map_path or "",
         "frame_ms": _int_or_none(_flag(cmdline, "--frame-ms")) if cmdline else summary.get("frame_ms"),
+        # Acceleration is read back the same way ``frame_ms`` is: from the live
+        # process's own argv when psutil can see it, otherwise from the trainer's
+        # startup summary. Both flags are opt-in on the command line, so a missing
+        # ``--fast-forward`` means 1 and a missing ``--lockstep`` means off.
+        "fast_forward": _fast_forward_from(cmdline, summary),
+        "lockstep": _lockstep_from(cmdline, summary),
+        "lockstep_timeout_ms": (
+            _int_or_none(_flag(cmdline, "--lockstep-timeout-ms")) or 30000
+        ) if cmdline else 30000,
         "vision_radius": (
             _float_or_none(_flag(cmdline, "--vision-radius")) if cmdline else summary.get("vision_radius")
         ),
@@ -370,6 +412,23 @@ def _revalidate(record: dict, pids: dict[str, int]) -> None:
             return
         record["status"] = "stale"
         record["error"] = record.get("error") or "服务重启后未发现仍在运行的训练进程"
+        record["finished_at"] = record.get("finished_at") or time.strftime("%Y-%m-%d %H:%M:%S")
+        return
+    if record.get("kind") == "ppo":
+        # A PPO record with **no** ``out_dir`` can never have live evidence: the
+        # trainer would have written ``live.jsonl`` under one, and ``run_ppo``
+        # sets ``out_dir`` from the job directory it creates before spawning.
+        # Such a record only exists when the process died between persisting the
+        # job and creating its directory -- or when a *test* built a job record
+        # (``StartMixin._start_ppo`` persists before the runner thread does
+        # anything). Leaving it ``running`` is the worst outcome: the "one PPO
+        # job at a time" guard then answers 409 "a training job is already
+        # running" for a job that never existed, and no amount of waiting fixes
+        # it because nothing will ever write that summary.
+        record["status"] = "stale"
+        record["error"] = record.get("error") or (
+            "训练任务没有产生任何运行目录（out_dir 为空），已标记为中断"
+        )
         record["finished_at"] = record.get("finished_at") or time.strftime("%Y-%m-%d %H:%M:%S")
         return
     started_ts = float(record.get("started_ts") or 0.0)

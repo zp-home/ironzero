@@ -70,6 +70,18 @@ Start-Process python -ArgumentList "scripts\rwpp_real_service.py","--port","8300
 | `C:\IronZero\rwpp-runtime-1.15` | 历史启动方式用 `IRONZERO_RWPP_RUNTIME` 指向它 |
 | `.runtime\bridge-dist\ironzero-bridge.jar` | 构建暂存产物，**不是权威源** |
 
+**runtime 路径只有一个解析规则**：`IRONZERO_RWPP_RUNTIME` → 上面的构建目录 →
+仓库内 `.runtime\rwpp-runtime-1.15`（兜底）。两个模块必须给出同一个答案：
+
+* `src/ironzero/rwpp/config.py::DEFAULT_RUNTIME`（trainer 从这里读地图）
+* `scripts/make_ironzero_map.py::resolve_repo_runtime()`（`ensure_arena_map` 往这里装地图）
+
+两条规则一旦分叉，就是「地图永远缺失」：生成器往一个不存在的目录装、trainer 去
+另一个目录找，`ensure_arena_map` 于是每次都重新生成，而重新生成需要真实 runtime 里的
+`maps/challenge/Artillery.tmx`，源图一缺就 `SystemExit`。历史上生成器写死的是仓库内
+那个不存在的路径，Web 端默认的 IronZero25 训练因此 100% 失败。
+`tests/test_web_ppo_contract.py::ArenaRuntimeResolutionTests` 会断言两边相等。
+
 症状：Python 侧已经按新参数拼命令行，旧 jar 却不认识该参数，于是"代码明明改了但
 真机行为没变"。**唯一权威源是 `build_rwpp_extension.ps1` 重新编译出来的那份**——
 `.runtime\bridge-dist` 只是上一次运行的暂存，可能比 runtime 里的还旧，**不要
@@ -170,12 +182,12 @@ server.py       main(argv)：argparse → 填端口池 → recover_jobs() → Th
 | --- | ---: | --- |
 | `state.py` | 53 | `JOBS` / `JOBS_LOCK` / `PORT_SLOTS` / `MAX_PARALLEL` / `ACTIVE_PROCESSES` / `STOPPED_JOBS` / `PPO_PROCESSES` / `PPO_STOP` / `TICK_OVERHEAD_MS` / `EPISODE_TIMEOUT_MARGIN_S` |
 | `paths.py` | 80 | 仓库根与脚本路径常量、任务记录读写与**落盘**（`JOB_STATE_DIR` / `_persist_job`） |
-| `recover.py` | 489 | 重启后恢复/接管在跑的任务、pid 归属、`taskkill` 停止、产物级终态判定 |
-| `proc.py` | 120 | 受管子进程执行（登记 → communicate → 清理）、单任务/全量停止、单局超时预算 |
-| `runners.py` | 323 | `/infer`（单局）与 `/train`（多局并行采集）的执行体 |
-| `ppo.py` | 330 | `/ppo` 训练执行体、live 事件读取、arena/预热权重预设收敛 |
-| `launch.py` | 281 | `StartMixin`：`_start` / `_start_ppo` / `_ppo_running` |
-| `handler.py` | 183 | `Handler`：`do_GET` / `do_POST` / `do_OPTIONS` / `_send` |
+| `recover.py` | 531 | 重启后恢复/接管在跑的任务、pid 归属、`taskkill` 停止、产物级终态判定、从 argv/摘要读回 `frame_ms` 与加速参数 |
+| `proc.py` | 186 | 受管子进程执行（登记 → communicate → 清理）、单任务/全量停止、单局超时预算、`_accel_flags`（`--fast-forward` / `--lockstep` 的 opt-in 拼装） |
+| `runners.py` | 375 | `/infer`（单局）与 `/train`（多局并行采集）的执行体，加速参数透传 |
+| `ppo.py` | 417 | `/ppo` 训练执行体、live 事件读取、arena/预热权重预设收敛 |
+| `launch.py` | 492 | `StartMixin`：`_start` / `_start_ppo` / `_ppo_running`，`resolve_acceleration` / `acceleration_error` |
+| `handler.py` | 195 | `Handler`：`do_GET` / `do_POST` / `do_OPTIONS` / `_send` |
 | `server.py` | 60 | `main(argv)`（含 `--no-recover`）与 `ThreadingHTTPServer` 装配 |
 
 ## 3. 路由表
@@ -200,28 +212,99 @@ server.py       main(argv)：argparse → 填端口池 → recover_jobs() → Th
 未知路径 → 404 `{"error": "not found"}`；非法 JSON → 400 `{"error": "invalid json"}`。
 所有响应都带 `Access-Control-Allow-Origin: *`（容器内后端跨主机调用）。
 
+四条创建路径（`/infer` `/record` `/train` `/ppo`）都接受 `fast_forward`(1..32) 与
+`lockstep`(bool)；`fast_forward` 越界一律 400 `{"error": "fast_forward must be 1..32"}`。
+
+### 3.1 `/ppo` 的 payload 契约（与 `web/backend/app/models.py` 同步维护）
+
+`RwppPpoRequest` 是这一步的**唯一**入参模型，字段名必须与 `launch.py::_start_ppo`
+读取的 key 完全一致，否则字段会在后端这一层被静默丢弃（pydantic 默认
+`extra="ignore"`，请求照样 200）。因此 `models.py` 里显式设了 `extra="forbid"`：
+多传一个不认识的 key 会 422，而不是假装成功。
+
+| 分组 | 字段 |
+| --- | --- |
+| 训练超参 | `updates` `envs`(1..16) `rollout_steps` `episode_ticks` `device` `eval_every` `eval_episodes` `use_llm` |
+| 场地 | `map_name` `map_path` `map_width` `map_height` `units_per_team` |
+| arena 预设（宿主端收敛） | `arena` `max_entities` `target_slots` `terrain` `win_mode` `unlock_ai` |
+| 节奏与裁决 | `frame_ms` `physics_ms`(0..100) `timeout_penalty` `num_teams` |
+| 加速 | `fast_forward`(1..32, 1=关) `lockstep`(缺省 = 宿主按 runner 决定) `lockstep_timeout_ms`(1000..600000) |
+| 初始权重 | `init_mode`(`warmstart`/`checkpoint`/`scratch`) `init_checkpoint` |
+| 官方 AI 教师 | `ai_pilot` `record_ai_orders` `ai_difficulty`(-2..3) `enemy_ai_difficulty` |
+
+`tests/test_web_ppo_contract.py::PpoRequestContractTests` 会逐字段比对这张表，
+`launch.py` 新增 key 而 `models.py` 没跟上时直接红。
+
+**`/app/...` 路径改写**：平台后端列出的 checkpoint 是容器路径（`/app/runs/...`），
+宿主机上没有 `/app`。`web/backend/app/routers/rwpp.py::_host_path` 会把前缀剥掉，
+`/infer` `/record` `/train` `/ppo` 四条路径都走它；`resolve_init_state` 里还有一层
+兜底（直接打宿主机服务的调用方也能用）。
+
+**显式 checkpoint 找不到 = 400，不是静默从零**：`resolve_init_state` 区分两种情况——
+用户点了「加载已有 Checkpoint」却找不到文件 → 返回 `error`，`_start_ppo` 把它变成 400；
+`warmstart` 找不到匹配坦克数的 BC 权重属于可选增强，只写 stderr 不拦截请求。
+任务记录里会同时写入**已解析**的 `init_mode` / `init_checkpoint`，前端据此显示
+「本次实际起点」，否则「预热」可能悄悄等于「从零」。
+
 ## 4. 任务生命周期
 
 ### 4.1 创建（`launch.py`）
 
 1. 解析 payload 并校验（`policy` / `ticks` 120..216000 / `concurrency` / `episodes` /
-   PPO 的 `frame_ms` `vision_radius` `updates` `envs` `rollout_steps` `episode_ticks` `device`）。
-   校验顺序与文案与拆分前完全一致。
-2. **互斥检查**：已有 running 的 PPO 任务 → 409；启动 PPO 时若还有 running 的实机任务 → 409；
+   PPO 的 `frame_ms` `vision_radius` `updates` `envs` `rollout_steps` `episode_ticks` `device` /
+   四条的 `fast_forward` 1..32）。
+   校验顺序与文案与拆分前完全一致；`fast_forward` 越界一律 **400
+   `fast_forward must be 1..32`**（`launch.acceleration_error`，四条路径共用一句文案）。
+2. **arena 预设收敛**（`resolve_preset`）：判定是否 arena → 生成/安装对应坦克数的地图 →
+   收敛 `max_entities` / `target_slots` / `terrain` / `win_mode` / `unlock_ai`。
+   地图准备失败时把原因写进 `preset["arena_error"]` 并用 **400** 拒绝请求。
+   > 这里的 `except` **必须带 `SystemExit`**：`make_ironzero_map` 的失败路径全是
+   > `raise SystemExit(...)`（源图缺失、tileset 缺失、连通性检查不过），而
+   > `SystemExit` 不是 `Exception` 子类。只写 `except Exception` 时它会逃出 HTTP
+   > handler 线程，客户端只看到连接被关掉，前端却提示「真机服务未启动」。
+3. **初始权重收敛**（`resolve_init_state`）：剥掉容器 `/app/` 前缀 → warmstart 按坦克数
+   查 BC → 显式路径不存在 → 400（见 §3.1）。
+4. **互斥检查**：已有 running 的 PPO 任务 → 409；启动 PPO 时若还有 running 的实机任务 → 409；
    启动实机任务时若端口池为空 → 409。
-3. 在 `JOBS[job_id]` 写入初始记录（`status="running"`、`started_ts`、`episodes_metrics` 等）。
-4. 起一个 daemon 线程跑 `run_infer` / `run_train` / `run_ppo`，**立即**回 `job_id`。
+5. 在 `JOBS[job_id]` 写入初始记录（`status="running"`、`started_ts`、`episodes_metrics` 等，
+   以及已解析的 `init_mode` / `init_checkpoint`）。
+6. 起一个 daemon 线程跑 `run_infer` / `run_train` / `run_ppo`，**立即**回 `job_id`。
 
 ### 4.2 执行（`runners.py` / `ppo.py` / `proc.py`）
 
 * 实机任务每局从 `PORT_SLOTS` 取一个端口 → `_run_managed_proc` 启动
   `record_rwpp_replay.py`（scripted/none）或 `play_rwpp_policy.py`（model/ppo checkpoint），
   子进程登记进 `ACTIVE_PROCESSES[job_id]`；结束后端口归还 `PORT_SLOTS`。
+  **子进程输出按 UTF-8 解码**（`encoding="utf-8", errors="replace"`）。用 `text=True`
+  而不指定编码时会走 locale 编码（中文 Windows 是 cp936），游戏/torch 写出的 UTF-8
+  字节解不开就在 `communicate()` 里抛 `UnicodeDecodeError`，被兜底 `except` 吞掉后
+  返回 `(-1, "")` —— 任务落成 `status=failed, error=None, last_log=""`，日志全丢。
 * `run_train` 用 `min(concurrency, episodes, MAX_PARALLEL)` 个 worker 线程共享任务队列与端口池，
   每次完成一局就累加 `episodes_done` / `episodes_metrics` / `frames` / `ticks_total`。
 * `run_ppo` 拉起 `python -m ironzero.training.train_rwpp`，stdout 写 `runs/platform/rwpp-ppo-{id}/train.log`；
   每 2 s 读一次 `live.jsonl`，把 `updates_done` / `latest_update` / `evaluations` / `elapsed`
   写回 job —— 这就是 `/ppo/{id}/events` 的数据来源。
+
+**加速参数怎么下发**（`proc._accel_flags`）：全部 opt-in，默认请求的子进程命令行与加
+这组参数之前**逐字节相同**（旧日志/旧回放仍然可比）。
+
+* `fast_forward != 1` → `--fast-forward N`；`lockstep` → `--lockstep`；
+  `lockstep_timeout_ms != 30000` → 再发 `--lockstep-timeout-ms N`。
+* 四个入口的 `lockstep` 默认不同：`/ppo` 与模型推理**默认开**（每个 obs 都要有决策，
+  不能被不 sleep 的引擎甩过去），`/infer` 走脚本录制与 `/train` **默认关**
+  （`record_rwpp_replay.py` 每 N 个 obs 才发一次 order，逐帧等会卡住引擎）。
+  `/infer` 的 payload 不写 `lockstep` 时，`_start` 传 `None` 下去，由 runner 决定。
+* `proc._episode_timeout(ticks, frame_ms, fast_forward)` 把墙钟预算除以
+  `max(1, fast_forward)`（局变短，超时预算同步收），下限仍是 **120 s**
+  （引擎启动、地图加载、回放落盘不会因为 gameSpeed 变快）。
+* **`/infer` `/record` `/train` 的录制路径会追加 `-- --physics-ms 16`**：`frame_ms=0`
+  只有在引擎步长被钉死时才合法，否则 `record_rwpp_replay.py` 会把它静默钳回 1 ms
+  （10.7×），而界面上写着「不限速 · 约 26×」。模型推理路径本来就经由
+  `RwppGameConfig.physics_ms=16` 钉死。
+* `/ppo` 的 job 记录与子进程命令都带 `frame_ms`(默认 0) `physics_ms`(默认 16)
+  `fast_forward` `lockstep` `lockstep_timeout_ms`；`recover.py::_job_from_live`
+  从命令行读回（`--fast-forward` / `--lockstep` 是 opt-in，缺失就是 1 / 关），
+  读不到 argv 时退回 trainer 写的 `rwpp_summary.json` 的 `game` 块。
 
 ### 4.3 终态
 

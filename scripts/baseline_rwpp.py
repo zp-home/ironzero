@@ -63,6 +63,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--episode-ticks", type=int, default=3600)
     parser.add_argument("--episodes", type=int, default=10)
     parser.add_argument("--frame-ms", type=int, default=1)
+    parser.add_argument("--physics-ms", type=int, default=16,
+                        help="pin the engine's simulated delta (16 = real time); --frame-ms then "
+                             "only paces the wall clock, so 0 = never sleep")
+    parser.add_argument("--fast-forward", type=int, default=1,
+                        help="engine game speed (1..32); 1 = off, N makes a match need 1/N the ticks")
+    parser.add_argument("--lockstep", action=argparse.BooleanOptionalAction, default=True,
+                        help="block after each observation until the client answers (no dropped frames)")
+    parser.add_argument("--lockstep-timeout-ms", type=int, default=30000,
+                        help="max lockstep wait before the bridge falls back to free running")
     parser.add_argument("--vision-radius", type=float, default=0.0)
     parser.add_argument("--port-base", type=int, default=5430)
     parser.add_argument("--seed", type=int, default=31_000)
@@ -137,6 +146,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         win_mode=str(args.win_mode or ""),
         unlock_ai=bool(args.unlock_ai),
         frame_ms=max(0, int(args.frame_ms)),
+        physics_ms=max(0, int(args.physics_ms)),
+        fast_forward=max(1, int(args.fast_forward)),
+        lockstep=bool(args.lockstep),
+        lockstep_timeout_ms=int(args.lockstep_timeout_ms),
         vision_radius=float(args.vision_radius),
     )
     results: list[dict[str, Any]] = []
@@ -191,7 +204,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "total_seconds": round(time.time() - started, 2),
         "map": args.map,
         "vision_radius": args.vision_radius,
-        "frame_ms": args.frame_ms,
+        "frame_ms": int(game.frame_ms),
+        "physics_ms": int(game.physics_ms),
+        "fast_forward": int(game.fast_forward),
+        "lockstep": bool(game.lockstep),
+        "lockstep_timeout_ms": int(game.lockstep_timeout_ms),
     }
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)

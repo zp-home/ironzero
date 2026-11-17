@@ -28,6 +28,7 @@ __all__ = [
     "_update",
     "_append_replay",
     "_persist_job",
+    "_strip_container_prefix",
 ]
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -39,6 +40,24 @@ RUNS.mkdir(parents=True, exist_ok=True)
 #: 放在 ``runs/_rwpp_service`` 而不是 ``runs/platform``，避免混进"平台产物"，
 #: 也避免被回放/模型扫描当成数据。
 JOB_STATE_DIR = REPO_ROOT / "runs" / "_rwpp_service" / "jobs"
+
+
+def _strip_container_prefix(path) -> str:
+    """把平台容器路径 ``/app/runs/...`` 还原成仓库相对路径。
+
+    平台后端列出的权重路径是**它在容器里看到的**路径（Docker 里仓库根挂在
+    ``/app``），宿主机上并没有 ``/app``。``web/backend/app/routers/rwpp.py::
+    _host_path`` 正常会改写；这里兜底是为了让**直接**打宿主机服务的调用方
+    （curl / 脚本 / 其它客户端）也能用同一份路径。``/infer`` 与 ``/ppo`` 共用。
+
+    只有 ``/app/`` 前缀存在时才动这个字符串：反斜杠只在**判定前缀**时归一化，
+    否则 Windows 的相对路径 ``runs\\platform\\c.pt`` 会被改成 ``runs//platform//c.pt``。
+    """
+
+    text = str(path or "")
+    if text.replace("\\", "/").startswith("/app/"):
+        return text.replace("\\", "/")[len("/app/"):]
+    return text
 
 
 def _relative(path: Path) -> str:

@@ -21,7 +21,7 @@ from pathlib import Path
 
 from . import state
 from .paths import PLAYER, RECORDER, RUNS, _append_replay, _relative, _update
-from .proc import _episode_timeout, _run_managed_proc
+from .proc import _accel_flags, _episode_timeout, _run_managed_proc
 from .state import JOBS, JOBS_LOCK, PORT_SLOTS, STOPPED_JOBS
 
 __all__ = ["_run_player", "_run_recorder", "run_infer", "run_train"]
@@ -38,7 +38,12 @@ def _run_recorder(
     map_path: str | None = None,
     map_width: float = 2600.0,
     map_height: float = 2600.0,
+    # 2 = historical default for a direct caller (``_start`` always passes an
+    # explicit value). See the note on ``run_infer``: the dashboard sends 0.
     frame_ms: int = 2,
+    fast_forward: int = 1,
+    lockstep: bool = False,
+    lockstep_timeout_ms: int = 30000,
 ) -> tuple[str | None, int, float, str | None]:
     command = [
         sys.executable,
@@ -50,7 +55,7 @@ def _run_recorder(
         "--port",
         str(port),
         "--timeout",
-        str(_episode_timeout(ticks, frame_ms)),
+        str(_episode_timeout(ticks, frame_ms, fast_forward)),
         "--frame-ms",
         str(max(0, int(frame_ms))),
         "--map-width",
@@ -58,15 +63,33 @@ def _run_recorder(
         "--map-height",
         str(float(map_height)),
     ]
+    # Acceleration is opt-in (see ``_accel_flags``): a default request produces
+    # exactly the command line it produced before these flags existed.
+    command.extend(_accel_flags(fast_forward, lockstep, lockstep_timeout_ms))
     if map_path:
         command.extend(["--map", map_path])
     if map_name:
         command.extend(["--map-name", map_name])
     if stream_path is not None:
         command.extend(["--stream", str(stream_path)])
+    # Pin the engine delta so ``--frame-ms`` really is pacing only, and so the
+    # dropdown's numbers mean what they say: ``physics_ms=16`` fixed, ``frame_ms``
+    # 0/1/2/16 -> measured 26.5x / 10.7x / 6.5x / 1x. Two concrete reasons:
+    #
+    # * without the pin, ``record_rwpp_replay.py`` silently clamps a requested
+    #   ``--frame-ms 0`` back to 1 ms ("needs --physics-ms > 0"), so the "不限速
+    #   · 约26×" option would quietly run at 10.7x -- exactly the mismatch this
+    #   change exists to remove;
+    # * the model player path already pins it (``RwppGameConfig.physics_ms=16``
+    #   by default), so leaving the recorder unpinned made two runs of the same
+    #   request simulate different amounts of game time per tick.
+    #
+    # The passthrough must come last: everything after ``--`` goes straight to
+    # the bridge, and ``bridge_args`` is the script's trailing positional.
+    command.extend(["--", "--physics-ms", "16"])
     started = time.time()
     code, stdout = _run_managed_proc(
-        job_id, command, timeout=_episode_timeout(ticks, frame_ms) + 60.0
+        job_id, command, timeout=_episode_timeout(ticks, frame_ms, fast_forward) + 60.0
     )
     seconds = time.time() - started
     replay_path = None
@@ -110,6 +133,9 @@ def _run_player(
     stream_path: Path,
     port: int,
     frame_ms: int,
+    fast_forward: int = 1,
+    lockstep: bool = True,
+    lockstep_timeout_ms: int = 30000,
 ) -> tuple[str | None, int, float, str | None]:
     command = [
         sys.executable,
@@ -121,7 +147,7 @@ def _run_player(
         "--port",
         str(port),
         "--timeout",
-        str(_episode_timeout(ticks, frame_ms)),
+        str(_episode_timeout(ticks, frame_ms, fast_forward)),
         "--stream",
         str(stream_path),
         "--frame-ms",
@@ -131,6 +157,12 @@ def _run_player(
         "--map-height",
         str(float(map_height)),
     ]
+    # Same opt-in rule as ``_run_recorder``. Lockstep is *on* by default for the
+    # model player: ``play_rwpp_policy.py`` defaults to ``--lockstep`` because a
+    # policy-driven episode must not drop decisions. The recorder's default stays
+    # off -- it only sends an order every N observations, so blocking on every
+    # observation would stall the engine on every frame it has nothing to say.
+    command.extend(_accel_flags(fast_forward, lockstep, lockstep_timeout_ms))
     if map_path:
         command.extend(["--map", map_path])
     if map_name:
@@ -139,7 +171,7 @@ def _run_player(
         command.extend(["--win-mode", "annihilation", "--unlock-ai"])
     started = time.time()
     code, stdout = _run_managed_proc(
-        job_id, command, timeout=_episode_timeout(ticks, frame_ms) + 60.0
+        job_id, command, timeout=_episode_timeout(ticks, frame_ms, fast_forward) + 60.0
     )
     seconds = time.time() - started
     payload: dict = {}
@@ -167,7 +199,13 @@ def run_infer(
     map_width: float = 2600.0,
     map_height: float = 2600.0,
     checkpoint: str | None = None,
+    # 2 = the historical default for a *direct* caller (``_start`` always passes
+    # an explicit value). The dashboard sends 0 explicitly: unpaced is the
+    # recommended option now that the recorder pins ``--physics-ms 16``.
     frame_ms: int = 2,
+    fast_forward: int = 1,
+    lockstep: bool | None = None,
+    lockstep_timeout_ms: int = 30000,
 ) -> None:
     port = PORT_SLOTS.get()
     # Publish the bridge port immediately so the dashboard can show it while the
@@ -177,8 +215,14 @@ def run_infer(
     job_dir.mkdir(parents=True, exist_ok=True)
     frames_path = job_dir / "frames.jsonl"
     started = time.time()
+    is_player = bool(policy in ("model", "ppo") and checkpoint)
+    # Lockstep default follows the runner: the model player wants every decision
+    # (its own script default is on), the recorder only sends an order every N
+    # observations and would stall if it had to answer each one. ``None`` means
+    # "use the runner's default" so a caller can still force either way.
+    effective_lockstep = (is_player if lockstep is None else bool(lockstep))
     try:
-        if policy in ("model", "ppo") and checkpoint:
+        if is_player:
             replay, frame_count, seconds, episode_result = _run_player(
                 job_id,
                 ticks=ticks,
@@ -190,6 +234,9 @@ def run_infer(
                 stream_path=frames_path,
                 port=port,
                 frame_ms=frame_ms,
+                fast_forward=fast_forward,
+                lockstep=effective_lockstep,
+                lockstep_timeout_ms=lockstep_timeout_ms,
             )
         else:
             replay, frame_count, seconds, episode_result = _run_recorder(
@@ -203,6 +250,9 @@ def run_infer(
                 map_width=map_width,
                 map_height=map_height,
                 frame_ms=frame_ms,
+                fast_forward=fast_forward,
+                lockstep=effective_lockstep,
+                lockstep_timeout_ms=lockstep_timeout_ms,
             )
         # A user-requested stop must not be reported as a failure: ``stop_job``
         # already wrote ``stopped`` into JOBS, and this final ``_update`` would
@@ -248,6 +298,10 @@ def run_train(
     map_path: str | None = None,
     map_width: float = 2600.0,
     map_height: float = 2600.0,
+    frame_ms: int = 2,
+    fast_forward: int = 1,
+    lockstep: bool = False,
+    lockstep_timeout_ms: int = 30000,
 ) -> None:
     started = time.time()
     workers = max(1, min(concurrency, episodes, state.MAX_PARALLEL))
@@ -277,6 +331,10 @@ def run_train(
                     map_path=map_path,
                     map_width=map_width,
                     map_height=map_height,
+                    frame_ms=frame_ms,
+                    fast_forward=fast_forward,
+                    lockstep=lockstep,
+                    lockstep_timeout_ms=lockstep_timeout_ms,
                 )
                 if replay:
                     _append_replay(job_id, _relative(Path(replay)))

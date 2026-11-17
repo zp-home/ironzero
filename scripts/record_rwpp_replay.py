@@ -37,6 +37,42 @@ def map_id_for(relative: str) -> str:
     return base64.urlsafe_b64encode(relative.encode("utf-8")).decode("ascii").rstrip("=")
 
 
+def _flag_value(argv: list[str], flag: str) -> int | None:
+    """Read an int option out of the trailing ``-- ...`` bridge passthrough."""
+
+    if flag in argv:
+        index = argv.index(flag)
+        if index + 1 < len(argv):
+            try:
+                return int(argv[index + 1])
+            except ValueError:
+                return None
+    return None
+
+
+def effective_frame_ms(frame_ms: int, physics_ms: int) -> int:
+    """Mirror of ``ironzero.rwpp.process.effective_frame_ms`` (script is standalone).
+
+    ``--frame-ms`` is only a sleep budget once ``--physics-ms`` pins the engine
+    delta; with ``physics_ms == 0`` it *is* the delta and 0 would advance nothing.
+    This script keeps the ``--physics-ms`` passthrough (``bridge_args``) instead of
+    a first-class flag, so the resolution has to happen here rather than in
+    ``RwppGameConfig``.
+    """
+
+    value = int(frame_ms)
+    if value >= 1:
+        return value
+    if int(physics_ms or 0) > 0:
+        return 0
+    print(
+        "[rwpp] --frame-ms 0 needs --physics-ms > 0 to pin the simulation delta; "
+        "clamping to 1 ms. Use: --frame-ms 0 -- --physics-ms 16",
+        flush=True,
+    )
+    return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Record a real RWPP game as an IronZero replay")
     parser.add_argument("--port", type=int, default=5130)
@@ -51,6 +87,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stream", default="", help="optional JSONL path for live dashboard frames")
     parser.add_argument("--frame-ms", type=int, default=16,
                         help="wall-clock ms per simulated frame: 16 = real time, 0 = as fast as possible")
+    parser.add_argument("--fast-forward", type=int, default=1,
+                        help="engine game speed (1..32); 1 = off, N makes a match need 1/N the ticks")
+    # Lockstep is OFF here on purpose: this script sends an order every
+    # ``--order-every`` observations (4 by default), so a bridge that blocks after
+    # *every* obs until the client answers would stall the game for
+    # ``--lockstep-timeout-ms`` on three of every four frames. The model-driven
+    # scripts (play/baseline/eval/bc) answer every obs and default it on.
+    parser.add_argument("--lockstep", action=argparse.BooleanOptionalAction, default=False,
+                        help="block after each observation until the client answers; off by default "
+                             "because this recorder only sends an order every --order-every frames")
+    parser.add_argument("--lockstep-timeout-ms", type=int, default=30000,
+                        help="max lockstep wait before the bridge falls back to free running")
     parser.add_argument("--map-width", type=float, default=2600.0)
     parser.add_argument("--map-height", type=float, default=2600.0)
     parser.add_argument("bridge_args", nargs="*", help="extra arguments passed to the bridge extension")
@@ -122,6 +170,9 @@ def obs_to_frame(message: dict, config: dict) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    # Wall-clock start, so the summary can report how long the measured gameplay
+    # actually took (the accel A/B is judged on this number, not on tick counts).
+    started_at = time.time()
     env = dict(os.environ)
     env["JAVA_HOME"] = str(JAVA_HOME)
     env["PATH"] = str(JAVA_HOME / "bin") + os.pathsep + env.get("PATH", "")
@@ -133,25 +184,50 @@ def main(argv: list[str] | None = None) -> int:
     server_log = Path("runs") / f"_rwpp_record_{stamp}_{unique}.log"
     server_log.parent.mkdir(parents=True, exist_ok=True)
     log = server_log.open("w", encoding="utf-8", errors="replace")
+    # ``--physics-ms`` stays a passthrough (bridge_args), but the pacing budget
+    # depends on it: 0 ms is only legal while the engine delta is pinned.
+    physics_ms = int(_flag_value(list(args.bridge_args), "--physics-ms") or 0)
+    frame_ms = effective_frame_ms(int(args.frame_ms), physics_ms)
+    # The acceleration flags are assembled here, in the *main* command line
+    # (``--frame-ms`` onward), not appended to ``bridge_args``. ``bridge_args`` is
+    # the raw trailing ``-- ...`` passthrough; sending the same option twice (once
+    # by us, once by an operator) makes the bridge's last-wins parsing silently
+    # pick one, which is exactly the kind of drift that is invisible in logs.
+    bridge_command = [
+        "--bridge-port",
+        str(args.port),
+        "--ticks",
+        str(args.ticks),
+        "--map",
+        args.map,
+        "--frame-ms",
+        str(frame_ms),
+    ]
+    fast_forward = int(args.fast_forward)
+    if fast_forward != 1:
+        bridge_command.extend(["--fast-forward", str(fast_forward)])
+    if args.lockstep:
+        bridge_command.append("--lockstep")
+        if int(args.lockstep_timeout_ms) != 30000:
+            bridge_command.extend(["--lockstep-timeout-ms", str(int(args.lockstep_timeout_ms))])
     process = subprocess.Popen(
         [
             str(RUNTIME / "bin" / "rwpp-server.bat"),
             "--no-console",
             "--",
-            "--bridge-port",
-            str(args.port),
-            "--ticks",
-            str(args.ticks),
-            "--map",
-            args.map,
-            "--frame-ms",
-            str(args.frame_ms),
+            *bridge_command,
             *args.bridge_args,
         ],
         cwd=str(RUNTIME),
         env=env,
         stdout=log,
         stderr=subprocess.STDOUT,
+    )
+    print(
+        "bridge command: "
+        + " ".join(["rwpp-server.bat", "--no-console", "--", *bridge_command,
+                    *args.bridge_args]),
+        flush=True,
     )
     frames: list[dict] = []
     # Real outcome reported by the bridge. ``None`` means "no result seen yet";
@@ -168,9 +244,15 @@ def main(argv: list[str] | None = None) -> int:
         stream.flush()
     effective_timeout = max(
         float(args.timeout),
-        round(int(args.ticks) * (max(0, int(args.frame_ms)) + 6.0) / 1000.0 + 120.0, 1),
+        round(int(args.ticks) * (max(0, int(frame_ms)) + 6.0) / 1000.0 + 120.0, 1),
     )
     deadline = time.time() + effective_timeout
+    # First/last observation timestamps. The A/B this script is used for
+    # (``--frame-ms 0`` vs ``1``) must not be judged on the process's total wall
+    # clock: JVM boot and map load are a fixed ~1-2 s that would dilute the
+    # difference. ``capture_seconds`` covers exactly the frame stream.
+    first_frame_at: float | None = None
+    last_frame_at: float | None = None
     sock = None
     try:
         while time.time() < deadline:
@@ -200,6 +282,9 @@ def main(argv: list[str] | None = None) -> int:
                 message = json.loads(line)
                 kind = message.get("type")
                 if kind == "obs":
+                    last_frame_at = time.time()
+                    if first_frame_at is None:
+                        first_frame_at = last_frame_at
                     bridge_result = message.get("result")
                     if bridge_result in ("victory", "defeat"):
                         final_result = str(bridge_result)
@@ -298,6 +383,14 @@ def main(argv: list[str] | None = None) -> int:
             "truncated": truncated,
             "return": 0.0,
             "source": "rwpp-bridge",
+            # Pacing / acceleration actually sent to the bridge. Kept next to the
+            # map description because a replay recorded at 26x and one at 1x are
+            # otherwise indistinguishable once the frames are written.
+            "frame_ms": int(frame_ms),
+            "physics_ms": int(physics_ms),
+            "fast_forward": fast_forward,
+            "lockstep": bool(args.lockstep),
+            "lockstep_timeout_ms": int(args.lockstep_timeout_ms),
         }
         replay_path = replay_dir / f"replay-rwpp-{stamp}-{unique}.json"
         replay_path.write_text(
@@ -331,6 +424,20 @@ def main(argv: list[str] | None = None) -> int:
                     "truncated": truncated,
                     "frames": len(frames),
                     "replay": str(replay_path),
+                    # Acceleration actually used, so the host service and the
+                    # dashboard can show "26x, no lockstep" instead of guessing
+                    # from the job's requested frame_ms.
+                    "frame_ms": int(frame_ms),
+                    "physics_ms": int(physics_ms),
+                    "fast_forward": fast_forward,
+                    "lockstep": bool(args.lockstep),
+                    "lockstep_timeout_ms": int(args.lockstep_timeout_ms),
+                    "seconds": round(time.time() - started_at, 2),
+                    "capture_seconds": (
+                        round(last_frame_at - first_frame_at, 3)
+                        if first_frame_at is not None and last_frame_at is not None
+                        else None
+                    ),
                 },
                 ensure_ascii=False,
             )
