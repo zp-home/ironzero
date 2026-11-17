@@ -79,6 +79,25 @@ def await_observation(env: "RwppDuelEnv", timeout: float) -> dict[str, Any] | No
     the close is read on the same step. A ``done`` (or an observation carrying a
     ``result``) always beats a stale observation, so the terminal step can never
     overwrite a verdict with an older frame.
+
+    **Skipped frames are counted, not swallowed.** "The freshest observation
+    wins" is what keeps the socket from growing unboundedly, but it also silently
+    changes the control period: every frame that is drained and dropped is a
+    decision the policy never got to make. That is not academic. Measured with
+    the real training configuration (8 envs, ``frame_ms=1``), the policy consumed
+    **14%** of the frames -- one decision per ~70 ticks instead of the contract's
+    10 -- while a 4-worker evaluation consumed ~52% (19 ticks) and a single env
+    consumed 100%. Training and evaluation were therefore optimising and
+    measuring at control periods that differed by ~3.7x, which is the mechanism
+    behind the long-standing "eval behaves nothing like train" report.
+
+    The count is exposed as :attr:`RwppDuelEnv.skipped_frames` so the trainer can
+    report it instead of hiding it; :func:`await_observation` itself still
+    returns the freshest frame (dropping is the right latency trade-off, guessing
+    intermediate actions would be worse).
+
+    ``dropped_observations`` counts *observation* frames discarded in this call
+    only; ``receipt``/``hello`` messages are not frames and are never counted.
     """
 
     if env._reader is None:
@@ -90,6 +109,7 @@ def await_observation(env: "RwppDuelEnv", timeout: float) -> dict[str, Any] | No
     if _verdict_of(first) is not None:
         return first
     latest = first
+    skipped = 0
     # Catch up on everything that already arrived. Only complete lines are
     # consumed, and a partial line stays buffered for the next call, so a message
     # split across recv() boundaries is not lost.
@@ -101,10 +121,38 @@ def await_observation(env: "RwppDuelEnv", timeout: float) -> dict[str, Any] | No
         if extra is None:
             break
         if _verdict_of(extra) is not None:
+            _count_skipped(env, skipped)
             return extra
         if extra.get("type") == "obs":
             latest = extra
+            skipped += 1
+    # ``first`` is the frame actually returned; every later ``obs`` seen in this
+    # pass was superseded and is a decision the policy never made.
+    _count_skipped(env, skipped)
     return latest
+
+
+def _count_skipped(env: "RwppDuelEnv", skipped: int) -> None:
+    """Add ``skipped`` to the environment's dropped-frame counter.
+
+    ``getattr`` rather than a direct attribute read: test doubles (and any
+    external env wrapper) predate the counter, and dropping frames is not a
+    reason to fail a step.
+    """
+
+    if skipped <= 0:
+        return
+    current = getattr(env, "skipped_frames", None)
+    if current is None:
+        try:
+            env.skipped_frames = int(skipped)
+        except (AttributeError, TypeError):
+            pass
+        return
+    try:
+        env.skipped_frames = int(current) + int(skipped)
+    except (AttributeError, TypeError):
+        pass
 
 
 def _verdict_of(message: dict[str, Any] | None) -> str | None:

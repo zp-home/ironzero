@@ -37,26 +37,44 @@ class _ProcLike:
             pass
 
 
-def effective_frame_ms(frame_ms: int) -> int:
+def effective_frame_ms(frame_ms: int, physics_ms: int = 0) -> int:
     """Wall-clock pacing budget per simulated frame, clamped to a valid value.
 
-    ``--frame-ms`` is also the frame *delta* handed to
-    ``RWGameEngine.updateFrameInternal(1.0f, frameMs)``. A budget of 0 makes the
-    engine advance with a zero delta, which changes damage/cooldown cadence and
+    ``--frame-ms`` used to double as the frame *delta* handed to
+    ``RWGameEngine.updateFrameInternal(1.0f, frameMs)``, and a delta of 0 makes
+    the engine advance nothing, which changes damage/cooldown cadence and
     silently produces different battles (measured: the same policy and seed
-    lost/timed out at 0 ms and won at 1 ms). 1 ms is therefore the fastest safe
-    pacing, and every larger value only slows the wall clock down.
+    lost/timed out at 0 ms and won at 1 ms). 1 ms was therefore the fastest safe
+    pacing.
+
+    That reasoning only holds while ``frame_ms`` *is* the delta. Once
+    ``physics_ms > 0`` the bridge pins the delta independently
+    (``IronZeroBridge.java``: ``--physics-ms`` feeds ``updateFrameInternal``,
+    ``--frame-ms`` only paces the loop), so 0 is a perfectly legal "never
+    sleep" budget: it cannot change what an episode simulates, only how fast it
+    gets there. Measured on 6000 ticks with ``physics_ms=16``: ``frame_ms=1`` ->
+    9.35 s (10.7x real time), ``frame_ms=0`` -> 3.78 s (26.5x), of which the
+    1 ms budget was ~68% ``Thread.sleep`` wake-up overhead.
+
+    So: with ``physics_ms > 0`` a non-positive budget is returned as **0**
+    (legal, unpaced). With ``physics_ms == 0`` the old clamp to 1 and its
+    one-shot warning are kept unchanged, because then ``frame_ms`` really is
+    the delta again.
     """
 
     global FRAME_MS_WARNED
     value = int(frame_ms)
     if value >= 1:
         return value
+    if int(physics_ms or 0) > 0:
+        # Delta is pinned elsewhere -> 0 means "do not sleep", not "zero delta".
+        return 0
     if not FRAME_MS_WARNED:
         FRAME_MS_WARNED = True
         print(
-            "[rwpp] frame_ms<=0 is not a valid simulation pacing (the engine uses it as the "
-            "frame delta); clamping to 1 ms. Pass --frame-ms 1 for the fastest correct run.",
+            "[rwpp] frame_ms<=0 is not a valid simulation pacing when physics_ms=0 (the engine "
+            "uses it as the frame delta); clamping to 1 ms. Pass --frame-ms 0 together with "
+            "--physics-ms 16 to run unpaced.",
             flush=True,
         )
     return 1
@@ -84,7 +102,10 @@ def _bridge_command(launcher: Path, port: int, game: RwppGameConfig) -> list[str
         "--map",
         game.map_relative,
         "--frame-ms",
-        str(effective_frame_ms(game.frame_ms)),
+        # ``frame_ms`` and ``physics_ms`` together decide what this resolves to:
+        # a positive ``frame_ms`` is passed through, a non-positive one is legal
+        # (0 = never sleep) only while ``physics_ms`` pins the engine delta.
+        str(effective_frame_ms(game.frame_ms, game.physics_ms)),
     ]
     # Bridge options are opt-in so older bridge builds keep working unchanged.
     if game.win_mode:
@@ -110,6 +131,28 @@ def _bridge_command(launcher: Path, port: int, game: RwppGameConfig) -> list[str
         # be lowered without changing what an episode simulates. Only sent when
         # explicitly requested, so a default run's command line is unchanged.
         command.extend(["--physics-ms", str(int(game.physics_ms))])
+    fast_forward = int(getattr(game, "fast_forward", 1) or 1)
+    if fast_forward != 1:
+        # Engine-native game speed (1 = off). Opt-in like every other bridge
+        # option: the default command line must stay byte-identical, and this
+        # flag changes fidelity (one tick advances N times the game time).
+        command.extend(["--fast-forward", str(fast_forward)])
+    if bool(getattr(game, "lockstep", False)):
+        # Frame-drop control: the bridge blocks after each ``obs`` until the
+        # client replies, so an unpaced engine cannot outrun the policy. Only
+        # sent when enabled; the timeout only when it differs from the bridge
+        # default (30000 ms).
+        command.append("--lockstep")
+        lockstep_timeout_ms = int(getattr(game, "lockstep_timeout_ms", 30000) or 30000)
+        if lockstep_timeout_ms != 30000:
+            command.extend(["--lockstep-timeout-ms", str(lockstep_timeout_ms)])
+    seed = int(getattr(game, "seed", 0) or 0)
+    if seed != 0:
+        # Deterministic engine seed. ``RWGameEngine.loadMap`` re-randomises the
+        # seed for every local game, so without this every "same weights, N games"
+        # evaluation produced different outcomes and no win rate was reproducible
+        # (measured: the same checkpoint scored 0.700 and 0.900 on identical runs).
+        command.extend(["--seed", str(seed)])
     return command
 
 
