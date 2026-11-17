@@ -3,15 +3,27 @@
 
 Block layout (offsets are cumulative, exactly as ``MicroDuelConfig`` declares):
 
-1. ``global_dim``   鈥?clock, army sizes, HP, centroids, funds/income, extractors;
-2. ``max_entities * entity_features`` 鈥?own entities, slot-indexed;
-3. ``max_entities * entity_features`` 鈥?visible enemies, slot-indexed;
-4. ``map_channels * map_grid * map_grid`` 鈥?coarse control grid:
-   ``[own count, enemy count, own - enemy, terrain passability]``.
+1. ``global_dim`` -- clock, army sizes, HP, centroids, funds/income, extractors;
+2. ``max_entities * entity_features`` -- own entities, slot-indexed;
+3. ``max_entities * entity_features`` -- visible enemies, slot-indexed;
+4. ``map_channels * map_grid * map_grid`` -- coarse control grid:
+   ``[own count, enemy count, own - enemy, terrain passability]``;
+5. ``2 * max_entities * type_features`` -- the per-entity *identity* block
+   (own then enemy, same slot order as blocks 2/3), carrying what each entity
+   *is* and what it can do: type, hp fraction, construction progress, attack
+   capability and range, movement speed, tech tier, air targeting, whether it is
+   a defence structure, shield, fire cadence, and its factory build queue.
 
-Blocks 1 and 4 are the only ones with normalisation; the per-entity features come
-from :mod:`ironzero.observation.features` and the terrain prior from
+Blocks 1, 2, 3 and 4 are normalised where noted; blocks 2 and 5 come from
+:mod:`ironzero.observation.features` and the terrain prior from
 :mod:`ironzero.observation.terrain_channel`.
+
+The identity block is **appended last on purpose**. Checkpoints are migrated
+column-by-column (:func:`ironzero.training.ppo._column_source`), and an
+append-only growth leaves every earlier column at its original offset, so a saved
+model keeps reading the feature it was trained on. Inserting anything *before*
+an existing column silently re-binds weights -- see
+``tests/test_checkpoint_stride_migration.py``.
 """
 
 from __future__ import annotations

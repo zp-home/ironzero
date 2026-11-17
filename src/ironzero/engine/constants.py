@@ -14,6 +14,16 @@ ORDER_NAMES: dict[int, str] = {
     2: "attack_move",
     3: "attack_target",
     4: "hold",
+    # Appended, so every existing index keeps its meaning.
+    #
+    # ``build`` and ``repair`` were missing, which made the encoder's per-entity
+    # ``order`` column unable to distinguish "this builder is constructing a
+    # factory" from "this builder is standing still". The real bridge reports both
+    # states (``IronZeroBridge.orderName`` reads the engine's live waypoint), and
+    # without these entries a building builder fell through to ``idle`` -- the
+    # single most important fact about the unit that the observation dropped.
+    5: "build",
+    6: "repair",
 }
 
 ORDER_IDS: dict[str, int] = {name: order for order, name in ORDER_NAMES.items()}
