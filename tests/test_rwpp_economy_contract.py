@@ -706,11 +706,86 @@ def test_unfinished_factory_reports_an_empty_production_menu() -> None:
     assert "producibleNamesFor(unit)" in method
 
     gate = _method_body(source, "factoryCanProduceNow")
-    assert "isNonOperational" in gate, (
-        "the engine's own operational flag must be consulted, not just progress"
+    # The engine's own operational answer must be consulted, not just progress.
+    # It is now routed through ``isOperational`` rather than calling
+    # ``isNonOperational()`` inline, because the raw flag is wrong for extractors
+    # (``buildProgress`` stays 0.0 on a finished, producing mine). ``isOperational``
+    # *is* the engine's flag plus a narrow correction, so the intent still holds --
+    # but the assertion has to follow the call, or it pins the old shape of the
+    # code rather than the property it guarantees.
+    assert "isOperational" in gate, (
+        "the engine's own operational answer must be consulted, not just progress"
+    )
+    helper = _method_body(source, "isOperational")
+    assert "isNonOperational" in helper, (
+        "isOperational must start from the engine's own flag and only narrow it"
     )
     assert "buildProgress" in gate, (
         "the progress check covers the window before the operational flag flips"
+    )
+
+
+@pytest.mark.skipif(not BRIDGE_SOURCE.is_file(), reason="bridge source not present")
+def test_operational_flag_rescues_a_finished_extractor():
+    """A finished mine reports ``build_progress == 0.0`` forever, so the raw engine
+    flag calls it unusable and the economy stalls at one mine.
+
+    Measured on ``[p2]Lake (2p)``: a working extractor on slot 0 reported, for the
+    whole episode, ``progress=0.0 is_operational=false hp=800/800 order=idle
+    queue_length=0 income=26.0`` -- every field identical from tick 161 onward while
+    the mine was producing. With expansion gated on "every standing structure is
+    operational", that one building blocked **584 of 600** decisions and 8 free pools
+    were never used.
+
+    The bridge therefore reports operational as "the engine says so, OR a
+    full-health building with no in-flight construction". This test pins the shape of
+    that correction so it cannot silently widen into "anything that looks old".
+    """
+
+    source = BRIDGE_SOURCE.read_text(encoding="utf-8", errors="replace")
+    helper = _method_body(source, "isOperational")
+
+    # 1. The engine's own answer is still the first word.
+    assert "isNonOperational" in helper
+    # 2. Only buildings can be rescued -- a damaged unit must not become "operational".
+    assert "isBuilding" in helper, (
+        "only a *building* may be rescued from a stale progress counter"
+    )
+    # 3. Full health is required, so a damaged half-built structure stays unusable.
+    assert "maxHp" in helper, (
+        "the correction must require full health, or a damaged site reads as finished"
+    )
+    # 4. A genuinely in-flight construction (progress strictly inside (0,1)) is
+    #    respected as unfinished.
+    assert "buildProgress" in helper, (
+        "an in-flight construction must keep reporting not-operational"
+    )
+
+
+@pytest.mark.skipif(not BRIDGE_SOURCE.is_file(), reason="bridge source not present")
+def test_upgrade_capability_uses_the_corrected_operational_flag():
+    """``can_upgrade`` gated on the raw flag, so a finished mine never reported it.
+
+    Measured: ``extractor_level`` stayed at 1 for all 1991 decisions of a full Lake
+    episode -- the T1 -> T2 upgrade the economy is supposed to grow into never
+    happened, because a completed extractor reported ``is_operational=false``
+    (its ``buildProgress`` is stuck at 0.0) and ``canUpgrade`` returned false.
+    """
+
+    source = BRIDGE_SOURCE.read_text(encoding="utf-8", errors="replace")
+    method = _method_body(source, "canUpgrade")
+    assert "isOperational" in method, (
+        "canUpgrade must use the corrected operational predicate, not the raw flag, "
+        "or a finished extractor reports can_upgrade=false forever"
+    )
+    # Check only the *code*, not the explanatory comment: a comment that names the
+    # old flag is documentation, while a call to it would be the bug.
+    code_lines = [
+        line for line in method.splitlines()
+        if not line.strip().startswith(("//", "*", "/*"))
+    ]
+    assert "isNonOperational" not in "\n".join(code_lines), (
+        "the raw flag is exactly the bug: extractors report progress 0.0 forever"
     )
 
 
@@ -803,20 +878,29 @@ def test_tactical_orders_still_honour_the_policy_group() -> None:
             )
 
 def test_opening_extractor_curriculum_issues_one_real_build_order() -> None:
-    """``reset()`` must queue an extractor through the normal bridge path.
+    """The extractor curriculum must reach the builder through the real dispatch.
 
     Why this exists: a from-scratch policy samples ``build_extractor`` about
     ``1/len(ACTION_KINDS)`` of the time and *every other order cancels the
     in-flight build* (that is why ``noop`` exists), so finishing a 140-tick
     structure by exploration is vanishingly unlikely. Measured on
     ``[p2]Lake (2p)``: ``income`` stayed at exactly 0.000 for 81 consecutive
-    updates, and even after the mask bug was fixed it only moved on ~20% of
-    episodes.
+    updates.
 
-    The curriculum only *issues the order*. ``bonus_build`` still requires a
-    finished building and ``income`` still pays from the observation stream, so no
-    reward is handed out for free -- asserted below by checking the term is not
-    touched here.
+    Two shapes of this order were measured and both failed, which is what the
+    assertions below pin down:
+
+    * sent from ``reset()`` only -- the policy's first real order cancels it
+      (``extractor_ever_present = false``, 69 cancelling orders in the first 120
+      decisions);
+    * sent as its own ``step`` message during ``step()`` -- a second message is a
+      *later tick*, so the policy's order landed first and reset progress, and the
+      extractor's ``build_progress`` stayed at 0.0000 for 220 decisions.
+
+    The order therefore has to travel inside the same dispatch as the policy's
+    action, which is why it is decoded by ``_send_curriculum_order`` and collected
+    by ``_curriculum_actions`` (appended *after* the policy's orders by
+    ``send_step``), not written straight to the socket and not issued at reset.
     """
 
     import inspect
@@ -833,18 +917,29 @@ def test_opening_extractor_curriculum_issues_one_real_build_order() -> None:
         "the opening order must broadcast, otherwise it misses the builder on any "
         "map whose builder is not in the sampled group"
     )
-    # Sent through the shared step path, not a private socket write.
-    assert "send_step" in source, (
-        "the opening order must go through send_step so the game validates it "
-        "exactly like a policy order"
+    # Decoded through the shared curriculum path, which hands the order to the
+    # same ``step`` the policy is already sending.
+    assert "_send_curriculum_order" in source, (
+        "the opening order must go through _send_curriculum_order so it rides in "
+        "the same dispatch as the policy's action"
     )
     # Only a free pool is a legal target.
     assert "occupied" in source
-    # Must never break reset on a map that cannot honour it.
-    assert "return None" in source
+    # Must never break the episode on a map that cannot honour it.
+    assert "return []" in source
 
+    # The order must be dispatched by ``step`` (inside the same message), not by
+    # ``reset`` (where the policy's next order would cancel it).
+    step_source = inspect.getsource(RwppDuelEnv.step)
+    assert "_curriculum_actions" in step_source, (
+        "step() must collect the curriculum's orders so they are dispatched in the "
+        "same message as the policy's action"
+    )
     reset_source = inspect.getsource(RwppDuelEnv.reset)
-    assert "_issue_opening_extractor" in reset_source
+    assert "_issue_opening_extractor" not in reset_source, (
+        "reset() must not send the opening order: a build placed there is cancelled "
+        "before the builder makes any progress"
+    )
 
 
 def test_opening_curriculum_pays_no_reward_by_itself() -> None:
