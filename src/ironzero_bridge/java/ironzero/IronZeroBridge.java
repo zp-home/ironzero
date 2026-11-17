@@ -5,6 +5,7 @@ import com.corrodinggames.rts.game.RWGameEngine;
 import com.corrodinggames.rts.game.Team;
 import com.corrodinggames.rts.game.ai.AI;
 import com.corrodinggames.rts.game.units.AttackMode;
+import com.corrodinggames.rts.game.units.MovementType;
 import com.corrodinggames.rts.game.units.OrderableUnit;
 import com.corrodinggames.rts.game.units.Unit;
 import com.corrodinggames.rts.game.units.UnitType;
@@ -13,7 +14,9 @@ import com.corrodinggames.rts.game.units.Waypoint;
 import com.corrodinggames.rts.game.units.WaypointType;
 import com.corrodinggames.rts.game.units.actions.ActionId;
 import com.corrodinggames.rts.game.units.actions.SpecialAction;
+import com.corrodinggames.rts.game.units.buildings.Extractor;
 import com.corrodinggames.rts.game.units.buildings.FactoryInterface;
+import com.corrodinggames.rts.game.units.buildings.turrets.Turret;
 import com.corrodinggames.rts.gameFramework.CommandControllerCommand;
 import com.eclipsesource.json.Json;
 import com.eclipsesource.json.JsonArray;
@@ -56,6 +59,17 @@ import java.util.Locale;
  *   --physics-ms fixes the engine delta independently of --frame-ms, so an
  *       episode can keep a real-time simulation delta while the wall clock runs
  *       unpaced or fast. Omitted = old behaviour (delta == frame-ms).
+ *   --fast-forward N                 (1..32, default 1 = off) sets the engine's
+ *       own GameEngine.gameSpeed after the map loads, so every frame advances N
+ *       times as much game time. physics-ms can only reach 3x (the engine clamps
+ *       the frame delta to 3.0); gameSpeed is applied after that clamp and is not
+ *       bounded by it. Changes fidelity, so it stays opt-in.
+ *   --lockstep                       block after each obs until the client's
+ *       step/shutdown arrives, so the control period is exactly 10 ticks. Free
+ *       running (the default) is unchanged.
+ *   --lockstep-timeout-ms N          (1000..600000, default 30000) lockstep wait
+ *       budget; on expiry the bridge falls back to free running for the rest of
+ *       the episode and counts the event in the ``bridge finished`` log.
  *   --ai-difficulty N                (-2..3: 非常简单/简单/正常/困难/非常困难/炼狱)
  *       pins every AI team's difficulty. Omitted = the game's own resolution,
  *       which in a headless single-player run is SettingsEngine.aiDifficulty
@@ -85,9 +99,89 @@ public final class IronZeroBridge implements ServerExtension {
      * simulated game time), so it is opt-in rather than a silent default.
      */
     private int physicsMs = 0;
+    /**
+     * Engine-native fast-forward, i.e. {@code GameEngine.gameSpeed}
+     * ({@code --fast-forward N}, 1..32, default 1 = off).
+     *
+     * <p>This is <em>not</em> the same knob as {@link #physicsMs}. The delta we
+     * pass to {@code updateFrameInternal} is clamped to {@code 3.0F} by the engine
+     * ({@code RWGameEngine.java:1203}: {@code if (var1 > 3.0F) var1 = 3.0F;}),
+     * so {@code physics_ms} alone can never exceed 3x (16 ms -> 50 ms). The
+     * clamp happens <em>before</em> {@code updateAllGame} is reached, and
+     * {@code updateAllGame} then multiplies the already-clamped delta by
+     * {@code gameSpeed} ({@code RWGameEngine.java:1513-1515}:
+     * {@code if (this.gameSpeed != 1.0F && !networked && !isRecordingOrPlaying())
+     * var1 *= this.gameSpeed;}). The two multipliers therefore compose and the
+     * {@code gameSpeed} factor is <em>not</em> subject to the 3x clamp: the
+     * official UI itself goes to 64 for replays ({@code InterfaceEngine.java:955})
+     * and caps live games at 5 ({@code :958}); the contract keeps us at 1..32.
+     *
+     * <p>The write must happen <em>after</em> the map is loaded: {@code loadMap}
+     * calls {@code interfaceEngine.resetInterfaceState(false)}, which stamps
+     * {@code gameSpeed = 1.0F} ({@code InterfaceEngine.java:335}), so a write
+     * before the load is simply overwritten (same trap as {@link #seed}).
+     */
+    private int fastForward = 1;
+    /**
+     * {@code --lockstep}: block after every observation until the client sends a
+     * {@code step} / {@code shutdown}, so the control period is exactly
+     * {@link #DECISION_INTERVAL} ticks no matter how fast the engine runs.
+     *
+     * <p>{@link #lockstepActive} is the runtime latch: it starts as this value
+     * and is cleared for good once the first wait times out (the contract's
+     * "fall back to free-run" rule). Keeping the two separate means the start
+     * log still reports what was <em>requested</em>.
+     */
+    private boolean lockstep = false;
+    /** {@code --lockstep-timeout-ms N}: upper bound for one lockstep wait. */
+    private int lockstepTimeoutMs = 30000;
+    /** How many lockstep waits hit {@link #lockstepTimeoutMs}. */
+    private int lockstepTimeouts = 0;
+    /** Runtime latch for {@link #lockstep}; see there. */
+    private boolean lockstepActive = false;
+    /**
+     * Optional fixed engine seed ({@code --seed N}); {@code 0} keeps the engine's
+     * own random seed.
+     *
+     * <p>Why this has to be pinned *before* the map loads. Every combat/gameplay
+     * roll goes through {@code CommonUtils.deterministicRandom*}, which reads
+     * {@code GameEngine.randomSeed} as its base. {@code RWGameEngine.loadMap}
+     * overwrites that field unconditionally for a local game
+     * ({@code RWGameEngine.java:666}: {@code gameSetup.randomSeed =
+     * CommonUtils.randomIntBetween(1, 1e9)}), and a headless bridge run is
+     * neither networked nor a replay, so the condition there is always true.
+     *
+     * <p>Consequence measured during the 2026-11-14 audit: two identical
+     * evaluations of the same checkpoint on the same map produced different
+     * per-episode outcomes, and every game log printed a different
+     * {@code global Seed:}. That is why "same weights, 20 games" moved from 0.700
+     * to 0.900 and why no win rate could be audited or reproduced. Seeding before
+     * the load is the only place it can still be honoured.
+     */
+    private int seed = 0;
     // Annihilation win-mode grace window: the map load/spawn settles during the
     // first simulated ticks, so unit counts are not authoritative yet.
     private static final int ANNIHILATION_GRACE_TICKS = 30;
+    // Objective win-mode grace window: same reasoning, but this mode is used on
+    // stock economy maps where an opening build queue must also be allowed to
+    // start before "no production capability" means anything.
+    private static final int OBJECTIVE_GRACE_TICKS = 120;
+    // Objective win mode: a "military dominance" verdict.
+    //
+    // The engine objectives alone are impractical as *training* signals on a real
+    // economy map. Measured, AI-vs-AI on Lake with our side on level 3 and the
+    // opponent on level -2: ``mainBuildings``/``noConstructionOrTech`` victory
+    // only arrived at tick 34701-39864, after our side had produced 196-218 units.
+    // No tick budget a training run can afford reaches that, so a policy would
+    // still never see a win.
+    //
+    // A battle is therefore also called once our army is overwhelmingly superior
+    // *and* the enemy has stopped being able to hurt us: this is the point at
+    // which a human player would resign. Both conditions are required, so the
+    // verdict can never fire during a normal exchange of blows.
+    private static final int DOMINANCE_OWN_MIN_UNITS = 8;
+    private static final double DOMINANCE_ARMY_RATIO = 3.0;
+    private static final double DOMINANCE_HP_RATIO = 3.0;
     // Action-space contract shared with MicroDuelConfig: 0..3 are unit groups,
     // 4 (== GROUP_BROADCAST) orders every living friendly unit.
     private static final int GROUP_COUNT = 4;
@@ -114,11 +208,41 @@ public final class IronZeroBridge implements ServerExtension {
      * map (the engine's own internal name there is {@code extractorT1}'), so
      * without this list the mask kept ``build_extractor`` closed even though the
      * engine accepted the order.
+     *
+     * <p><b>The anti-air turret was missing from this list, and that is why the
+     * agent never had any anti-air at all.</b> Measured on {@code [p2]Lake (2p)}
+     * ({@code .runtime/q1_build_menu.json}, {@code .runtime/q3_factory_menu.json}):
+     * the reported menu was
+     * {@code [landFactory, airFactory, seaFactory, laserDefence, repairbay,
+     * experimentalLandFactory, extractor, turret]} -- no anti-air entry of any
+     * spelling. The only defensive structure reachable from the action space was
+     * {@code turret}, and that builds {@code c_turret_t1}, which the engine reports
+     * with {@code can_attack_air: false} ({@code .runtime/q2_turret.json}). Meanwhile
+     * the enemy AI builds {@code c_antiAirTurret} on the same map (1008 unit-frames
+     * in a 1200-frame recording of
+     * {@code runs/platform/real-rwpp-20261116-133006-d97c5a}). So the defect was
+     * expressiveness, not strategy: the action space could not name the structure,
+     * and no amount of training could have discovered it.
+     *
+     * <p>{@code antiAirTurret} exists in {@code UnitType} (see {@code UnitType.java})
+     * but the {@code UnitType.values()} scan skips it, exactly as it skips
+     * {@code extractor}: the typed units are registered behind a
+     * {@code getSpecialAction} that the scan's probe does not match. Probing the
+     * canonical name through the same resolution path {@code buildWithBuilders}
+     * uses is what makes the reported menu a superset of the dispatchable set --
+     * and if the engine does not accept it on a given map, the probe adds nothing
+     * and no {@code BUILD_UNAVAILABLE} is created.
+     *
+     * <p>{@code antiAirTurretT2} is listed too: on maps where the T2 upgrade is
+     * unlocked the same builder can queue it, and it is a different structure with
+     * a different footprint than the T1.
      */
     private static final String[] CANONICAL_BUILD_NAMES = {
         "extractor",
         "landFactory",
         "turret",
+        "antiAirTurret",
+        "antiAirTurretT2",
     };
 
     /**
@@ -143,8 +267,7 @@ public final class IronZeroBridge implements ServerExtension {
         UnitType.builder,
     };
 
-    private volatile boolean stop = false;
-    private ServerSocket serverSocket;
+    private volatile boolean stop = false;    private ServerSocket serverSocket;
     private Socket client;
     private BufferedWriter writer;
     private BufferedReader reader;
@@ -223,6 +346,13 @@ public final class IronZeroBridge implements ServerExtension {
     // null while the battle is still running.
     private volatile String gameResult = null;
     private boolean enemySeen = false;
+    // ``objective`` win mode: latched once the enemy has ever fielded a factory
+    // or a builder, so a map whose AI never spawned cannot be scored a free win.
+    private boolean objectiveEnemySeen = false;
+    // ``objective`` win mode: latched once *we* have ever fielded production
+    // capability, so losing it means something (an economy map must not report
+    // "defeat" during the opening build queue).
+    private boolean ownSawCapability = false;
 
     @Override
     public void onLoad(ExtensionContext context) {
@@ -240,6 +370,15 @@ public final class IronZeroBridge implements ServerExtension {
         waitForClient(30_000L);
 
         engine.currentMapPath = mapPath;
+        // Pin the engine seed *before* the map loads. ``RWGameEngine.loadMap``
+        // re-randomises ``gameSetup.randomSeed`` for every local game
+        // (``RWGameEngine.java:666``), and every gameplay roll reads
+        // ``GameEngine.randomSeed`` through ``CommonUtils.deterministicRandom*``.
+        // Setting it here is the only window where the value survives.
+        if (seed != 0) {
+            engine.networkEngine.gameSetup.randomSeed = seed;
+            System.out.println("[ironzero] seed pinned: " + seed);
+        }
         NativeMapLoader.INSTANCE.loadMapWithAI(mapPath, true, 1, 0, true, false);
         long loadDeadline = System.currentTimeMillis() + 30_000L;
         while (System.currentTimeMillis() < loadDeadline) {
@@ -252,6 +391,19 @@ public final class IronZeroBridge implements ServerExtension {
         engine.gamePaused = false;
         engine.touchInputDisabled = false;
         engine.gameJustLoaded = true;
+        // Re-apply the pinned seed. Setting it before ``loadMapWithAI`` is not
+        // enough: ``RWGameEngine.loadMap`` assigns
+        // ``gameSetup.randomSeed = CommonUtils.randomIntBetween(1, 1e9)`` and then
+        // copies it into ``this.randomSeed`` (:666-669) *during* the call, so a
+        // pre-load write is simply overwritten. ``randomSeed`` is public and read
+        // lazily by ``CommonUtils.deterministicRandom*`` on every roll, so writing
+        // it right after the load is what actually pins the game.
+        if (seed != 0) {
+            engine.networkEngine.gameSetup.randomSeed = seed;
+            engine.randomSeed = seed;
+            pinGlobalRandom(seed);
+            System.out.println("[ironzero] seed applied after load: " + seed);
+        }
         if (unlockAi) {
             unlockAiTeams();
         }
@@ -271,12 +423,49 @@ public final class IronZeroBridge implements ServerExtension {
             }
             applyAiDifficulty();
         }
+        // Engine-native fast-forward. Deliberately *here*, i.e. after the map
+        // finished loading: ``loadMap`` ends in
+        // ``interfaceEngine.resetInterfaceState(false)``, which stamps
+        // ``GameEngine.gameSpeed = 1.0F`` (InterfaceEngine.java:335), so a write
+        // before the load is silently overwritten (exactly the trap ``--seed``
+        // hits with ``gameSetup.randomSeed``).
+        //
+        // How this differs from ``--physics-ms``: our frame delta is clamped by
+        // ``updateFrameInternal`` (RWGameEngine.java:1203: ``if (var1 > 3.0F)
+        // var1 = 3.0F;``) *before* ``updateAllGame`` is called, which caps
+        // physics_ms at 3x (16 ms -> 50 ms). ``updateAllGame`` then multiplies the
+        // already-clamped delta by ``gameSpeed`` (RWGameEngine.java:1513-1515,
+        // single-player and not recording/playing a replay -- both true for this
+        // bridge). The gameSpeed factor is therefore *not* subject to the 3x
+        // clamp, which is why the official UI can reach 64 for replays
+        // (InterfaceEngine.java:955) and 5 for live play (:958). We use 1..32.
+        //
+        // Consequence for callers: each frame advances ``gameSpeed`` times as
+        // much game time, so an episode of N ticks covers N*gameSpeed*delta of
+        // simulated time and a decided battle needs proportionally fewer ticks.
+        // That is a fidelity change, hence opt-in (default 1 = off, and the flag
+        // is only on the command line when != 1).
+        if (fastForward != 1) {
+            engine.gameSpeed = (float) fastForward;
+            System.out.println("[ironzero] fast-forward: gameSpeed=" + fastForward
+                    + " (engine-native, applied after the map load)");
+        }
         System.out.println("[ironzero] world ready: mapLoaded="
                 + (engine.map != null && engine.map.mapLoaded)
                 + " units=" + countUnits() + " teams=" + Team.getTeams().size()
                 + " winMode=" + winMode + " unlockAi=" + unlockAi
                 + " aiPilot=" + aiPilotTeam
                 + " aiDifficulty=" + effectiveAiDifficultyDescription());
+
+        // The one-line "what is actually pacing this run" record, emitted once so
+        // a log reader never has to infer it from the argument list. Lockstep is
+        // reported as *requested*, not as the runtime latch (which can fall back).
+        System.out.println("[ironzero] pacing: frameMs=" + frameMs
+                + " physicsMs=" + physicsMs
+                + " physicsDelta=" + fmt(physicsMs > 0 ? (physicsMs / 16.666666f) : 1.0f)
+                + " lockstep=" + lockstep
+                + " fastForward=" + fastForward);
+        lockstepActive = lockstep;
 
         sendHello();
         int frames = 0;
@@ -288,16 +477,33 @@ public final class IronZeroBridge implements ServerExtension {
         // (own_hp 1960 at 2 ms vs 690 at 16 ms over the same 3600 ticks), so it
         // is physics, not just speed: `--ticks` is a count of frames, and each
         // frame advances `frameMs` milliseconds of game time.
-        // `--physics-ms` pins both engine arguments so an episode always simulates
-        // the same number of game-milliseconds, while `frameMs` only paces the
-        // wall clock.
-        final int physics = physicsMs > 0 ? physicsMs : frameMs;
-        final int physicsElapsedMs = physicsMs > 0 ? physicsMs : frameMs;
+        //
+        // `--physics-ms` is meant to pin the simulation delta so `frameMs` can
+        // pace the wall clock independently. That only works if the delta reaches
+        // the engine's *physics* argument.
+        //
+        // The engine signature is `updateFrameInternal(float var1, int var2)` and
+        // (RWGameEngine.java:1217, 1371, 1506-1524) only `var1` advances the
+        // simulation: `frameTimeMillis += var1 * 16.667`, `updateAllGame(var1)`,
+        // `simulationTick++`. `var2` feeds nothing but `fpsTimeAccumulatorMs`.
+        //
+        // This call used to be `updateFrameInternal(1.0f, physicsElapsedMs)`, i.e.
+        // the delta was hard-wired to 1.0 and `--physics-ms` was pushed into the
+        // FPS counter. Consequence, measured directly: running `--physics-ms 2`
+        // and `--physics-ms 16` for the same wall-clock budget simulated the *same*
+        // number of ticks (191 vs 191; the 8x ratio that would prove the flag works
+        // never appeared), so the documented "3600 tick x 16 ms = 57.6 s of game
+        // time" claim was never true. The delta now goes where the engine reads it.
+        //
+        // `physicsMs == 0` keeps the historical 1.0 delta, so existing runs that
+        // rely on it are unchanged.
+        final float physicsDelta = physicsMs > 0 ? (physicsMs / 16.666666f) : 1.0f;
+        final int pacingElapsedMs = physicsMs > 0 ? physicsMs : frameMs;
         long nextWake = System.nanoTime();
         while (!stop && context.isRunning() && frames < maxFrames) {
             context.pump();
             try {
-                engine.updateFrameInternal(1.0f, physicsElapsedMs);
+                engine.updateFrameInternal(physicsDelta, pacingElapsedMs);
             } catch (Throwable failure) {
                 System.out.println("[ironzero] frame error: " + failure);
                 break;
@@ -314,9 +520,33 @@ public final class IronZeroBridge implements ServerExtension {
             // decided battle ends the episode instead of being truncated at the
             // tick cap and reported as a timeout.
             detectGameResult(engine);
+            boolean sentObservation = false;
             if (engine.simulationTick - lastSentTick >= DECISION_INTERVAL || frames == 1 || gameResult != null) {
                 lastSentTick = engine.simulationTick;
                 sendObservation(engine, frames);
+                sentObservation = true;
+            }
+            // Lockstep: the decision boundary is a *rendezvous*, so block until the
+            // client answers it instead of racing ahead and dropping frames.
+            //
+            // Only at a boundary (that is where a ``step`` belongs), only while the
+            // battle is undecided (a terminal frame is followed by ``break`` below,
+            // and waiting there would only burn the timeout), and only while the
+            // latch is armed. ``readClientCommands()`` keeps running in between and
+            // is untouched: free running (the default) is byte-for-byte what it was.
+            if (lockstepActive && sentObservation && gameResult == null && reader != null) {
+                if (awaitClientDecision(context)) {
+                    // A step/shutdown arrived (or the socket ended): resume at once.
+                } else {
+                    // The contract's fallback: give up on lockstep for the rest of
+                    // the episode so a silent client cannot hang the run. Counted
+                    // and announced once, never per boundary.
+                    lockstepActive = false;
+                    lockstepTimeouts++;
+                    System.out.println("[ironzero] lockstep timeout after " + lockstepTimeoutMs
+                            + " ms (no step from the client); falling back to free running"
+                            + " for the rest of this episode");
+                }
             }
             readClientCommands();
             if (frames % 30 == 0 && writer == null) {
@@ -325,7 +555,23 @@ public final class IronZeroBridge implements ServerExtension {
             if (gameResult != null) {
                 break;
             }
-            if (frameMs > 0) {
+            // No pacing while lockstep is armed: the wait on the client already
+            // bounds the frame rate, and sleeping *in addition* would just add the
+            // sleep overshoot to every decision (the very cost --frame-ms 0 exists
+            // to remove). Once lockstep has fallen back, pacing resumes.
+            //
+            // ``nextWake`` must be re-anchored while pacing is skipped, otherwise it
+            // is left far in the past (it is only advanced inside the branch below).
+            // Measured consequence of a stale value: after a lockstep fallback,
+            // ``waitNanos`` stays negative for the next ``waitNs / frameMs`` frames,
+            // so the bridge would silently run *unpaced* while still claiming to
+            // honour ``--frame-ms``. Re-anchoring makes "fall back to free running"
+            // mean "free running with the requested pacing". Free running never
+            // reaches this branch, so its behaviour is unchanged.
+            if (lockstepActive) {
+                nextWake = System.nanoTime();
+            }
+            if (frameMs > 0 && !lockstepActive) {
                 // Absolute deadlines instead of a fixed sleep per frame: the sleep
                 // itself overshoots ~0.5 ms, and per-frame overshoot accumulated
                 // into the wall clock (measured +1.2 ms per 1 ms budget). Sleeping
@@ -347,12 +593,144 @@ public final class IronZeroBridge implements ServerExtension {
         sendDone(engine);
         closeBridge();
         System.out.println("[ironzero] bridge finished frames=" + frames + " tick=" + engine.simulationTick
-                + " result=" + (gameResult != null ? gameResult : "timeout"));
+                + " result=" + (gameResult != null ? gameResult : "timeout")
+                + " fastForward=" + fastForward
+                + " lockstepTimeouts=" + lockstepTimeouts);
+    }
+
+    /**
+     * Block until the client answers the observation we just sent, or the lockstep
+     * budget expires.
+     *
+     * <p>This is the blocking sibling of {@link #readClientCommands()}, which is
+     * intentionally left alone: it polls {@code reader.ready()} and returns
+     * immediately, and free running depends on exactly that. Here we instead set
+     * a socket read timeout for the duration of the wait, consume lines until a
+     * {@code step} / {@code shutdown} shows up, and then restore the previous
+     * timeout so {@code closeBridge()}'s drain keeps its own budget.
+     *
+     * <p>Ordinary traffic is dispatched through the same {@link #applyStep}, so a
+     * lockstep run and a free run execute identical commands. Non-step messages
+     * (and unparsable lines) are consumed and ignored, matching
+     * {@code readClientCommands()}.
+     *
+     * @return {@code true} when the client answered or the connection ended (the
+     *     caller should keep going / stop naturally), {@code false} on timeout.
+     */
+    private boolean awaitClientDecision(ServerRuntimeContext context) {
+        long deadline = System.currentTimeMillis() + lockstepTimeoutMs;
+        int previousTimeout = -1;
+        try {
+            previousTimeout = client.getSoTimeout();
+        } catch (IOException ignored) {
+            // Socket already gone; the reads below will report it.
+        }
+        try {
+            while (!stop && context.isRunning() && System.currentTimeMillis() < deadline) {
+                long remaining = deadline - System.currentTimeMillis();
+                if (remaining <= 0L) {
+                    break;
+                }
+                try {
+                    client.setSoTimeout((int) Math.min(remaining, Integer.MAX_VALUE));
+                } catch (IOException failure) {
+                    stop = true;
+                    return true;
+                }
+                String line;
+                try {
+                    line = reader.readLine();
+                } catch (java.net.SocketTimeoutException timedOut) {
+                    break;
+                } catch (IOException failure) {
+                    // Peer closed: that is an answer, not a timeout.
+                    stop = true;
+                    return true;
+                }
+                if (line == null) {
+                    stop = true;
+                    return true;
+                }
+                if (line.isBlank()) {
+                    continue;
+                }
+                JsonValue value;
+                try {
+                    value = Json.parse(line);
+                } catch (RuntimeException failure) {
+                    continue;
+                }
+                if (!value.isObject()) {
+                    continue;
+                }
+                JsonObject message = value.asObject();
+                String type = message.getString("type", "");
+                if ("shutdown".equals(type)) {
+                    stop = true;
+                    return true;
+                }
+                if ("step".equals(type)) {
+                    applyStep(message);
+                    return true;
+                }
+                // Anything else is not a decision; keep waiting.
+            }
+            return stop || !context.isRunning();
+        } finally {
+            if (previousTimeout >= 0) {
+                try {
+                    client.setSoTimeout(previousTimeout);
+                } catch (IOException ignored) {
+                    // best effort
+                }
+            }
+        }
     }
 
     @Override
     public void requestStop() {
         stop = true;
+    }
+
+    /**
+     * Re-seed the engine's global {@link java.util.Random}.
+     *
+     * <p>{@code CommonUtils.random} is declared {@code static final Random
+     * random = new Random()} (CommonUtils.java:31) with no seed, so every
+     * {@code randomIntBetween / randomFloatBetween} call is non-deterministic
+     * regardless of {@code GameEngine.randomSeed}. AI decisions, unit spawn jitter
+     * and the map's own randomness all flow through it.
+     *
+     * <p>Reflection is the only way in (there is no setter and the field is
+     * package-private), so it is wrapped defensively: a failure to pin the global
+     * RNG must never break a training run, it only means the run is not exactly
+     * reproducible.
+     *
+     * <p><b>What this does NOT fix.</b> The game calls {@code Math.random()} in
+     * twelve places that never consult {@code GameEngine.randomSeed}:
+     * {@code AI.java:1999/2029/2059} (target choice), {@code AIUnitGroup.java:261}
+     * and {@code Zone.java:92/93/175/176} (scatter), and
+     * {@code OrderableUnit.java:5412/5413/5438/5439} (waypoint jitter). Those use
+     * the JVM-wide generator behind {@code Math.random()} and cannot be seeded
+     * from outside the game, so a seeded episode is reproducible only up to the
+     * first such call. Measured with an AI-driven episode: two runs with the same
+     * seed diverged by frame 7. Treat {@code --seed} as "reduces variance and
+     * makes the engine's own rolls repeatable", not as "bit-identical replays".
+     */
+    private void pinGlobalRandom(int value) {
+        try {
+            java.lang.reflect.Field field =
+                    Class.forName("com.corrodinggames.rts.gameFramework.CommonUtils")
+                            .getDeclaredField("random");
+            field.setAccessible(true);
+            Object instance = field.get(null);
+            if (instance instanceof java.util.Random) {
+                ((java.util.Random) instance).setSeed(value);
+                System.out.println("[ironzero] global Random re-seeded: " + value);
+            }
+        } catch (Throwable failure) {
+            System.out.println("[ironzero] could not re-seed global Random: " + failure);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -369,18 +747,81 @@ public final class IronZeroBridge implements ServerExtension {
             } else if ("--frame-ms".equals(argument) && i + 1 < args.size()) {
                 // Wall-clock budget per simulated frame: 16 ms = real time (60 fps),
                 // 0-4 ms lets the headless engine run several times faster for RL.
+                //
+                // 0 is legal and means "never sleep". It used to be rejected by the
+                // *Python* side (``effective_frame_ms`` clamped it to 1 out of fear
+                // that a zero delta would freeze the simulation), but that reasoning
+                // predates ``--physics-ms``: with the delta pinned independently the
+                // budget is pure pacing. Java always accepted 0 here and the main
+                // loop only sleeps ``if (frameMs > 0)``, so nothing to change -- just
+                // do not reintroduce a clamp.
                 frameMs = Math.max(0, Integer.parseInt(args.get(i + 1)));
             } else if ("--physics-ms".equals(argument) && i + 1 < args.size()) {
                 // Fixed simulation delta, independent of the pacing budget.
                 // Omitted keeps the historical "delta == frameMs" behaviour.
                 physicsMs = Math.max(1, Integer.parseInt(args.get(i + 1)));
+            } else if ("--fast-forward".equals(argument) && i + 1 < args.size()) {
+                // Engine-native speed multiplier (GameEngine.gameSpeed), applied
+                // after the map loads. Clamped to the contract's 1..32 so a typo
+                // cannot ask for a 1000x game; 1 keeps the argument off the command
+                // line entirely (Python only emits it when != 1).
+                try {
+                    fastForward = clampInt(Integer.parseInt(args.get(i + 1).trim()), 1, 32);
+                } catch (NumberFormatException ignored) {
+                    System.out.println("[ironzero] ignoring non-numeric --fast-forward: "
+                            + args.get(i + 1));
+                }
+            } else if ("--lockstep".equals(argument)) {
+                lockstep = true;
+            } else if ("--lockstep-timeout-ms".equals(argument) && i + 1 < args.size()) {
+                try {
+                    lockstepTimeoutMs = clampInt(
+                            Integer.parseInt(args.get(i + 1).trim()), 1000, 600000);
+                } catch (NumberFormatException ignored) {
+                    System.out.println("[ironzero] ignoring non-numeric --lockstep-timeout-ms: "
+                            + args.get(i + 1));
+                }
+            } else if ("--seed".equals(argument) && i + 1 < args.size()) {
+                // Fixed engine seed. Applied before the map loads, because
+                // ``loadMap`` re-randomises ``gameSetup.randomSeed`` for any
+                // local (non-networked, non-replay) game.
+                try {
+                    seed = Integer.parseInt(args.get(i + 1).trim());
+                } catch (NumberFormatException ignored) {
+                    System.out.println("[ironzero] bad --seed: " + args.get(i + 1));
+                }
             } else if ("--win-mode".equals(argument) && i + 1 < args.size()) {
+                // How the episode is decided.
+                //
+                // This branch used to be *missing*: a refactor that added
+                // ``--seed`` accidentally merged the win-mode parsing into the seed
+                // branch, so this block read ``args.get(i+1)`` -- the seed's value --
+                // as a mode name. The visible symptom was two log lines that looked
+                // harmless:
+                //
+                //   [ironzero] unknown --win-mode: 11 (keeping native)
+                //   [ironzero] world ready: ... winMode=native ...
+                //
+                // while the launcher had passed ``--win-mode objective``. Since
+                // ``--seed`` is only emitted when non-zero, a seed-0 run logged
+                // nothing at all and the flag simply never worked. That silently
+                // reverted the fix for "the original maps cannot be won": on a stock
+                // skirmish map the engine's own ``noConstructionOrTech`` objective
+                // never fires and victory is unreachable, so every run went back to
+                // ``timeout``.
+                //
+                // Parsing it here, in its own branch, is the fix. Deliberately does
+                // *not* consume a following token, because every branch in this loop
+                // reads ``args.get(i + 1)`` positionally and the loop does not skip
+                // values -- so a branch that advanced ``i`` would desynchronise every
+                // other one.
                 String requested = args.get(i + 1).trim().toLowerCase(Locale.ROOT);
-                if ("annihilation".equals(requested) || "native".equals(requested)) {
+                if ("annihilation".equals(requested) || "native".equals(requested)
+                        || "objective".equals(requested)) {
                     winMode = requested;
                 } else {
                     System.out.println("[ironzero] unknown --win-mode: " + requested
-                            + " (keeping native)");
+                            + " (keeping " + winMode + ")");
                 }
             } else if ("--unlock-ai".equals(argument)) {
                 unlockAi = true;
@@ -449,6 +890,20 @@ public final class IronZeroBridge implements ServerExtension {
         if (writer == null) {
             return;
         }
+        // The producible-units cache is a *within-one-observation* memo, not a
+        // persistent one.
+        //
+        // ``isAvailableForUnit``/``canAffordForUnit`` depend on live instance state
+        // (credits committed to the queue, tech tier, status effects), so a cached
+        // menu goes stale as soon as the game advances. Measured on
+        // ``[p2]Lake (2p)``: a landFactory advertised ``['builder', 'hoverTank']``
+        // and every ``produce_unit`` for ``hoverTank`` was refused
+        // ``PRODUCE_UNAVAILABLE`` for ~5800 ticks -- 104 of 131 sampled production
+        // orders -- while funds sat at 353..426 credits, i.e. affordability was not
+        // the problem. Keeping the memo only for the duration of one payload keeps
+        // the cheap re-use (``factoriesJson`` asks about each factory once) while
+        // making the reported menu track the engine.
+        producibleCache.clear();
         Team player = engine.playerTeam;
         List<String> own = new ArrayList<>();
         List<String> enemies = new ArrayList<>();
@@ -492,7 +947,7 @@ public final class IronZeroBridge implements ServerExtension {
                 // Fold this own building into the resource-slot occupancy the
                 // observation reports, instead of re-scanning the unit list once
                 // per slot afterwards.
-                if (slotLevels.length > 0 && unit.isBuilding() && unit.placeOnlyOnResPool()) {
+                if (slotLevels.length > 0 && unit.isBuilding() && placeOnlyOnResPool(unit)) {
                     markSlotLevel(unit, slots, slotLevels);
                 }
             } else {
@@ -531,8 +986,7 @@ public final class IronZeroBridge implements ServerExtension {
                 + ",\"ai_difficulty\":" + ownAiDifficulty()
                 + ",\"ai_teams\":" + aiTeamsJson()
                 + ",\"builders\":" + buildersJson()
-                + ",\"factories\":" + factoriesJson()
-                // Behaviour-cloning labels: the orders the expert (built-in AI)
+                + ",\"factories\":" + factoriesJson()                // Behaviour-cloning labels: the orders the expert (built-in AI)
                 // is executing right now. Absent unless --record-ai-orders.
                 + (recordAiOrders ? ",\"ai_orders\":" + aiOrdersJson() : "")
                 + "}}";
@@ -733,14 +1187,21 @@ public final class IronZeroBridge implements ServerExtension {
      */
     private boolean factoryCanProduceNow(OrderableUnit factory) {
         try {
-            if (factory.isNonOperational()) {
+            if (!isOperational(factory)) {
                 return false;
             }
         } catch (RuntimeException ignored) {
             // Unqueryable: fall through to the progress check rather than
             // reporting a possibly-unusable menu.
         }
-        return buildProgress(factory) >= 1.0f;
+        // ``buildProgress >= 1.0`` is the second half of "is it finished", but it
+        // must not be the only test: an extractor (and any type whose progress
+        // counter is never advanced by the engine) reports 0.0 forever while
+        // working. For a *factory* the progress reading has historically been the
+        // correct one, so it is kept -- but only as an additional veto when the
+        // engine is actually mid-construction (a value strictly inside (0,1)).
+        float progress = buildProgress(factory);
+        return !(progress > 0.0f && progress < 1.0f);
     }
 
     /**
@@ -760,7 +1221,12 @@ public final class IronZeroBridge implements ServerExtension {
     private java.util.List<String> producibleNamesFor(OrderableUnit factory) {
         String key;
         try {
-            key = factory.getUnitTypeInterface().getInternalName();
+            // Per-instance key: ``isAvailableForUnit``/``canAffordForUnit`` are
+            // properties of the individual building, and two factories of the same
+            // type can legitimately differ (a T1 vs a T2 upgrade).
+            key = factory.getUnitTypeInterface().getInternalName()
+                    + "#" + factory.getTechLevel()
+                    + "@" + factory.id;
         } catch (RuntimeException ignored) {
             key = "?";
         }
@@ -781,16 +1247,99 @@ public final class IronZeroBridge implements ServerExtension {
             }
             try {
                 SpecialAction action = factory.findActionForUnitType(candidate);
-                if (action != null && action.isAvailableForUnit(factory)) {
+                if (action == null) {
+                    continue;
+                }
+                // The reported menu must be exactly what {@link #produceUnit} can
+                // dispatch, otherwise the mask opens a kind the engine will refuse.
+                // ``produceUnit`` requires BOTH checks; reporting on
+                // ``isAvailableForUnit`` alone made the menu a superset of what was
+                // dispatchable.
+                if (action.isAvailableForUnit(factory)
+                        && action.canAffordForUnit(factory, false)) {
                     names.add(candidate.getInternalName());
                 }
             } catch (RuntimeException ignored) {
                 // Unqueryable candidate: not part of this factory's menu.
             }
         }
+        // The registry scan above misses units the *dispatch path* accepts, for
+        // exactly the reason {@link #buildableNamesFor} documents: a unit is
+        // dispatched through {@code UnitType.findUnitType(name)} / a factory's own
+        // {@code findActionForUnitType(...)}, and a custom or aliased unit can be
+        // resolvable by name without appearing in {@code UnitType.values()} under
+        // that name.
+        //
+        // <p>Measured on {@code [p2]Lake (2p)} (``.runtime/q3_factory_menu.json``),
+        // same finished T1 {@code landFactory}, same bridge build. The scan reported
+        // two entries, yet the engine accepted and BUILT four different combat units:
+        //
+        // <pre>
+        //   reported can_produce = ["builder", "hoverTank"]
+        //   produce "hoverTank" -> built            (reported)
+        //   produce "tank"      -> built c_tank     (NOT reported)
+        //   produce "artillery" -> built c_artillery(NOT reported)
+        //   produce "scout"     -> built            (NOT reported)
+        //   produce "helicopter"-> PRODUCE_UNAVAILABLE
+        //   produce "lightTank" -> PRODUCE_UNAVAILABLE
+        // </pre>
+        //
+        // <p>Because the Python side indexes this list to decide *which* unit to
+        // build, the omission was not cosmetic: it made three of the four buildable
+        // units unreachable from the action space, which is precisely the reported
+        // "only ever builds one kind of tank". Probing these canonical names through
+        // the same {@code findActionForUnitType} that {@link #produceUnit}
+        // dispatches with makes the reported menu a superset of the dispatchable set,
+        // which is the direction the contract needs.
+        for (String canonical : CANONICAL_PRODUCE_NAMES) {
+            if (names.contains(canonical)) {
+                continue;
+            }
+            try {
+                UnitTypeInterface resolved = resolveUnitType(canonical);
+                if (resolved == null || resolved.isLocked()) {
+                    continue;
+                }
+                SpecialAction action = factory.findActionForUnitType(resolved);
+                if (action == null) {
+                    continue;
+                }
+                if (action.isAvailableForUnit(factory)
+                        && action.canAffordForUnit(factory, false)) {
+                    names.add(canonical);
+                }
+            } catch (RuntimeException ignored) {
+                // Not producible under that name at this factory.
+            }
+        }
         producibleCache.put(key, names);
         return names;
     }
+
+    /**
+     * Canonical unit names probed through {@code findActionForUnitType}, i.e. the
+     * same lookup {@link #produceUnit} dispatches with.
+     *
+     * <p>These are the stock combat unit families a land factory can field, plus the
+     * economy entry. They are probed in addition to the registry scan because the
+     * scan under-reports on this map (see {@link #producibleNamesFor}): measured,
+     * the scan listed 2 entries while 4 were buildable.
+     *
+     * <p>Affordability is deliberately not baked in by the caller: the same
+     * {@code canAffordForUnit} check the dispatch path uses is applied here, so a
+     * menu entry is only reported when the order would actually be accepted. That
+     * keeps the reported menu and the dispatchable set in agreement, which is what
+     * stops the policy paying {@code invalid_penalty} for obeying its own mask.
+     */
+    private static final String[] CANONICAL_PRODUCE_NAMES = {
+        "hoverTank",
+        "tank",
+        "artillery",
+        "scout",
+        "lightTank",
+        "helicopter",
+        "builder",
+    };
 
     /**
      * Report, for each own factory, which unit types it can queue right now.
@@ -860,10 +1409,93 @@ public final class IronZeroBridge implements ServerExtension {
                 }
                 out.append('"').append(names.get(index)).append('"');
             }
-            out.append("]}");
+            out.append(']');
+            // What is *actually* queued, in order.
+            //
+            // ``can_produce`` answers "what could this factory start right now", which
+            // is the question the action mask needs. It says nothing about work already
+            // in progress, and that omission is why behaviour cloning had no production
+            // labels: the teacher's army grows from 2 to 13 units while the recorded
+            // orders contain zero ``produce_unit`` entries, because the AI's production
+            // decisions live in the build queue rather than in waypoints.
+            //
+            // ``BuildQueueItem`` already carries everything a label needs -- the unit
+            // type (``unitType``), how many of it (``buildCount``), and the engine's
+            // progress -- so the queue is reported verbatim instead of being inferred.
+            out.append(",\"queued\":[");
+            java.util.List<com.corrodinggames.rts.game.units.buildings.BuildQueueItem> queueItems =
+                    queuedItems(unit);
+            for (int index = 0; index < queueItems.size(); index++) {
+                if (index > 0) {
+                    out.append(',');
+                }
+                com.corrodinggames.rts.game.units.buildings.BuildQueueItem queued =
+                        queueItems.get(index);
+                String queuedType = "?";
+                try {
+                    if (queued.unitType != null) {
+                        queuedType = queued.unitType.getInternalName();
+                    }
+                } catch (RuntimeException ignored) {
+                    // Keep the placeholder: an unreadable type must not drop the item,
+                    // because the *length* of the queue is itself information.
+                }
+                float itemProgress = Float.isFinite(queued.progress) ? queued.progress : -1.0f;
+                out.append("{\"unit_type\":\"").append(queuedType).append('"')
+                        .append(",\"count\":").append(Math.max(0, queued.buildCount))
+                        .append(",\"progress\":").append(fmt(itemProgress))
+                        .append(",\"unit_production\":").append(queued.unitProduction)
+                        .append('}');
+            }
+            out.append(']');
+            out.append(",\"queue_length\":").append(queueLength(unit))
+                    .append(",\"queue_progress\":").append(fmt(queueProgress(unit)));
+            // Only the object brace closes here: the ``queued`` array was already
+            // closed above. Shipping ``"]}"`` emitted a stray ``]`` and made the
+            // whole observation line invalid JSON -- measured: every one of 900
+            // messages failed to parse with ``Expecting ',' delimiter`` at the
+            // byte before the end, i.e. the entire bridge output was discarded by
+            // any strict JSON reader. The Python env's own reader is lenient
+            // enough to hide it, which is exactly why this needed a protocol-level
+            // check rather than a unit test over the encoder.
+            out.append('}');
         }
         out.append(']');
         return out.toString();
+    }
+
+    /** Snapshot of one factory's build queue, empty for a non-factory. */
+    private java.util.List<com.corrodinggames.rts.game.units.buildings.BuildQueueItem>
+            queuedItems(Unit unit) {
+        try {
+            if (!(unit instanceof com.corrodinggames.rts.game.units.buildings.Factory)) {
+                // Only ``Factory`` exposes ``getQueuedItems()``; the interface has the
+                // counts but not the list. A custom producer still reports
+                // ``queue_length``/``queue_progress`` through the interface.
+                return java.util.Collections.emptyList();
+            }
+            com.corrodinggames.rts.game.units.buildings.Factory factory =
+                    (com.corrodinggames.rts.game.units.buildings.Factory) unit;
+            if (factory.isQueueEmpty()) {
+                return java.util.Collections.emptyList();
+            }
+            com.corrodinggames.rts.gameFramework.utility.FastArrayList queue =
+                    factory.getQueuedItems();
+            if (queue == null) {
+                return java.util.Collections.emptyList();
+            }
+            java.util.List<com.corrodinggames.rts.game.units.buildings.BuildQueueItem> queueItems =
+                    new java.util.ArrayList<>(queue.size());
+            for (Object entry : queue) {
+                if (entry instanceof com.corrodinggames.rts.game.units.buildings.BuildQueueItem) {
+                    queueItems.add(
+                            (com.corrodinggames.rts.game.units.buildings.BuildQueueItem) entry);
+                }
+            }
+            return queueItems;
+        } catch (RuntimeException ignored) {
+            return java.util.Collections.emptyList();
+        }
     }
 
     private String entityJson(Unit unit) {
@@ -883,7 +1515,7 @@ public final class IronZeroBridge implements ServerExtension {
                 + ",\"is_building\":" + building
                 + ",\"is_factory\":" + unit.isFactoryBuilding()
                 + ",\"is_builder\":" + unit.isBuilder()
-                + ",\"is_operational\":" + !unit.isNonOperational()
+                + ",\"is_operational\":" + isOperational(unit)
                 // Completion fraction of a building under construction (1.0 for a
                 // finished unit). Without it neither the observation nor the
                 // reward can tell "a factory is going up" from "no factory yet",
@@ -904,7 +1536,329 @@ public final class IronZeroBridge implements ServerExtension {
                 // and reason about distance (``attack_range``).
                 + ",\"can_attack\":" + canAttack(unit)
                 + ",\"attack_range\":" + fmt(attackRange(unit))
+                // ------------------------------------------------------------------
+                // The information a real-time-strategy decision actually needs.
+                //
+                // Before this block the payload could say *where* an entity was and
+                // *how much hp* it had, and whether it could shoot in principle. That
+                // is not enough to answer any of the questions the game poses on
+                // every decision:
+                //
+                //   * "can my tank catch that thing?"            -> needs ``move_speed``
+                //   * "can it out-range my turret?"               -> needs both ranges
+                //                                                  (enemy entities get the
+                //                                                  same fields, so the
+                //                                                  comparison is per-slot)
+                //   * "is that a laser/AA turret or a tank?"      -> needs the defence
+                //                                                  flags; ``can_attack``
+                //                                                  alone calls them all
+                //                                                  "armed"
+                //   * "will it shoot my aircraft?"                -> needs ``can_attack_air``
+                //   * "is its base upgraded, i.e. is a T2 army
+                //      about to arrive?"                          -> needs ``tech_level``
+                //   * "how fast does it shoot?"                   -> needs ``shoot_delay``
+                //   * "does it have a shield I have to chew
+                //      through first?"                            -> needs ``shield``
+                //   * "what is it doing right now?"               -> needs ``order_type``
+                //
+                // The last one is not a nicety: ``observation.features._entity_features``
+                // already reserves a column for ``order_type`` and reads it on every
+                // entity, but the bridge never sent the key, so that column has been a
+                // hard-coded constant 0 for every unit of every episode. Measured over
+                // 40 real Lake decisions (``.runtime/contract_gap.json``):
+                // ``order_type_values_seen = ["None"]`` -- the policy was structurally
+                // blind to the difference between "idle" and "attacking".
+                //
+                // Every one of these is the engine's own answer, not a lookup table,
+                // so it stays correct on custom units and mods.
+                + ",\"order_type\":\"" + orderName(unit) + "\""
+                + ",\"move_speed\":" + fmt(moveSpeed(unit))
+                + ",\"tech_level\":" + techLevel(unit)
+                + ",\"shoot_delay\":" + fmt(shootDelay(unit))
+                + ",\"can_attack_air\":" + canAttackAir(unit)
+                + ",\"can_attack_land\":" + canAttackLand(unit)
+                + ",\"shield\":" + fmt(shield(unit))
+                + ",\"max_shield\":" + fmt(maxShield(unit))
+                + ",\"is_turret\":" + isTurretType(unit)
+                + ",\"is_laser\":" + isLaserType(unit)
+                // "A building whose purpose is to defend" -- deliberately NOT
+                // ``isBuilding() && canAttack()``.
+                //
+                // ``LaserDefence.canAttack()`` returns **false**
+                // (``LaserDefence.java:268``): it is a projectile *interceptor*, not a
+                // gun, so the naive definition would classify the game's most
+                // prominent defensive structure as a harmless farm. The honest test is
+                // "is it a building AND (it can shoot OR it is a laser tower)"; a
+                // turret, an AA turret and the laser tower all satisfy it, and an
+                // extractor / factory / command center does not (unless the command
+                // center, which genuinely does shoot).
+                + ",\"is_defence\":"
+                + (unit.isBuilding() && (canAttack(unit) || isLaserType(unit)))
+                + ",\"queue_length\":" + queueLength(unit)
+                + ",\"queue_progress\":" + fmt(queueProgress(unit))
                 + ",\"is_visible\":true,\"is_alive\":true}";
+    }
+
+    /**
+     * The unit's current order, spelled with the names
+     * {@code engine.constants.ORDER_NAMES} uses so the encoder's lookup hits.
+     *
+     * <p>Read from the engine's live waypoint, the same source {@link #aiOrdersJson()}
+     * uses for behaviour-cloning labels: a unit with no waypoint but an acquired
+     * attack target is genuinely attacking, which is the state a turret sits in for
+     * its whole life.
+     */
+    private String orderName(Unit unit) {
+        if (!(unit instanceof OrderableUnit)) {
+            return "idle";
+        }
+        try {
+            Waypoint waypoint = ((OrderableUnit) unit).getCurrentWaypoint();
+            if (waypoint != null) {
+                WaypointType type = waypoint.getType();
+                if (type != null) {
+                    switch (type.name()) {
+                        case "move":
+                            return "move";
+                        case "attackMove":
+                        case "patrol":
+                            return "attack_move";
+                        case "attack":
+                            return "attack_target";
+                        case "guard":
+                        case "guardAt":
+                        case "follow":
+                            return "hold";
+                        default:
+                            break;
+                    }
+                }
+            }
+            if (((OrderableUnit) unit).getEffectiveAttackTarget() != null) {
+                return "attack_target";
+            }
+        } catch (RuntimeException ignored) {
+            // An unreadable order is reported as idle rather than failing the frame.
+        }
+        return "idle";
+    }
+
+    /**
+     * Engine movement speed, in world pixels per tick at the 60 Hz simulation loop.
+     *
+     * <p>{@code getMoveSpeed()} is declared on {@link OrderableUnit} and
+     * {@code Building} overrides it to {@code 0.0F}, so a stationary structure and a
+     * unit that merely *has not moved yet* are distinguishable -- which is exactly
+     * the distinction "is that a turret or a tank" needs. The engine applies it as
+     * {@code position += getMoveSpeed() * throttle * frameDelta}, so a stock tank's
+     * {@code 1.0} is ~60 px/s.
+     */
+    private float moveSpeed(Unit unit) {
+        try {
+            if (!(unit instanceof OrderableUnit)) {
+                return 0.0f;
+            }
+            float speed = ((OrderableUnit) unit).getMoveSpeed();
+            return Float.isFinite(speed) && speed > 0.0f ? speed : 0.0f;
+        } catch (RuntimeException ignored) {
+            return 0.0f;
+        }
+    }
+
+    /**
+     * Building / unit tier: 1 for a base unit, 2 or 3 once upgraded.
+     *
+     * <p>{@code Unit.getTechLevel()} defaults to 1; {@code LandFactory} answers
+     * {@code upgraded ? 2 : 1} and {@code Extractor} reports its own tier, so this is
+     * the engine's answer to "is this already the upgraded version". It matters
+     * because a T2 factory produces a different army than a T1 one.
+     *
+     * <p><b>Turrets are special-cased, and it is not cosmetic.</b>
+     * {@code Turret} does <i>not</i> override {@code Unit.getTechLevel()}, so it
+     * inherits the constant {@code 1} -- a gun T3 tower would report tier 1, i.e.
+     * "nothing to worry about". Its real tier lives in
+     * {@code Turret.getTurretLevel()} (which delegates to the current
+     * {@code TurretType.getTechLevel()}). Since a turret's tier is exactly what
+     * decides whether a push will work, reporting it wrong is worse than not
+     * reporting it.
+     */
+    private int techLevel(Unit unit) {
+        try {
+            int level;
+            if (unit instanceof com.corrodinggames.rts.game.units.buildings.turrets.Turret) {
+                level = ((com.corrodinggames.rts.game.units.buildings.turrets.Turret) unit)
+                        .getTurretLevel();
+            } else {
+                level = unit.getTechLevel();
+            }
+            return level > 0 ? Math.min(level, 3) : 1;
+        } catch (RuntimeException ignored) {
+            return 1;
+        }
+    }
+
+    /**
+     * Ticks between shots for the unit's first turret, or {@code 0} if it has none.
+     *
+     * <p>This is the engine's own fire cadence ({@code Tank} returns 75, i.e. 1.25 s
+     * per shot). Exposed so "how dangerous is that thing" is answerable without the
+     * policy having to memorise a per-type table from reward alone.
+     *
+     * <p>The {@code getTurretCount() < 1} guard is load-bearing, not defensive
+     * padding: {@code CustomUnit.getTurretShootDelay(int)} indexes its
+     * {@code turretTemplates} array unchecked and throws
+     * {@code ArrayIndexOutOfBoundsException} for a custom unit with no turrets.
+     * Stock units always have {@code turrets[0]} allocated, so without the guard a
+     * single moddeed unit type would abort the whole observation.
+     */
+    private float shootDelay(Unit unit) {
+        try {
+            if (!(unit instanceof OrderableUnit)) {
+                return 0.0f;
+            }
+            OrderableUnit orderable = (OrderableUnit) unit;
+            if (orderable.getTurretCount() < 1 || !orderable.canAttack()) {
+                return 0.0f;
+            }
+            float delay = orderable.getTurretShootDelay(0);
+            return Float.isFinite(delay) && delay > 0.0f ? delay : 0.0f;
+        } catch (RuntimeException ignored) {
+            return 0.0f;
+        }
+    }
+
+    /** Whether this unit's weapon can hit air units (engine default is true). */
+    private boolean canAttackAir(Unit unit) {
+        try {
+            if (!(unit instanceof OrderableUnit) || !unit.canAttack()) {
+                return false;
+            }
+            return ((OrderableUnit) unit).canAttackFlyingUnits();
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    /** Whether this unit's weapon can hit ground units (engine default is true). */
+    private boolean canAttackLand(Unit unit) {
+        try {
+            if (!(unit instanceof OrderableUnit) || !unit.canAttack()) {
+                return false;
+            }
+            return ((OrderableUnit) unit).canAttackLandUnits();
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * Current shield points. Shields absorb damage before hull in
+     * {@code Unit.damage(...)}, so they are the "defence" number that changes a
+     * fight's arithmetic. Reported raw together with {@link #maxShield(Unit)} so the
+     * encoder can form a fraction; a unit without a shield reports 0/0.
+     */
+    private float shield(Unit unit) {
+        try {
+            float value = unit.shield;
+            return Float.isFinite(value) && value > 0.0f ? value : 0.0f;
+        } catch (RuntimeException ignored) {
+            return 0.0f;
+        }
+    }
+
+    private float maxShield(Unit unit) {
+        try {
+            float value = unit.maxShield;
+            return Float.isFinite(value) && value > 0.0f ? value : 0.0f;
+        } catch (RuntimeException ignored) {
+            return 0.0f;
+        }
+    }
+
+    /** True for the engine's turret family (gun towers, AA turrets, artillery). */
+    private boolean isTurretType(Unit unit) {
+        try {
+            return unit instanceof com.corrodinggames.rts.game.units.buildings.turrets.Turret;
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    /** True for the laser defence tower specifically. */
+    private boolean isLaserType(Unit unit) {
+        try {
+            return unit
+                    instanceof com.corrodinggames.rts.game.units.buildings.LaserDefence;
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * How many items a factory has queued, or 0 for anything that is not a factory.
+     *
+     * <p>This is the single most important field the bridge was missing. The built-in
+     * AI's own behaviour -- what a behaviour-cloning teacher would demonstrate -- is
+     * almost entirely *production decisions*, and the payload reported none of them:
+     * measured on a real AI-pilot Lake run over 6000 ticks
+     * ({@code .runtime/ai_orders_probe.json}) the teacher issued 6
+     * {@code build_structure} and 23 {@code hold} orders but **zero**
+     * {@code produce_unit}, while its army grew from 2 to 13 units. It was
+     * producing the whole time and the observation could not see it, so there was
+     * nothing to imitate.
+     *
+     * <p>Cast to {@link com.corrodinggames.rts.game.units.buildings.FactoryInterface}
+     * and not to {@code Factory}: {@code CustomUnit} implements the interface but does
+     * not extend {@code Factory}, so an {@code instanceof Factory} test would silently
+     * report "no queue" for every mod-produced unit type.
+     *
+     * <p>{@code getTotalQueuedCount(false)} excludes the instant-purchase slot: that
+     * slot is a one-off purchase the player already paid for, not work the factory is
+     * doing, and counting it would make "queue_length" jump for no visual reason.
+     */
+    private int queueLength(Unit unit) {
+        try {
+            if (!(unit instanceof com.corrodinggames.rts.game.units.buildings.FactoryInterface)) {
+                return 0;
+            }
+            com.corrodinggames.rts.game.units.buildings.FactoryInterface factory =
+                    (com.corrodinggames.rts.game.units.buildings.FactoryInterface) unit;
+            if (factory.isQueueEmpty()) {
+                return 0;
+            }
+            return Math.max(0, factory.getTotalQueuedCount(false));
+        } catch (RuntimeException ignored) {
+            return 0;
+        }
+    }
+
+    /**
+     * Completion fraction of the factory's current build, in {@code [0, 1]}.
+     *
+     * <p>{@code Factory.getConstructionProgress()} returns
+     * {@code buildQueue.buildProgress} while the queue is non-empty and the factory is
+     * built, and otherwise falls through to the building's own construction progress --
+     * so on a half-built factory this reports the *building's* progress, which is
+     * exactly right too. A non-factory reports 0.
+     */
+    private float queueProgress(Unit unit) {
+        try {
+            if (!(unit instanceof com.corrodinggames.rts.game.units.buildings.FactoryInterface)) {
+                return 0.0f;
+            }
+            com.corrodinggames.rts.game.units.buildings.FactoryInterface factory =
+                    (com.corrodinggames.rts.game.units.buildings.FactoryInterface) unit;
+            if (factory.isQueueEmpty()) {
+                return 0.0f;
+            }
+            float progress = unit.getConstructionProgress();
+            if (!Float.isFinite(progress)) {
+                return 0.0f;
+            }
+            return Math.max(0.0f, Math.min(1.0f, progress));
+        } catch (RuntimeException ignored) {
+            return 0.0f;
+        }
     }
 
     /**
@@ -959,18 +1913,98 @@ public final class IronZeroBridge implements ServerExtension {
                 return 1.0f;
             }
             float progress = unit.buildProgress;
-            if (!Float.isFinite(progress) || progress <= 0.0f) {
+            if (!Float.isFinite(progress)) {
+                // An uninitialised float is not evidence of anything. Treating NaN
+                // as "finished" keeps the field usable on engine builds that leave
+                // it unset, which is what the old code was trying to do.
                 return 1.0f;
             }
-            return Math.min(1.0f, progress);
+            // ``<= 0`` used to be folded into the NaN case above and reported as
+            // 1.0. That is a *lie with consequences*: the engine uses
+            // ``buildProgress < 1.0`` in ``isNonOperational()``, so a stalled or
+            // not-yet-started structure has ``buildProgress == 0.0`` and is
+            // genuinely unusable, while this helper claimed it was complete.
+            //
+            // Measured on ``[p2]Lake (2p)``: a landFactory sat at
+            // ``build_progress: 1.0, is_operational: false`` from tick 1571 to the
+            // 20056-tick cap, with ``can_produce: []`` the whole time -- the two
+            // fields disagreed for 18000 ticks because one read the raw engine
+            // value and the other read this helper. A policy (and the opening
+            // curriculum) gating on ``build_progress`` therefore believed a
+            // zero-progress factory was finished and stopped re-issuing the build
+            // order, so the factory never completed and ``bonus_produce`` was
+            // structurally unreachable.
+            return Math.max(0.0f, Math.min(1.0f, progress));
         } catch (RuntimeException ignored) {
             return 1.0f;
         }
     }
 
-    /** Engine internal name of the unit's type, with a safe placeholder. */
-    private String internalName(Unit unit) {
+    /**
+     * Whether this structure is finished and usable -- the engine's answer,
+     * corrected for the one case it gets wrong.
+     *
+     * <p><b>Why this is not just {@code !unit.isNonOperational()}.</b> The engine
+     * derives {@code isNonOperational()} from {@code buildProgress < 1.0}, and an
+     * extractor reports {@code buildProgress == 0.0} for its entire life even while
+     * it is producing income. Measured on {@code [p2]Lake (2p)} with a working
+     * extractor on slot 0:
+     *
+     * <pre>
+     *   tick   161 .. 3961 : progress=0.0  is_operational=false
+     *                        hp=800/800 (full)  order=idle  queue_length=0
+     *                        income=26.0 the whole time
+     * </pre>
+     *
+     * <p>Every field is identical from tick 161 onward -- the structure is done and
+     * idle, but the engine's progress counter never moves for it, so
+     * {@code isNonOperational()} answers "not finished" forever.
+     *
+     * <p>That answer is not cosmetic: the opening curriculum gates expansion on
+     * "every standing structure is operational"
+     * ({@code env.py} {@code _issue_late_expansion}), so a single finished extractor
+     * blocked <b>584 of 600</b> decisions and the economy was pinned at one mine
+     * (~26 credits/s) for the whole episode while 8 pools sat free.
+     *
+     * <p>The correction is deliberately narrow. A structure counts as operational
+     * when the engine says so <b>or</b> when it satisfies all three of:
+     * <ul>
+     *   <li>it is a building,</li>
+     *   <li>it is at full health ({@code hp >= maxHp}), and</li>
+     *   <li>it has no queued construction order ({@code buildQueue} empty).</li>
+     * </ul>
+     * A site that is genuinely still being built fails at least one of those: the
+     * engine reports {@code buildProgress} in {@code (0,1)} and the builder holds a
+     * build order, so it keeps its {@code is_operational=false}. The rule therefore
+     * cannot turn a half-built factory into a "finished" one -- it only rescues the
+     * types whose progress counter is never updated.
+     */
+    private boolean isOperational(Unit unit) {
         try {
+            if (!unit.isNonOperational()) {
+                return true;
+            }
+            if (!unit.isBuilding()) {
+                return false;
+            }
+            // Full health plus an idle build queue is what a completed structure
+            // looks like; an unfinished one is either damaged (still accruing hp as
+            // it builds) or still holds the construction order.
+            if (unit.hp + 1e-3f < unit.maxHp) {
+                return false;
+            }
+            if (buildProgress(unit) > 0.0f && buildProgress(unit) < 1.0f) {
+                // A real, in-flight construction: trust the engine's "not yet".
+                return false;
+            }
+            return true;
+        } catch (RuntimeException ignored) {
+            return true;
+        }
+    }
+
+    /** Engine internal name of the unit's type, with a safe placeholder. */
+    private String internalName(Unit unit) {        try {
             String name = unit.getUnitTypeInterface().getInternalName();
             if (name != null && !name.isEmpty()) {
                 return name;
@@ -1060,12 +2094,51 @@ public final class IronZeroBridge implements ServerExtension {
      * next tier". Reporting the capability lets the Python side select an
      * upgrade target by what the engine says is possible instead of matching a
      * hard-coded type id.
+     *
+     * <p><b>The unit must also be finished.</b> {@code getBuildActionId()}
+     * answers "does this type have a next tier", *not* "may I upgrade it right
+     * now": a structure that is still being placed reports a real upgrade action
+     * the whole time it is under construction. Measured on ``[p2]Lake (2p)``
+     * ({@code .runtime/raw_entity.json}) -- a half-built extractor:
+     *
+     * <pre>
+     *   tick 161: build_progress 0.000  is_operational false  can_upgrade TRUE
+     *   tick 301: build_progress 0.029  is_operational false  can_upgrade TRUE
+     *   ...       (true for every one of the 18000 ticks of the build)
+     * </pre>
+     *
+     * <p>The Python mask opens {@code upgrade_building} whenever *any* own entity
+     * reports {@code can_upgrade}, and {@code decode_action} picks one of those
+     * entities. So for the entire construction of the opening extractor the mask
+     * advertised an upgrade the engine then refused -- the single largest
+     * rejection bucket in every run. Measured over 24 PPO updates:
+     * {@code UPGRADE_UNAVAILABLE = 798} against {@code BUILD_UNAVAILABLE = 157},
+     * contributing most of {@code invalid = -17.49}, the dominant negative reward.
+     *
+     * <p>Gating on completion makes the reported capability agree with the
+     * dispatch path, which is the whole point of reporting it.
      */
     private boolean canUpgrade(Unit unit) {
         if (!unit.isBuilding()) {
             return false;
         }
         try {
+            // An unterminated structure cannot be upgraded. This used
+            // ``unit.isNonOperational()`` directly, which is derived from
+            // ``buildProgress < 1.0`` -- and an extractor reports
+            // ``buildProgress == 0.0`` forever even when it is finished and
+            // producing. The result was that a completed mine reported
+            // ``can_upgrade = false`` for its entire life, so the policy and the
+            // curriculum both saw "nothing here can be upgraded" and the economy
+            // never advanced past T1 (measured: ``extractor_level 1`` on all 1991
+            // decisions of a full Lake episode).
+            //
+            // ``isOperational`` applies the same rule the rest of the bridge now
+            // uses: finished means the engine says so, or the structure is a
+            // full-health building with no in-flight construction.
+            if (!isOperational(unit)) {
+                return false;
+            }
             if (unit instanceof OrderableUnit) {
                 ActionId upgradeId = unit.getBuildActionId();
                 return upgradeId != null && SpecialAction.isRealActionId(upgradeId);
@@ -1170,6 +2243,85 @@ public final class IronZeroBridge implements ServerExtension {
             return null;
         }
         Team player = engine.playerTeam;
+        if ("objective".equals(winMode)) {
+            // Stock skirmish maps declare ``type=skirmish`` and no ``winCondition``,
+            // so TriggerEngine falls through to
+            // ``ObjectiveType.noConstructionOrTech``: "the enemy has no factory and
+            // no builder left". That objective *is* reachable on an economy map --
+            // you win by destroying the enemy's production capability, not by
+            // erasing its last scout.
+            //
+            // Why this mode has to exist. Measured on ``maps/skirmish/[p2]Lake (2p)``
+            // with our side handed to the built-in AI (``--ai-pilot``) for a full
+            // map-derived 20056-tick episode: both sides reached a complete economy
+            // (ours 22 units / 11 types, theirs 43 units / 23 types) and the native
+            // path still reported ``timeout``. The native victory channel waits for
+            // ``victoryScreenShown`` or "every enemy team defeated/wipedOut", and on
+            // a real economy map neither happens inside any sane tick budget, so
+            // training could never observe a win.
+            //
+            // Two objectives are evaluated, in the engine's own priority order:
+            //
+            //   1. ``mainBuildings`` -- the objective ``challenge/Artillery.tmx``
+            //      uses (``winCondition=mainBuilings``): the enemy loses once it has
+            //      no *factory building* that is not a turret or an extractor. This
+            //      is the objective a real player is judged by and it is much
+            //      cheaper to reach than a total wipe.
+            //   2. ``noConstructionOrTech`` -- the stock-skirmish fallback: no
+            //      factory *and* no builder at all.
+            //
+            // Measured cost of (2) alone, AI vs AI with our side on level 3 and the
+            // opponent on level -2: ``victory`` only arrived at tick 34701, after
+            // our side had grown to 196 units. (1) is what makes a decisive result
+            // practical, and (2) still catches the "chewed through every builder
+            // too" case.
+            if (engine.simulationTick <= OBJECTIVE_GRACE_TICKS) {
+                return null;
+            }
+            Capability own = capabilityOf(player);
+            Capability enemies = capabilityOfEnemies(player);
+            if (enemies.hasCapability) {
+                objectiveEnemySeen = true;
+            }
+            if (own.hasCapability) {
+                ownSawCapability = true;
+            }
+            boolean enemyDecided = enemies.mainBuildings == 0 || !enemies.hasCapability;
+            if (objectiveEnemySeen && enemyDecided) {
+                gameResult = "victory";
+                System.out.println("[ironzero] game over: victory (objective) tick="
+                        + engine.simulationTick + " enemyMainBuildings=" + enemies.mainBuildings
+                        + " enemyFactories=" + enemies.factories
+                        + " enemyBuilders=" + enemies.builders);
+                return gameResult;
+            }
+            if (!own.hasCapability && ownSawCapability) {
+                gameResult = "defeat";
+                System.out.println("[ironzero] game over: defeat (objective) tick="
+                        + engine.simulationTick + " ownFactories=" + own.factories
+                        + " ownBuilders=" + own.builders);
+                return gameResult;
+            }
+            // Military dominance: a force the enemy cannot come back from. See
+            // DOMINANCE_* for why the objectives above are not enough on their own.
+            Tally engagement = tally(player);
+            if (
+                objectiveEnemySeen
+                && engagement.ownCombat >= DOMINANCE_OWN_MIN_UNITS
+                && engagement.enemyCombat > 0
+                && engagement.ownCombat >= engagement.enemyCombat * DOMINANCE_ARMY_RATIO
+                && engagement.ownCombatHp >= engagement.enemyCombatHp * DOMINANCE_HP_RATIO
+            ) {
+                gameResult = "victory";
+                System.out.println("[ironzero] game over: victory (dominance) tick="
+                        + engine.simulationTick + " ownCombat=" + engagement.ownCombat
+                        + " enemyCombat=" + engagement.enemyCombat
+                        + " ownCombatHp=" + fmt(engagement.ownCombatHp)
+                        + " enemyCombatHp=" + fmt(engagement.enemyCombatHp));
+                return gameResult;
+            }
+            return null;
+        }
         if ("annihilation".equals(winMode)) {
             if (engine.simulationTick <= ANNIHILATION_GRACE_TICKS) {
                 return null;
@@ -1242,6 +2394,90 @@ public final class IronZeroBridge implements ServerExtension {
         int enemyAlive;
         double ownHp;
         double enemyHp;
+        // Attack-capable subset, used by the dominance verdict: a builder or an
+        // extractor must not count as "army" or a farm would read as a victory.
+        int ownCombat;
+        int enemyCombat;
+        double ownCombatHp;
+        double enemyCombatHp;
+    }
+
+    /**
+     * Production capability of one side, for the ``objective`` win mode.
+     *
+     * Modelled directly on the engine's own skirmish objective
+     * (``TriggerEngine.matchesObjective(ObjectiveType.noConstructionOrTech)``):
+     * a factory building or a builder counts. ``sawCapability`` records that the
+     * side *had* one at some point, so a map that simply spawned nothing can
+     * never be scored as an instant win or loss.
+     */
+    private static final class Capability {
+        int factories;
+        int builders;
+        /** Factory buildings that are neither turrets nor extractors (engine objective). */
+        int mainBuildings;
+        boolean hasCapability;
+        boolean sawCapability;
+    }
+
+    /** Production capability of the controlled team. */
+    private Capability capabilityOf(Team player) {
+        Capability capability = new Capability();
+        for (Object item : Unit.unitList) {
+            if (!(item instanceof OrderableUnit)) {
+                continue;
+            }
+            OrderableUnit unit = (OrderableUnit) item;
+            if (unit.removed || unit.hp <= 0.0f || unit.dead || !isOperational(unit)) {
+                continue;
+            }
+            if (!isOwnUnit(player, unit)) {
+                continue;
+            }
+            if (unit.isFactoryBuilding()) {
+                capability.factories++;
+                // Mirrors TriggerEngine.matchesObjective(ObjectiveType.mainBuildings):
+                // a factory building that is not a turret and not an extractor.
+                if (!(unit instanceof Turret) && !(unit instanceof Extractor)) {
+                    capability.mainBuildings++;
+                }
+            }
+            if (unit.isBuilder()) {
+                capability.builders++;
+            }
+        }
+        capability.hasCapability = capability.factories > 0 || capability.builders > 0;
+        capability.sawCapability = capability.hasCapability;
+        return capability;
+    }
+
+    /** Production capability summed over every hostile team. */
+    private Capability capabilityOfEnemies(Team player) {
+        Capability capability = new Capability();
+        for (Object item : Unit.unitList) {
+            if (!(item instanceof OrderableUnit)) {
+                continue;
+            }
+            OrderableUnit unit = (OrderableUnit) item;
+            if (unit.removed || unit.hp <= 0.0f || unit.dead || !isOperational(unit)) {
+                continue;
+            }
+            if (!isEnemyUnit(player, unit)) {
+                continue;
+            }
+            if (unit.isFactoryBuilding()) {
+                capability.factories++;
+                if (!(unit instanceof Turret) && !(unit instanceof Extractor)) {
+                    capability.mainBuildings++;
+                }
+            }
+            if (unit.isBuilder()) {
+                capability.builders++;
+            }
+        }
+        capability.hasCapability = capability.factories > 0 || capability.builders > 0;
+        capability.sawCapability = capability.hasCapability;
+        return capability;
     }
 
     private Tally tally(Team player) {
@@ -1254,15 +2490,47 @@ public final class IronZeroBridge implements ServerExtension {
             if (unit.removed || unit.hp <= 0.0f) {
                 continue;
             }
+            boolean combat = canFight(unit);
             if (isOwnUnit(player, unit)) {
                 tally.ownAlive++;
                 tally.ownHp += unit.hp;
+                if (combat) {
+                    tally.ownCombat++;
+                    tally.ownCombatHp += unit.hp;
+                }
             } else if (isEnemyUnit(player, unit)) {
                 tally.enemyAlive++;
                 tally.enemyHp += unit.hp;
+                if (combat) {
+                    tally.enemyCombat++;
+                    tally.enemyCombatHp += unit.hp;
+                }
             }
         }
         return tally;
+    }
+
+    /**
+     * Whether this unit is part of the *army*, for the dominance verdict.
+     *
+     * Deliberately the same notion the reward shaping uses (``can_attack``):
+     * buildings and builders are not army, so a player sitting on a big economy
+     * with no units can never be scored as dominant. Turrets do count -- they
+     * fire -- but the ratio thresholds in ``DOMINANCE_*`` keep a fortified
+     * turtle from being called a decisive victory against a live enemy army.
+     */
+    private boolean canFight(Unit unit) {
+        if (!(unit instanceof OrderableUnit)) {
+            return false;
+        }
+        if (unit.isBuilder()) {
+            return false;
+        }
+        // A building with a weapon (turret) can fight; a factory/extractor cannot.
+        if (unit.isBuilding() && !unit.isFactoryBuilding()) {
+            return true;
+        }
+        return !unit.isBuilding();
     }
 
     /**
@@ -2270,6 +3538,84 @@ public final class IronZeroBridge implements ServerExtension {
                 debugBuild(unit.id, "isValidNewWaypoint=false", unitTypeName);
                 continue;
             }
+            // Terrain / placement legality, which ``isValidNewWaypoint`` does NOT
+            // check.
+            //
+            // ``isValidNewWaypoint`` validates the *order* (build type present, a
+            // builder in range, waypoint well formed); it does not ask whether the
+            // target tile is a legal place for the thing being built. The engine
+            // therefore accepts a ``seaFactory`` on dry sand, reports success, and
+            // then silently drops it when the build finally executes -- producing
+            // **no entity at all**.
+            //
+            // <p>Measured on {@code [p2]Lake (2p)} (``.runtime/q7b_seafactory_land.json``,
+            // ``.runtime/terrain_gate.json``):
+            // <pre>
+            //   (1080,2340) landFactory  -> built, complete tick 1371
+            //   (1080,2340) seaFactory   -> accepted=true, 9000 ticks, NO ENTITY
+            // </pre>
+            // Same pad, same builder, so the pad and the walk were never the obstacle.
+            // A false "accepted" is worse than a rejection: the policy is told its
+            // action succeeded, pays no ``invalid_penalty``, and can never learn that a
+            // shipyard needs water.
+            //
+            // <p>{@code Building.getPlacementError} is the engine's **own**
+            // authoritative placement test -- it is what the game itself runs before it
+            // lets a building exist. It already special-cases exactly this situation:
+            //
+            // <pre>
+            //   if (var1 != UnitType.seaFactory && var2 != MovementType.WATER) { ... }
+            //   else { return !isBlocked(costsWater, tx, ty) ? null : "{3}"; }
+            // </pre>
+            //
+            // <p>Re-deriving that rule in the bridge would be a second copy of engine
+            // logic that drifts; calling it means the acceptance test and the game's own
+            // rule are the same statement. An earlier attempt used
+            // ``GameUtils.isBlockedForMovementType`` with the built type's own
+            // ``MovementType`` and had no effect, because a *building* reports
+            // ``MovementType.NONE`` -- which is why the guard needs the engine's
+            // placement-specific predicate rather than the generic movement one.
+            //
+            // <p>Only a non-null error blocks the order. A null means the tile is
+            // legal, so every previously-accepted build behaves exactly as before; this
+            // gate can only turn a silent no-op into an honest rejection.
+            MovementType placementMovement;
+            try {
+                // The *built type's* movement type, not the builder's: the question is
+                // "may a structure of this kind stand here", and the engine's rule keys
+                // off exactly this value (``MovementType.WATER`` forces the water
+                // branch). A building reports ``NONE``, which the engine treats as the
+                // ordinary land path -- that is correct and expected.
+                placementMovement = unitType.getMovementType();
+            } catch (RuntimeException ignored) {
+                placementMovement = MovementType.NONE;
+            }
+            try {
+                // Convert world pixels to a tile index with the engine's *own*
+                // conversion rather than arithmetic of my own. ``pixelToTileCoords``
+                // writes into ``Map.fogRevealTileX/Y`` and uses
+                // ``(int)(pixel * inverseTileWidth)``, so it truncates exactly the way
+                // the placement test expects; floor-dividing by ``tileWidth`` would
+                // disagree by one tile on negative or non-integral edges and turn a
+                // legal build into a spurious rejection.
+                engine.map.pixelToTileCoords(x, y);
+                int tileX = engine.map.fogRevealTileX;
+                int tileY = engine.map.fogRevealTileY;
+                java.lang.String placementError =
+                        com.corrodinggames.rts.game.units.buildings.Building.getPlacementError(
+                                unit, unitType, placementMovement,
+                                tileX, tileY, true, engine.playerTeam);
+                if (placementError != null) {
+                    debugBuild(unit.id,
+                            "placement illegal at (" + (int) x + "," + (int) y
+                                    + "): " + placementError,
+                            unitTypeName);
+                    continue;
+                }
+            } catch (RuntimeException ignored) {
+                // Unqueryable placement (older engine): fall through to the dispatch
+                // path rather than rejecting every build on a missing API.
+            }
             CommandControllerCommand command =
                     engine.commandController.createCommandForTeam(engine.playerTeam);
             command.addUnit(unit);
@@ -2425,7 +3771,7 @@ public final class IronZeroBridge implements ServerExtension {
             if (unit.team == null || unit.team.teamId != engine.playerTeam.teamId) {
                 continue;
             }
-            if (!unit.placeOnlyOnResPool()) {
+            if (!placeOnlyOnResPool(unit)) {
                 continue;
             }
             double dx = unit.x - slot[0];
@@ -2483,6 +3829,36 @@ public final class IronZeroBridge implements ServerExtension {
         }
         out.append(']');
         return out.toString();
+    }
+
+    /**
+     * Whether this unit's *type* can only be placed on a resource pool.
+     *
+     * <p><b>This is a type-level question, and asking the instance was the bug.</b>
+     * {@code Unit.placeOnlyOnResPool()} returns a hard-coded {@code false}
+     * ({@code Unit.java:1922}) and **no stock subclass overrides it** -- not
+     * {@code Extractor}, not any building. The truth lives on the unit *type*:
+     * {@code UnitType$1.placeOnlyOnResPool()} returns {@code true} for the extractor,
+     * and {@code UnitType.placeOnlyOnResPool()} returns {@code false} for everything
+     * else.
+     *
+     * <p>The consequences of asking the instance were visible for a whole training
+     * campaign. Every caller used it to decide "is this building an extractor", so
+     * <b>every resource pool in every observation reported {@code occupied: false}</b>
+     * and {@code extractor_level: 0} even while an extractor stood on it. Measured on
+     * {@code [p2]Lake (2p)}: an extractor at (1170, 2050) sat directly on slot 0 while
+     * slot 0 reported {@code occupied=false, extractor_level=0}
+     * ({@code .runtime/raw_entity.json}). The Python encoder counts occupied slots to
+     * build its economy feature, and {@code build_extractor} deliberately picks a
+     * *free* slot, so the policy could neither see the extractors it owned nor stop
+     * re-ordering the same pool.
+     */
+    private boolean placeOnlyOnResPool(Unit unit) {
+        try {
+            return unit.getUnitTypeInterface().placeOnlyOnResPool();
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     /**
@@ -2734,5 +4110,24 @@ public final class IronZeroBridge implements ServerExtension {
 
     private static String fmt(double value) {
         return String.format(Locale.ROOT, "%.3f", value);
+    }
+
+    /**
+     * Clamp a parsed numeric flag into its contract range, reporting the coercion.
+     *
+     * <p>Ranges live in {@code audit/加速方案_契约.md} §1 and must not drift: a
+     * silently accepted out-of-range value would make the log line disagree with
+     * the semantics the Python side documents.
+     */
+    private static int clampInt(int value, int min, int max) {
+        if (value < min) {
+            System.out.println("[ironzero] clamped " + value + " to " + min);
+            return min;
+        }
+        if (value > max) {
+            System.out.println("[ironzero] clamped " + value + " to " + max);
+            return max;
+        }
+        return value;
     }
 }
