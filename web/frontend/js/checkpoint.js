@@ -100,12 +100,40 @@ export function feCheckpointDisplayName(item, index) {
   return parts.length ? parts.join(' · ') : (item.name || rawPath);
 }
 
+/**
+ * 正在进行中的请求。同一个 checkpoint 列表只允许有一个 in-flight 请求。
+ *
+ * 为什么不能像以前那样「loading 中就直接 return」：按钮处理器是这样写的——
+ *
+ *     await loadFeCheckpoints(true);
+ *     const count = state.fe.checkpointList.length;   // ← 立刻读
+ *     toast('已刷新…共发现 ' + count + ' 个模型');
+ *
+ * 用户连点两次刷新时，第二次 `loadFeCheckpoints` 直接 return（Promise 立即
+ * resolve），处理器马上读到还是**旧的/空的**列表，于是弹出「共发现 0 个模型」——
+ * 而后端其实正常返回了 60 个。这个提示与真实状态无关，纯粹是竞态。
+ *
+ * 现在重复调用会 await 同一个 Promise，拿到的是这次请求真正的结果。
+ */
+let checkpointRequest = null;
+
 export async function loadFeCheckpoints(force) {
   const fe = state.fe;
-  if (fe.checkpointsLoading) return;
+  // 已经有请求在飞：等它，而不是假装「已完成」立刻返回。
+  if (checkpointRequest) return checkpointRequest;
   if (fe.checkpointsLoaded && !force) {
-      if (fe.checkpointList && fe.checkpointList.length > 0) return;
+    if (fe.checkpointList && fe.checkpointList.length > 0) return;
   }
+  checkpointRequest = runLoadFeCheckpoints(force);
+  try {
+    return await checkpointRequest;
+  } finally {
+    checkpointRequest = null;
+  }
+}
+
+async function runLoadFeCheckpoints(force) {
+  const fe = state.fe;
   fe.checkpointsLoading = true;
   // 先在界面上亮出「正在扫描权重目录…」。容器里冷启动一次扫描要 7-8 秒，
   // 若等请求返回再渲染，这 8 秒里下拉框和状态栏都毫无反馈，像是卡死。
