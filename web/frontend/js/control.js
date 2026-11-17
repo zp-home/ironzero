@@ -3,6 +3,7 @@
  */
 
 import { state } from './state.js';
+import { num } from './util.js';
 
 export const FE_DEFAULT_MAP_NAME = '[p2]Lake (2p)';
 
@@ -77,6 +78,44 @@ export function dashGrid(ctx, padL, padT, plotW, plotH, yMin, yMax, yFormatter) 
   }
 }
 
+/**
+ * 折线图单条曲线允许送去描点的最大点数。
+ *
+ * 画布宽度只有几百像素，超过这个数量的点在物理上画不出区别，却要为每个点
+ * 走一次 `lineTo`。实机推理的 `statSamples` 会累积到 3 万条，每 700ms 全量
+ * 描点（外加逐点建对象）是沙盘卡顿的次要来源之一。
+ */
+export const DASH_MAX_POINTS = 480;
+
+/**
+ * 把点集等间隔抽稀到 ``maxPoints`` 以内（保留最后一个点，让曲线右端如实）。
+ *
+ * 抽稀而不是「取前 N 个」：图表横轴是时间，只取头部会丢掉最新数据。
+ * 输入已就绪（数组），不修改入参。
+ */
+export function thinPoints(points, maxPoints) {
+  const list = Array.isArray(points) ? points : [];
+  const cap = Math.max(2, Math.floor(num(maxPoints, DASH_MAX_POINTS)));
+  if (list.length <= cap) return list;
+  const step = (list.length - 1) / (cap - 1);
+  const out = [];
+  for (let index = 0; index < cap; index += 1) {
+    out.push(list[Math.round(index * step)]);
+  }
+  // 浮点步长可能让最后一个索引落在倒数第二点，显式补上最新点。
+  const last = list[list.length - 1];
+  if (out[out.length - 1] !== last) out[out.length - 1] = last;
+  return out;
+}
+
+/**
+ * 折线图。
+ *
+ * 性能约定（见 ``DASH_MAX_POINTS``）：每条曲线描点前先抽稀，且**不做逐帧排序**。
+ * 原先这里对 `item.points` 做 `slice().sort()`，而所有调用方传的都是按横轴
+ * 递增构造的数组 —— 每 700ms 对 3 万个点做一次多余的全量排序，纯属浪费。
+ * 需要乱序横轴时，调用方应显式传 ``sortPoints: true``。
+ */
 export function drawDashLine(canvas, config) {
   const setup = dashSetup(canvas);
   if (!setup) return;
@@ -90,6 +129,11 @@ export function drawDashLine(canvas, config) {
     dashEmpty(ctx, width, height, cfg.emptyText);
     return;
   }
+  // Prepare each series once: optional sort, then downsample to what can be seen.
+  const prepared = series.map((item) => {
+    const raw = cfg.sortPoints ? item.points.slice().sort((left, right) => left.x - right.x) : item.points;
+    return { item: item, points: thinPoints(raw, cfg.maxPoints) };
+  });
   const padL = 42;
   const padR = 8;
   const padT = 8;
@@ -100,8 +144,10 @@ export function drawDashLine(canvas, config) {
   let xMax = -Infinity;
   let yMin = Infinity;
   let yMax = -Infinity;
-  for (const item of series) {
-    for (const point of item.points) {
+  // Bounds come from the thinned points: they already span the same x range
+  // (first and last are preserved), so this is the same frame with less work.
+  for (const entry of prepared) {
+    for (const point of entry.points) {
       if (!isFinite(point.x) || !isFinite(point.y)) continue;
       xMin = Math.min(xMin, point.x);
       xMax = Math.max(xMax, point.x);
@@ -139,8 +185,9 @@ export function drawDashLine(canvas, config) {
   ctx.strokeStyle = 'rgba(56, 225, 255, 0.16)';
   ctx.lineWidth = 1;
   ctx.strokeRect(padL, padT, plotW, plotH);
-  for (const item of series) {
-    const points = item.points.slice().sort((left, right) => left.x - right.x);
+  for (const entry of prepared) {
+    const item = entry.item;
+    const points = entry.points;
     ctx.save();
     ctx.strokeStyle = item.color || DASH_COLORS.cyan;
     ctx.lineWidth = 1.7;

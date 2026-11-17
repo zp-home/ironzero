@@ -2,12 +2,29 @@
  * feInferUi.js — 指挥中心大屏 · 实机推理展示层：FPS、图表、任务卡、KPI、状态灯。
  */
 
-import { DASH_COLORS, drawDashBars, drawDashLine, feSetStatusPill, feSetText } from './control.js';
+import { DASH_COLORS, drawDashBars, drawDashLine, feSetStatusPill, feSetText, thinPoints } from './control.js';
 import { toast } from './dashboard.js';
 import { feWatchTask, feWatchTaskObject } from './feInfer.js';
 import { resultMeta } from './normalize.js';
 import { els, state } from './state.js';
 import { num, numOrNull } from './util.js';
+
+/**
+ * 图表重绘的最小间隔（毫秒）。
+ *
+ * 推理轮询是 700ms 一次，而每张图都要清屏重画。人眼在这么大的横向压缩比下
+ * 分辨不出 1.4Hz 和 2Hz 的差别，但画布开销是实打实的，所以把图表限制在
+ * 约 1Hz —— 只有在数据确实变了的时候才重画。
+ */
+export const FE_CHARTS_MIN_INTERVAL_MS = 1000;
+
+export function feChartsDue(force) {
+  const fe = state.fe;
+  const now = Date.now();
+  if (!force && now - (fe.chartsAt || 0) < FE_CHARTS_MIN_INTERVAL_MS) return false;
+  fe.chartsAt = now;
+  return true;
+}
 
 export function feUpdateFps() {
   const fe = state.fe;
@@ -27,7 +44,8 @@ export function feUpdateFps() {
   }
 }
 
-export function feDrawInferCharts() {
+export function feDrawInferCharts(force) {
+  if (!feChartsDue(force)) return;
   const fe = state.fe;
   const watch = feWatchTaskObject();
   const fpsSeries = fe.fpsSeries || [];
@@ -53,10 +71,13 @@ export function feDrawInferCharts() {
   }
   const samples = watch && watch.statSamples ? watch.statSamples : [];
   if (samples.length) {
+    // Sample *first*, then thin: building 30 000 point objects per redraw cost
+    // more than the drawing itself, and ThinPoints drops all but ~480 anyway.
+    const thinned = thinPoints(samples);
     drawDashLine(els.feChartHp, {
       series: [
-        { label: 'own', color: DASH_COLORS.own, points: samples.map((point) => ({ x: point.tick, y: point.ownHp })) },
-        { label: 'enemy', color: DASH_COLORS.enemy, points: samples.map((point) => ({ x: point.tick, y: point.enemyHp })) },
+        { label: 'own', color: DASH_COLORS.own, points: thinned.map((point) => ({ x: point.tick, y: point.ownHp })) },
+        { label: 'enemy', color: DASH_COLORS.enemy, points: thinned.map((point) => ({ x: point.tick, y: point.enemyHp })) },
       ],
       yMin: 0,
       yMax: 100,
@@ -66,13 +87,13 @@ export function feDrawInferCharts() {
     });
     const maxAlive = Math.max(
       4,
-      ...samples.map((point) => point.ownAlive + point.enemyAlive),
-      ...samples.map((point) => Math.max(point.ownAlive, point.enemyAlive))
+      ...thinned.map((point) => point.ownAlive + point.enemyAlive),
+      ...thinned.map((point) => Math.max(point.ownAlive, point.enemyAlive))
     );
     drawDashLine(els.feChartAlive, {
       series: [
-        { label: 'own', color: DASH_COLORS.own, points: samples.map((point) => ({ x: point.tick, y: point.ownAlive })) },
-        { label: 'enemy', color: DASH_COLORS.enemy, points: samples.map((point) => ({ x: point.tick, y: point.enemyAlive })) },
+        { label: 'own', color: DASH_COLORS.own, points: thinned.map((point) => ({ x: point.tick, y: point.ownAlive })) },
+        { label: 'enemy', color: DASH_COLORS.enemy, points: thinned.map((point) => ({ x: point.tick, y: point.enemyAlive })) },
       ],
       yMin: 0,
       yMax: maxAlive + 1,
@@ -219,10 +240,12 @@ export function feRenderInferKpis() {
   feSetText(els.feSlotsRunning, state.rwpp.hostRunning);
 }
 
-export function feRenderInferDashboard() {
+export function feRenderInferDashboard(forceCharts) {
   feRenderInferKpis();
   feRenderTaskCards();
-  feDrawInferCharts();
+  // Charts are throttled to ~1 Hz: this runs on every 700 ms poll but the
+  // plotted window is 60 s wide, so redrawing faster only burns canvas time.
+  feDrawInferCharts(forceCharts);
 }
 
 export function feUpdateSlots() {

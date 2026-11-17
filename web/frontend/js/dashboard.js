@@ -45,7 +45,7 @@ export function switchTab(name) {
     refreshRwppStatus();
     loadReplays();
     void loadFeCheckpoints(true);
-    feRenderInferDashboard();
+    feRenderInferDashboard(true);
     void feRestoreInferJobs();
   } else {
     refreshRwppStatus(true);

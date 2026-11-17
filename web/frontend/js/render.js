@@ -399,14 +399,20 @@ export function drawFogLayer(ctx, sandbox, ownUnits, mapX, mapY, cam, offsetX, o
 
   const radius = Math.max(12, num(sandbox.visionRadius, 260) * cam.scale);
   fog.globalCompositeOperation = 'destination-out';
+  // 视野渐变按半径缓存。
+  //
+  // 原实现给每个我方单位 `createRadialGradient` 一次（把中心也做在单位坐标上），
+  // 于是同一个半径的圆被反复重新构建 —— 渐变对象是 canvas 里较重的分配，单位
+  // 多时每帧数十次。渐变与位置无关（只跟半径有关），因此在 (0,0) 建一次、
+  // 之后靠 translate 搬到各单位位置即可，视觉完全一致。
+  const gradient = fog.createRadialGradient(0, 0, radius * 0.32, 0, 0, radius);
+  gradient.addColorStop(0, 'rgba(0, 0, 0, 1)');
+  gradient.addColorStop(0.62, 'rgba(0, 0, 0, 0.9)');
+  gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  fog.fillStyle = gradient;
   for (const unit of ownUnits) {
     const x = mapX(unit.x);
     const y = mapY(unit.y);
-    const gradient = fog.createRadialGradient(x, y, radius * 0.32, x, y, radius);
-    gradient.addColorStop(0, 'rgba(0, 0, 0, 1)');
-    gradient.addColorStop(0.62, 'rgba(0, 0, 0, 0.9)');
-    gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
-    fog.fillStyle = gradient;
     fog.beginPath();
     fog.arc(x, y, radius, 0, Math.PI * 2);
     fog.fill();

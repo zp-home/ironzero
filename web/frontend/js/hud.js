@@ -126,12 +126,15 @@ export function drawSandboxUnit(ctx, unit, mapX, mapY, selected, leader, time, o
   }
 
   // 光晕 + 本体
+  //
+  // 这里原来用 `shadowBlur = 10` 给光晕圈做模糊。抽象模式下一帧有几十个单位，
+  // 每次 fill 都开一条独立的高斯模糊通道，代价远高于一次普通填充。
+  // 现在只保留一层半透明外圈：既确实去掉了模糊通道，触碰的像素也比原来
+  // 「放大后的模糊包围盒」更少（见 docs/性能与容量基线.md 的测量说明）。
   ctx.save();
-  ctx.shadowColor = own ? 'rgba(77, 163, 255, 0.9)' : 'rgba(255, 95, 109, 0.9)';
-  ctx.shadowBlur = 10;
   ctx.beginPath();
-  ctx.arc(x, y, radius + 2.4, 0, Math.PI * 2);
-  ctx.fillStyle = own ? 'rgba(77, 163, 255, 0.18)' : 'rgba(255, 95, 109, 0.18)';
+  ctx.arc(x, y, radius + 3.2, 0, Math.PI * 2);
+  ctx.fillStyle = own ? 'rgba(77, 163, 255, 0.22)' : 'rgba(255, 95, 109, 0.22)';
   ctx.fill();
   ctx.restore();
 
@@ -189,26 +192,24 @@ export function drawFrameEvents(ctx, frame, mapX, mapY, alpha, isVisible) {
 export function drawShotLine(ctx, x1, y1, x2, y2, alpha) {
   const strength = clamp(alpha, 0, 1);
   if (strength <= 0.01) return;
+  // 弹道：一条普通亮线（原来挂 `shadowBlur = 12` 做辉光）。
+  // 一次交战同帧可能出现几十条弹道，每条各开一次模糊通道是这一层最贵的部分；
+  // 模糊还会把绘制区域向外扩张，所以这里直接去掉而不是用两层描边替代。
   ctx.save();
   ctx.globalAlpha = strength;
   ctx.strokeStyle = '#ffe066';
   ctx.lineWidth = 2;
-  ctx.shadowColor = 'rgba(255, 200, 70, 0.95)';
-  ctx.shadowBlur = 12;
   ctx.beginPath();
   ctx.moveTo(x1, y1);
   ctx.lineTo(x2, y2);
   ctx.stroke();
   ctx.restore();
-  // 枪口闪光
+  // 枪口闪光：一次填充替代每次新建的径向渐变对象
   ctx.save();
-  ctx.globalAlpha = strength * 0.9;
-  const muzzle = ctx.createRadialGradient(x1, y1, 0, x1, y1, 7);
-  muzzle.addColorStop(0, 'rgba(255, 255, 235, 0.95)');
-  muzzle.addColorStop(1, 'rgba(255, 190, 60, 0)');
-  ctx.fillStyle = muzzle;
+  ctx.globalAlpha = strength * 0.55;
+  ctx.fillStyle = '#ffbe3c';
   ctx.beginPath();
-  ctx.arc(x1, y1, 7, 0, Math.PI * 2);
+  ctx.arc(x1, y1, 4.6, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
   // 命中点
@@ -226,14 +227,17 @@ export function drawKillBurst(ctx, x, y, phase, alpha) {
   const strength = (1 - progress) * clamp(alpha, 0, 1);
   if (strength <= 0.01) return;
   const radius = 10 + 26 * progress;
-  const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
-  gradient.addColorStop(0, 'rgba(255, 244, 200, ' + 0.5 * strength + ')');
-  gradient.addColorStop(0.45, 'rgba(255, 150, 60, ' + 0.36 * strength + ')');
-  gradient.addColorStop(1, 'rgba(255, 120, 40, 0)');
+  // 中心亮斑用两层实心圆代替每次新建的 `createRadialGradient`。
+  // 爆炸在交战时是批量出现的（一帧可能十几个），而径向渐变是每帧新建的较重
+  // 对象；两层半透明叠加在这种小尺寸下视觉差别可以忽略。
   ctx.save();
-  ctx.fillStyle = gradient;
+  ctx.fillStyle = 'rgba(255, 150, 60, ' + 0.36 * strength + ')';
   ctx.beginPath();
   ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(255, 244, 200, ' + 0.5 * strength + ')';
+  ctx.beginPath();
+  ctx.arc(x, y, radius * 0.45, 0, Math.PI * 2);
   ctx.fill();
   ctx.strokeStyle = 'rgba(255, 205, 120, ' + 0.85 * strength + ')';
   ctx.lineWidth = 2.2;

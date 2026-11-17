@@ -133,6 +133,12 @@ export async function ensureUnitSprites() {
   return true;
 }
 
+/**
+ * 单位朝向缓存：id -> {heading, turret}。
+ *
+ * 朝向是「贴图怎么转」的纯显示状态，与帧数据同生命周期，因此单独缓存而不写进
+ * 帧里（帧是后端下发的只读数据）。
+ */
 export function updateUnitAngles(frame, previousFrame) {
   const previous = new Map();
   if (previousFrame) {
@@ -140,30 +146,60 @@ export function updateUnitAngles(frame, previousFrame) {
   }
   const positions = new Map();
   for (const unit of frame.units) positions.set(unit.id, unit);
+  // 敌我位置按阵营分桶，只建一次。
+  //
+  // 原来「没有 target」的分支要在整个 frame.units 上逐个算距离找最近敌人，
+  // 而实测真实对局里 **100% 的单位都没有 target**（target 字段当前恒为
+  // null），等于每帧固定做 n² 次 hypot：25v25 的 149 个单位一帧就是 2.2 万次。
+  // 分桶后同一帧内所有单位共享这份坐标表，不再重复遍历。
+  const byTeam = new Map();
+  for (const unit of frame.units) {
+    let bucket = byTeam.get(unit.team);
+    if (!bucket) {
+      bucket = [];
+      byTeam.set(unit.team, bucket);
+    }
+    bucket.push(unit);
+  }
   for (const unit of frame.units) {
     const record = unitAngleCache.get(unit.id) || { heading: -Math.PI / 2, turret: -Math.PI / 2 };
     const before = previous.get(unit.id);
     if (before) {
       const dx = unit.x - before.x;
       const dy = unit.y - before.y;
-      if (Math.hypot(dx, dy) > 0.6) record.heading = Math.atan2(dy, dx);
+      // 平方比较替代 hypot：省掉每次开方，阈值仍是 0.6px。
+      if (dx * dx + dy * dy > 0.36) record.heading = Math.atan2(dy, dx);
     }
     let target = null;
     if (unit.target !== null && unit.target !== undefined) target = positions.get(unit.target) || null;
-    if (!target) {
-      let bestDistance = Infinity;
-      for (const item of frame.units) {
-        if (item.team === unit.team) continue;
-        const distance = Math.hypot(item.x - unit.x, item.y - unit.y);
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          target = item;
-        }
-      }
-    }
+    if (!target) target = nearestEnemy(unit, byTeam);
     if (target) record.turret = Math.atan2(target.y - unit.y, target.x - unit.x);
     unitAngleCache.set(unit.id, record);
   }
+}
+
+/**
+ * 敌方阵营里离 ``unit`` 最近的单位（无则 null）。
+ *
+ * 遍历的是各敌方阵营的桶而不是全体单位，跳过同阵营的无效比较；比较用平方
+ * 距离，只在最后对最优解算一次角度，避免每对都开方。
+ */
+function nearestEnemy(unit, byTeam) {
+  let best = null;
+  let bestSq = Infinity;
+  for (const [team, bucket] of byTeam) {
+    if (team === unit.team) continue;
+    for (const item of bucket) {
+      const dx = item.x - unit.x;
+      const dy = item.y - unit.y;
+      const sq = dx * dx + dy * dy;
+      if (sq < bestSq) {
+        bestSq = sq;
+        best = item;
+      }
+    }
+  }
+  return best;
 }
 
 /** 清单缺失时按契约 1 节的 fallback 尺寸兜底（只用于矢量保底的几何大小） */
@@ -245,7 +281,15 @@ export function drawSandboxSpriteUnit(ctx, unit, x, y, selected, leader, time, o
   const drawH = size.drawH;
   const minSpan = Math.min(drawW, drawH);
 
-  // 阵营底盘指示（建筑圆形矩形，移动单位椭圆）
+  // 阵营底盘指示（建筑矩形，移动单位椭圆）
+  //
+  // 原来这里给每次 stroke 挂 `shadowBlur`（最大 18px）来做辉光。canvas 的阴影是
+  // 一条独立的高斯模糊通道，成本按「每个单位每帧一次」累加：25v25 地图单帧可达
+  // 149 个单位，也就是一帧 149 次模糊，且模糊要把绘制区域按 blur 半径向外扩张，
+  // 在放大视角下触碰的像素远多于描边本身。
+  //
+  // 现在只用一笔普通描边（略微提高不透明度来保持可读性）：确实去掉了模糊通道，
+  // 也没有引入「两层描边」这种在 zoom>1.35 时反而更费像素的写法。
   ctx.save();
   ctx.beginPath();
   if (isBuilding) {
@@ -255,10 +299,8 @@ export function drawSandboxSpriteUnit(ctx, unit, x, y, selected, leader, time, o
   } else {
     ctx.ellipse(x, y + drawH * 0.18, Math.max(4, drawW * 0.42), Math.max(3, drawH * 0.24), 0, 0, Math.PI * 2);
   }
-  ctx.strokeStyle = own ? 'rgba(63, 169, 255, 0.9)' : 'rgba(255, 90, 90, 0.9)';
-  ctx.lineWidth = Math.max(1, minSpan * 0.06);
-  ctx.shadowColor = color;
-  ctx.shadowBlur = Math.min(18, Math.max(4, minSpan * 0.3));
+  ctx.strokeStyle = own ? 'rgba(63, 169, 255, 0.95)' : 'rgba(255, 90, 90, 0.95)';
+  ctx.lineWidth = Math.max(1, minSpan * 0.07);
   ctx.stroke();
   ctx.restore();
 
