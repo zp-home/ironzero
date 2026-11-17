@@ -24,6 +24,21 @@ export function feRunningInferTasks() {
   return (state.fe.inferTasks || []).filter((task) => task.status === 'running');
 }
 
+/**
+ * 实机跟随单次轮询的帧数上限。
+ *
+ * 传 0 = 由后端按「500 条 / 1.5MB 先到者」决定块大小。这既让单次响应的解
+ * 析量和体积不随对局时长增长，又保留了追赶能力：本轮没取完，`next` 游标会
+ * 停在中间，下一轮接着取，直到追上最新帧。
+ *
+ * 不能用「省略 limit」——那是回放加载的全量语义；也不能写死一个大数——25v25
+ * 地图单帧可达 14KB，1000 帧就是 14MB，一次轮询足以卡住主线程。
+ */
+export const FE_FOLLOW_FRAME_LIMIT = 0;
+
+/** 分页载入整局时的页数上限（按后端 500 条/页算，足以覆盖 25 万帧）。 */
+export const FE_LOAD_MAX_PAGES = 600;
+
 export function feNewInferTask(jobId, index, extra) {
   return Object.assign(
     {
@@ -174,13 +189,20 @@ export function feHandleTaskError(task, error) {
 
 export async function feFetchTaskFrames(task) {
   if (!task || task.status === 'failed' || task.status === 'done') return;
-  const payload = await Api.rwppInferFrames(task.jobId, task.fetchCursor || 0);
+  // Bounded follow: the cursor is absolute, so a capped window just means the
+  // next poll continues where this one stopped. Unbounded would re-download and
+  // re-parse the whole backlog every 700 ms, which is the symptom this fixes.
+  const payload = await Api.rwppInferFrames(task.jobId, task.fetchCursor || 0, FE_FOLLOW_FRAME_LIMIT);
   if (!payload) return;
   const items = Array.isArray(payload.frames) ? payload.frames : [];
   const next = payload.next;
   if (items.length) {
     task.fetchCursor = numOrNull(next) !== null ? num(next, task.fetchCursor + items.length) : task.fetchCursor + items.length;
     feIngestTaskFrames(task, items);
+  } else if (numOrNull(next) !== null) {
+    // No frames this round: still adopt the server's cursor so a stale/rewound
+    // local counter cannot make the next poll re-read records already played.
+    task.fetchCursor = Math.max(task.fetchCursor, num(next, task.fetchCursor));
   }
   const job = payload.job || {};
   if (numOrNull(job.seconds) !== null) task.seconds = num(job.seconds, task.seconds);
@@ -270,17 +292,38 @@ export function feApplyWatchTask(jobId, options) {
   updatePlayerUi(true);
   drawSandbox();
   feRenderTaskCards();
-  feDrawInferCharts();
+  feDrawInferCharts(true);
 }
 
+/**
+ * 把一个已完成实例的整条帧流一次载入内存（还原/切换观战实例时用）。
+ *
+ * 「一次载入全部」的语义必须保留：沙盘的进度条、跳转和事件日志都假定
+ * `task.frames` 是完整的一局。区别只在于**分页取**：每页走有界窗口，循环
+ * 直到 `next` 不再前进。这样单次响应不会是一整个 154MB 的 JSON，避免主线程
+ * 在一次 `JSON.parse` 上卡住数秒。
+ */
 export async function feLoadTaskFramesOnce(task) {
   if (!task || task.frames.length) return;
   try {
-    const payload = await Api.rwppInferFrames(task.jobId, 0);
-    if (payload && Array.isArray(payload.frames) && payload.frames.length) {
-      task.fetchCursor = numOrNull(payload.next) !== null ? num(payload.next, payload.frames.length) : payload.frames.length;
-      feIngestTaskFrames(task, payload.frames);
-      if (payload.job && numOrNull(payload.job.seconds) !== null) task.seconds = num(payload.job.seconds, task.seconds);
+    for (let page = 0; page < FE_LOAD_MAX_PAGES; page += 1) {
+      const payload = await Api.rwppInferFrames(
+        task.jobId,
+        task.fetchCursor || 0,
+        FE_FOLLOW_FRAME_LIMIT
+      );
+      if (!payload) return;
+      const items = Array.isArray(payload.frames) ? payload.frames : [];
+      if (payload.job && numOrNull(payload.job.seconds) !== null) {
+        task.seconds = num(payload.job.seconds, task.seconds);
+      }
+      if (!items.length) break;
+      const before = task.fetchCursor;
+      task.fetchCursor = numOrNull(payload.next) !== null
+        ? num(payload.next, task.fetchCursor + items.length)
+        : task.fetchCursor + items.length;
+      feIngestTaskFrames(task, items);
+      if (task.fetchCursor <= before) break; // cursor stuck: stop instead of looping
     }
   } catch (error) {
     // ignore restore-less frame loads

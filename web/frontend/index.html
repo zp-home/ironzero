@@ -129,7 +129,7 @@
                       <option value="full">全场</option>
                     </select>
                   </label>
-                  <span class="mini-field" title="视觉迷雾（仅渲染）：训练侧 PPO 默认开启 260px 观测迷雾；推理是脚本策略全视野，此开关只影响观看渲染">
+                  <span class="mini-field" title="视觉迷雾（仅渲染）：此开关只影响观看渲染，不改变策略能看到什么。训练侧的观测迷雾在实机训练页 PPO 表单里设置（默认关闭）。">
                     <span>视觉迷雾（仅渲染）</span>
                     <button class="toggle-btn" type="button" id="fog-toggle" aria-pressed="false" disabled>关</button>
                   </span>
@@ -353,14 +353,32 @@
                       <option value="10">10 路</option>
                     </select>
                   </label>
+                  <label class="field field-wide">
+                    <span>仿真速度 frame_ms</span>
+                    <select id="fe-frame-ms">
+                      <option value="0" selected>不限速（0ms，约 26× · 推荐）</option>
+                      <option value="1">极速（1ms，约 10×）</option>
+                      <option value="2">快速（2ms，约 6.5×）</option>
+                      <option value="16">真实时间（16ms，1×）</option>
+                    </select>
+                  </label>
+                  <label class="field field-wide">
+                    <span>引擎快进 fast_forward（改保真）</span>
+                    <select id="fe-fast-forward">
+                      <option value="1" selected>1×（默认 · 原速）</option>
+                      <option value="2">2×（每 tick 推进 2 倍游戏时间）</option>
+                      <option value="4">4×（每 tick 推进 4 倍游戏时间）</option>
+                    </select>
+                  </label>
                   <button class="btn btn-primary field-wide" type="button" id="fe-start-btn">开始实机推理</button>
                   <button class="btn btn-danger field-wide" type="button" id="fe-infer-stop" hidden>停止推理</button>
                 </div>
                 <div class="hint-line" id="fe-infer-status">空闲：选择地图、时长与并发后开始</div>
                 <div class="hint-line subtle">每个并发实例是一个独立无头游戏进程，各自串行推进 tick；并发 = 多开进程。服务端槽位见 KPI 卡。</div>
                 <div class="hint-line subtle">当前推理 = 脚本 AI 规则（非模型）；模型推理在「实机训练」页 PPO 训练后接入。</div>
-                <div class="hint-line subtle">选择「PPO 模型」时会加载 checkpoint 在真机推理；frame_ms 只影响墙钟速度（模型推理建议真实速度 16ms），每局仿真时长由「每局 tick」决定（60 tick ≈ 1 秒；3600 tick ≈ 1 分钟；216000 tick ≈ 1 小时，引擎判出胜负会提前结束）。</div>
-                <div class="hint-line subtle">视觉迷雾仅影响观看渲染；训练侧「观测迷雾 260px」可在实机训练页 PPO 表单里调整。</div>
+                <div class="hint-line subtle">选择「PPO 模型」时会加载 checkpoint 在真机推理。frame_ms 只影响墙钟节奏（引擎步长由 physics_ms=16 钉死，仿真内容不变）：0ms 约 26×、1ms 约 10×、2ms 约 6.5×、16ms = 真实时间 1×。每局仿真时长由「每局 tick」决定（60 tick ≈ 1 秒；3600 tick ≈ 1 分钟；216000 tick ≈ 1 小时，引擎判出胜负会提前结束）。</div>
+                <div class="hint-line subtle">引擎快进 fast_forward 用游戏自带 gameSpeed：每 tick 推进 N 倍游戏时间，一局所需 tick 同比减少（改保真，决策粒度变粗），默认 1× 关闭。它与 frame_ms 叠加：实测「分出胜负所需墙钟」在 fast_forward=2 时再降约 1.8×。</div>
+                <div class="hint-line subtle">视觉迷雾仅影响观看渲染；训练侧的「观测迷雾半径」在实机训练页 PPO 表单里设置（默认 0 = 关闭，与 BC 预热权重的训练条件一致）。</div>
               </section>
 
               <section class="card fe-slots-card">
@@ -494,8 +512,11 @@
                 </div>
                 <div class="form-grid">
                   <label class="field field-wide">
-                    <span>地图</span>
-                    <select id="fe-train-map"><option value="">加载中…</option></select>
+                    <span>地图（九张原版 2p 图 · 尺寸取自 /maps）</span>
+                    <!-- Same nine maps as the PPO form. Populated from
+                         GET /maps by feMapCatalog.js; a static option keeps the
+                         select usable if that request is still in flight. -->
+                    <select id="fe-train-map"><option value="Lake" selected>Lake</option></select>
                   </label>
                   <label class="field field-wide">
                     <span>策略驱动</span>
@@ -672,13 +693,30 @@
                   <!-- 地图与场景配置 -->
                   <label class="field field-wide">
                     <span>训练场景 / 对战地图</span>
+                    <!-- 这份静态列表是 GET /maps 的九张原版 2p 地图（含 Lake 默认），
+                         顺序与像素尺寸和宿主服务注册表一致。feMapCatalog.js 拉到
+                         目录后会用同一个来源重建它；静态内容只在目录请求失败时
+                         兜底，所以两处不会互相矛盾。 -->
                     <select id="fe-ppo-map">
-                      <option value="IronZero25" selected>IronZero25（25v25 对称竞技场 · 纯坦克 · 推荐）</option>
-                      <option value="IronZero20">IronZero20（20v20 对称竞技场 · 纯坦克）</option>
-                      <option value="IronZero15">IronZero15（15v15 对称竞技场 · 纯坦克）</option>
-                      <option value="IronZero10">IronZero10（10v10 对称竞技场 · 纯坦克 · 快速验证）</option>
-                      <option value="IronZero5">IronZero5（5v5 对称竞技场 · 纯坦克 · 极速验证）</option>
-                      <option value="Artillery">Artillery（原版战役挑战图 · 22v25 带工厂建筑）</option>
+                      <option value="Beach landing">Beach landing · 4000×3200</option>
+                      <option value="Big Island">Big Island · 3600×3600</option>
+                      <option value="Dire Straight">Dire Straight · 2200×2200</option>
+                      <option value="Fire Bridge">Fire Bridge · 2400×2400</option>
+                      <option value="Hills">Hills · 2600×2600</option>
+                      <option value="Ice Island">Ice Island · 2900×2900</option>
+                      <option value="Lake" selected>Lake · 2600×2600（默认 · 已实测最多）</option>
+                      <option value="Small Island">Small Island · 2200×2200</option>
+                      <option value="Two cold sides">Two cold sides · 2700×2500</option>
+                      <optgroup label="对称竞技场（纯坦克训练）">
+                        <option value="IronZero25">IronZero25（25v25 对称竞技场）</option>
+                        <option value="IronZero20">IronZero20（20v20 对称竞技场）</option>
+                        <option value="IronZero15">IronZero15（15v15 对称竞技场）</option>
+                        <option value="IronZero10">IronZero10（10v10 对称竞技场）</option>
+                        <option value="IronZero5">IronZero5（5v5 对称竞技场）</option>
+                      </optgroup>
+                      <optgroup label="其他原版图">
+                        <option value="Artillery">Artillery（原版战役挑战图 · 22v25 带工厂建筑）</option>
+                      </optgroup>
                     </select>
                   </label>
                   <label class="field field-wide" id="fe-ppo-units-field">
@@ -728,18 +766,27 @@
                   </label>
                   <label class="field">
                     <span>每局 tick（60≈1s · 216000≈1h）</span>
-                    <input id="fe-ppo-ticks" type="number" min="120" max="216000" step="60" value="4800" />
+                    <input id="fe-ppo-ticks" type="number" min="120" max="216000" step="60" value="0" />
                   </label>
                   <label class="field field-wide">
                     <span>仿真速度 frame_ms</span>
                     <select id="fe-ppo-frame-ms">
-                      <option value="1" selected>极速（1ms，约 16× · 推荐）</option>
-                      <option value="2">快速（2ms，约 8×）</option>
+                      <option value="0" selected>不限速（0ms，约 26× · 推荐）</option>
+                      <option value="1">极速（1ms，约 10×）</option>
+                      <option value="2">快速（2ms，约 6.5×）</option>
                       <option value="16">真实时间（16ms，1×）</option>
                     </select>
                   </label>
                   <label class="field field-wide">
-                    <span>观测迷雾半径（px）</span>
+                    <span>引擎快进 fast_forward（改保真）</span>
+                    <select id="fe-ppo-fast-forward">
+                      <option value="1" selected>1×（默认 · 原速）</option>
+                      <option value="2">2×（每 tick 推进 2 倍游戏时间）</option>
+                      <option value="4">4×（每 tick 推进 4 倍游戏时间）</option>
+                    </select>
+                  </label>
+                  <label class="field field-wide">
+                    <span>观测迷雾半径（px · 0 = 关闭）</span>
                     <input id="fe-ppo-vision" type="number" min="0" max="2000" step="10" value="0" />
                   </label>
                   <label class="field field-wide">
@@ -749,6 +796,33 @@
                       <option value="cuda">cuda（显卡加速）</option>
                       <option value="cpu">cpu</option>
                     </select>
+                  </label>
+                  <label class="field field-wide">
+                    <span>胜负判定 win_mode</span>
+                    <select id="fe-ppo-win-mode">
+                      <option value="objective" selected>objective（原版图推荐 · 打掉对方主建筑或生产链）</option>
+                      <option value="native">native（仅依赖游戏原生结算，原版图几乎判不出）</option>
+                      <option value="annihilation">annihilation（全歼 · 竞技场场图用）</option>
+                    </select>
+                  </label>
+                  <label class="field field-wide">
+                    <span>对手难度 enemy_ai_difficulty（固定 1 = 困难 · 高于引擎默认 0）</span>
+                    <!-- 默认 1（困难，x1.40 经济）。原来默认 2，而宿主服务的 payload
+                         默认是空 → 引擎按全局 SettingsEngine.aiDifficulty 解析成
+                         0（正常，x1.00，毫无加成），于是"难度"这一栏看着有值、实
+                         际跑的是最容易的一档。0 是引擎默认值，不是"没设置"。 -->
+                    <select id="fe-ppo-enemy-ai-difficulty">
+                      <option value="-2">-2 非常简单（x0.40 经济）</option>
+                      <option value="-1">-1 简单（x0.70 经济）</option>
+                      <option value="0">0 正常（x1.00 经济 · 引擎默认）</option>
+                      <option value="1" selected>1 困难（x1.40 经济 · 推荐）</option>
+                      <option value="2">2 非常困难（x1.80 经济）</option>
+                      <option value="3">3 炼狱（x3.20 经济）</option>
+                    </select>
+                  </label>
+                  <label class="field field-wide checkbox-field">
+                    <span>解锁地图预置 AI（unlock_ai · 否则预置部队原地不动）</span>
+                    <input id="fe-ppo-unlock-ai" type="checkbox" />
                   </label>
                   <label class="field">
                     <span>评估间隔 eval_every</span>
@@ -762,10 +836,11 @@
                   <label class="field">
                     <span>评估局数 eval_episodes</span>
                     <select id="fe-ppo-eval-episodes">
-                      <option value="4" selected>4 局</option>
-                      <option value="2">2 局</option>
-                      <option value="1">1 局</option>
+                      <option value="16">16 局（可证明 &gt;70%）</option>
                       <option value="8">8 局</option>
+                      <option value="4" selected>4 局（仅供观察）</option>
+                      <option value="2">2 局</option>
+                      <option value="1">1 局（不可作结论）</option>
                     </select>
                   </label>
                   <label class="field field-wide checkbox-field">
@@ -776,8 +851,8 @@
                   <button class="btn btn-primary field-wide" type="button" id="fe-ppo-start">开始 PPO 真机训练</button>
                   <button class="btn btn-danger field-wide" type="button" id="fe-ppo-stop" hidden>停止训练</button>
                 </div>
-                <div class="hint-line" id="fe-ppo-hint">竞技场对战：采用中心对称地形与歼灭战规则（敌方全灭判胜）。仿真速度 frame_ms：1ms 极速、2ms 快速。</div>
-                <div class="hint-line subtle">默认每局 4800 tick ≈ 80 秒仿真时长；双方分出胜负会提前结束，不会盲目等待超时。</div>
+                <div class="hint-line" id="fe-ppo-hint">竞技场对战：采用中心对称地形与歼灭战规则（敌方全灭判胜）。仿真速度 frame_ms 只影响墙钟（实测 physics_ms=16 下：0ms 约 26×、1ms 约 10×、2ms 约 6.5×；16ms = 真实时间 1×），不改仿真内容。引擎快进 fast_forward 每 tick 推进 N 倍游戏时间，一局所需 tick 同比减少（改保真，默认 1× 关闭）。</div>
+                <div class="hint-line subtle">每局 tick 默认 0 = 按地图尺寸与人数推导（原版图上固定值会在引擎判出胜负前就截断）；双方分出胜负会提前结束，不会盲目等待超时。</div>
                 <div class="hint-line subtle">评估：每隔若干轮自动重置独立游戏进行真机评估并记录 Wilson 胜率置信区间。</div>
               </section>
             </aside>

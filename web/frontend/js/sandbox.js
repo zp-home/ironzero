@@ -14,6 +14,12 @@ import { loadMaps } from './terrain.js';
 import { clampInt, num, numOrNull } from './util.js';
 import { refreshTerrainView, selectMap, syncMapToggles } from './view.js';
 
+/**
+ * 模拟推理跟随时的单次取帧上限。0 = 由后端决定合适的块大小（500 条 / 1.5MB
+ * 先到者）。游标是绝对记录序号，取不完就在下一轮接着取，因此限流不影响追赶。
+ */
+export const SANDBOX_FOLLOW_FRAME_LIMIT = 0;
+
 export function applyInferStart(meta) {
   const sandbox = state.sandbox;
   if (!meta || typeof meta !== 'object') return;
@@ -246,7 +252,7 @@ export async function pollInfer() {
       if (meta.opponent) sandbox.opponent = meta.opponent;
       if (numOrNull(meta.seed) !== null) sandbox.seed = meta.seed;
     }
-    const framesResponse = await Api.inferFrames(sandbox.inferId, sandbox.fetchCursor);
+    const framesResponse = await Api.inferFrames(sandbox.inferId, sandbox.fetchCursor, SANDBOX_FOLLOW_FRAME_LIMIT);
     if (framesResponse) {
       applyInferBatch(framesResponse.frames, framesResponse.next);
       if (framesResponse.status) sandbox.status = framesResponse.status;

@@ -29,7 +29,7 @@ export async function feStartInfer() {
     guard.inferStatus = 'failed';
     handleFeError(error, '实机推理');
     feSetInferStatus('启动失败：' + (error && error.message ? error.message : error), 'bad');
-    feRenderInferDashboard();
+    feRenderInferDashboard(true);
   } finally {
     guard.inferStarting = false;
   }
@@ -102,12 +102,28 @@ export async function feStartInferInner() {
     ? '模型策略 · ' + checkpointName
     : '脚本策略';
   feSetInferStatus('启动 ' + launchCount + ' 路并发实例（' + policyLabel + '）…');
-  feRenderInferDashboard();
-  const frameMs = els.feFrameMs ? parseInt(els.feFrameMs.value, 10) : 2;
+  feRenderInferDashboard(true);
+  // Pacing and acceleration. Both controls used to be missing from this page:
+  // `frame_ms` was read as `els.feFrameMs ? ... : 2`, and since `fe-frame-ms` did
+  // not exist, every live-inference run was silently pinned to 2 ms (measured
+  // 6.5x). That is why "16x" never showed up here. Now the select really exists
+  // and the fallback matches its `selected` option (0 = unpaced, ~26.5x), pinned
+  // by tests/test_web_form_defaults.py.
+  //
+  // `fast_forward` is the engine's own gameSpeed: N makes one tick advance N
+  // times the game time, so a match needs 1/N the ticks. It changes fidelity,
+  // which is why it is a separate control rather than another frame_ms option.
+  const frameMs = clampInt(els.feFrameMs && els.feFrameMs.value, 0, 16, 0);
+  const fastForward = clampInt(els.feFastForward && els.feFastForward.value, 1, 32, 1);
   const inferConfig = {
     ticks: ticks,
     policy: policy,
     frame_ms: frameMs,
+    fast_forward: fastForward,
+    // Lockstep is the model player's own default (``play_rwpp_policy.py`` sends
+    // ``--lockstep``), and a scripted recorder deliberately does not block on
+    // every observation. Omitting the key lets the host service pick per runner
+    // instead of freezing the scripted choice onto both.
     map_name: mapItem.name,
     map_path: mapItem.relative || '',
     map_width: num(mapItem.width_px, 0),
@@ -130,7 +146,7 @@ export async function feStartInferInner() {
     const first = failures[0];
     handleFeError(first, '实机推理');
     feSetInferStatus('启动失败：' + (first && first.message ? first.message : first), 'bad');
-    feRenderInferDashboard();
+    feRenderInferDashboard(true);
     return;
   }
   jobIds.forEach((jobId, index) => {
@@ -147,7 +163,7 @@ export async function feStartInferInner() {
   fe.watchJobId = jobIds[0];
   feApplyWatchTask(jobIds[0], { resetPlayback: true });
   startFeInferPolling();
-  feRenderInferDashboard();
+  feRenderInferDashboard(true);
   toast('已启动 ' + jobIds.length + ' 路并发实机推理（' + policyLabel + '）', 'ok');
 }
 
@@ -194,7 +210,7 @@ export async function feStopInfer() {
     feSetInferStatus('已请求停止 ' + running.length + ' 路推理实例，等待收尾…', 'warn');
     toast('已请求停止 ' + running.length + ' 路实机推理', 'ok');
   }
-  feRenderInferDashboard();
+  feRenderInferDashboard(true);
 }
 
 export function stopFeInferPolling() {
@@ -243,7 +259,7 @@ export async function feInferTick() {
       );
     }
     feUpdateFps();
-    feRenderInferDashboard();
+    feRenderInferDashboard(true);
     const watchTask = feWatchTaskObject();
     if (watchTask) {
       const watchRunning = watchTask.status === 'running';
@@ -301,7 +317,7 @@ export async function feFinishInferIfDone() {
       failed ? 'warn' : 'ok'
     );
   }
-  feRenderInferDashboard();
+  feRenderInferDashboard(true);
   await loadReplays();
   await refreshRwppStatus(true);
   toast(

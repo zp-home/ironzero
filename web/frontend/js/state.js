@@ -17,6 +17,10 @@ export function cacheEls() {
     'rwpp-status', 'rwpp-status-text', 'rwpp-record-btn',
     'rwpp-status-train', 'rwpp-status-train-text',
     'fe-policy', 'fe-ticks', 'fe-start-btn', 'fe-infer-stop', 'fe-infer-status', 'fe-concurrency',
+    // Pacing / acceleration for the live-inference page. `fe-frame-ms` used to be
+    // missing entirely, so `feInferRun.js` fell back to a hard-coded 2 ms (=6.5x)
+    // and the page could never be faster than that no matter what the user did.
+    'fe-frame-ms', 'fe-fast-forward',
     'fe-kpi-concurrency', 'fe-kpi-slots', 'fe-kpi-running', 'fe-kpi-done', 'fe-kpi-frames',
     'fe-kpi-fps', 'fe-kpi-tick', 'fe-task-count', 'fe-task-summary', 'fe-task-cards',
     'fe-chart-fps', 'fe-chart-hp', 'fe-chart-alive',
@@ -39,6 +43,8 @@ export function cacheEls() {
     'fe-ppo-map', 'fe-ppo-units-field', 'fe-ppo-map-hint', 'fe-ppo-init-mode', 'fe-ppo-checkpoint-field', 'fe-ppo-init-checkpoint', 'fe-ppo-checkpoint-sort', 'fe-ppo-checkpoint-refresh', 'fe-ppo-init-hint',
     'fe-ppo-start', 'fe-ppo-stop', 'fe-ppo-hint', 'rwpp-status-ppo', 'rwpp-status-ppo-text',
     'fe-ppo-frame-ms', 'fe-ppo-vision', 'fe-ppo-kpi-device-foot',
+    'fe-ppo-fast-forward',
+    'fe-ppo-win-mode', 'fe-ppo-enemy-ai-difficulty', 'fe-ppo-unlock-ai',
     'fe-checkpoint-field', 'fe-checkpoint-select', 'fe-checkpoint-sort', 'fe-checkpoint-refresh', 'fe-model-note', 'fe-map-count',
     'fe-ppo-eval-every', 'fe-ppo-eval-episodes', 'fe-ppo-use-llm', 'fe-ppo-llm-note',
     'fe-ppo-reward', 'fe-ppo-reward-chip', 'fe-ppo-reward-note',
@@ -170,5 +176,10 @@ export const state = {
     trainProgress: { done: 0, total: 0, seconds: 0, current: 0 },
     trainArtifacts: [],
     mapsReady: false,
+    // Training map registry from `GET /maps` (nine stock 2p maps, their real
+    // pixel sizes and the AI difficulty choices). `feMapCatalog.js` fills it;
+    // `null` means "not loaded yet", which is why the senders check for it
+    // instead of assuming a geometry.
+    mapCatalog: null,
   },
 };
