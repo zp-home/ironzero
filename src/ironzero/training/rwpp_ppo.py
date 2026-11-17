@@ -42,6 +42,18 @@ class RwppPPOTrainer(PPOTrainer):
         # bridge port. The pool must stay clear of the training envs' port range
         # (``port_base`` .. ``port_base + num_envs``).
         self.EVAL_PORT_POOL = 16
+        # Cap how many evaluation games run at once.
+        #
+        # Each episode is a full headless Rusted Warfare process (~600 MB, a JVM
+        # startup, a map load). Launching all 16 at once on a machine that is also
+        # running training envs starves them: measured, a 40/40-update run reported
+        # ``status=failed`` at the evaluation step with
+        # ``no observation from real game on port 5209`` even though every update had
+        # trained successfully and the checkpoint was healthy. Four at a time keeps
+        # the evaluation wall clock acceptable (~4 rounds) while leaving memory and
+        # CPU for the training envs; ``evaluate_rwpp`` also retries an episode once on
+        # a shifted port, so a transient collision costs seconds rather than the run.
+        self.EVAL_MAX_PARALLEL = 4
         self._eval_port_cursor = 0
         self._eval_port_lock = threading.Lock()
         cfg = config or PPOConfig()
@@ -93,7 +105,10 @@ class RwppPPOTrainer(PPOTrainer):
             device=trainer.device,
             update=getattr(self, "_current_update", None),
             report_path=out_dir / "eval_report.json",
-            parallel=episodes,
+            # Bound the concurrency, not the episode count: every episode still
+            # plays on its own port, but only ``EVAL_MAX_PARALLEL`` games are alive
+            # at once. See ``EVAL_MAX_PARALLEL`` for the measurement.
+            parallel=self.EVAL_MAX_PARALLEL,
         )
 
     def _reserve_eval_ports(self, count: int) -> int:

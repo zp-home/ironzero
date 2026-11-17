@@ -14,7 +14,16 @@ from .policy import masks_to_tensors
 
 
 def sample_masked_action(masks: dict[str, np.ndarray], rng: np.random.Generator) -> np.ndarray:
-    """Draw a uniformly random but legal action tuple."""
+    """Draw a uniformly random but legal action tuple.
+
+    Single-slot layout only: the five keys below are the ``MASK_KEYS`` names of the
+    5-head action space. A two-slot policy (``MicroDuelConfig.action_slots == 2``,
+    10 heads keyed ``econ_*``/``tac_*``) must **not** call this -- it would raise
+    ``KeyError: 'kind'``. Nothing on the two-slot path uses it: this is the offline
+    random *baseline* for the mock micro-duel engine, and
+    ``RwppPPOTrainer.baseline()`` returns ``{}`` (a random baseline is meaningless
+    on the real game), so the real-game trainer never reaches this function.
+    """
 
     def pick(key: str) -> int:
         valid = np.flatnonzero(masks[key])
@@ -160,10 +169,50 @@ def summarize(
     }
 
 
+def wilson_lower_for_target(target: float, episodes: int) -> float:
+    """Smallest win count whose Wilson lower bound still clears ``target``.
+
+    Used to size evaluation runs honestly. With the episode counts the platform
+    actually used (``eval_episodes=4``) even a clean 4/4 sweep has a Wilson lower
+    bound of only 0.510, so "win rate > 70%" could never be *demonstrated* no
+    matter how good the policy was.
+
+    Returns the required number of wins for ``episodes`` games, or ``episodes +
+    1`` when the target is unreachable at that sample size.
+    """
+
+    episodes = max(1, int(episodes))
+    for wins in range(0, episodes + 1):
+        low, _ = wilson_interval(wins, episodes)
+        if low >= float(target):
+            return float(wins)
+    return float(episodes + 1)
+
+
+def minimum_episodes_for_target(target: float, max_episodes: int = 200) -> int:
+    """Smallest ``episodes`` at which *all wins* would clear ``target``.
+
+    Scans one episode at a time rather than a coarse candidate list: the
+    threshold is not where a step-4 list happens to land. A clean sweep's Wilson
+    lower bound is 0.7008 at 9 games and 0.6756 at 8, so the honest answer for a
+    0.70 target is 9 -- a coarse list starting at 4/8/12 would report 12 and
+    triples nothing but the evaluation bill.
+    """
+
+    target = float(target)
+    for episodes in range(1, max(1, int(max_episodes)) + 1):
+        low, _ = wilson_interval(episodes, episodes)
+        if low >= target:
+            return episodes
+    return max(1, int(max_episodes))
+
+
 __all__ = [
     "sample_masked_action",
     "evaluate_policy",
     "evaluate_random",
     "summarize",
     "wilson_interval",
+    "wilson_lower_for_target",
+    "minimum_episodes_for_target",
 ]

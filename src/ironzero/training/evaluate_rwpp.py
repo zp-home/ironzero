@@ -23,6 +23,17 @@ from ..rwpp_env import RwppDuelEnv, RwppGameConfig
 from .evaluate import summarize
 from .policy import masks_to_tensors
 
+#: How far to shift the port on a retry, and how far the evaluation range sits from
+#: the training range.
+#:
+#: The training workers take the low block (each launching its own game), so the
+#: evaluation range is pushed well clear of it rather than merely offset by the
+#: episode index. A 16-episode evaluation at ``port_base=5200`` previously ran
+#: 5200-5215, which is exactly where concurrent training games live; the symptom was
+#: ``no observation from real game on port 5215`` after 40/40 updates had trained
+#: successfully, so a finished run was reported as failed.
+_EVAL_PORT_STRIDE = 100
+
 
 def _run_one_episode(
     *,
@@ -51,7 +62,17 @@ def _run_one_episode(
         done = False
         final = info
         while not done:
-            mask_tensors = masks_to_tensors([final["masks"]], device)
+            # Pass the policy's own mask keys: a two-slot policy (10 heads) is fed
+            # ``econ_*``/``tac_*`` masks and has no ``"kind"`` entry, so the default
+            # five-key layout would raise ``KeyError`` here. The single-slot path is
+            # unaffected -- ``getattr`` falls back to the module default whenever the
+            # policy does not publish ``mask_keys`` (e.g. a test double).
+            policy_keys = getattr(policy, "mask_keys", None)
+            mask_tensors = masks_to_tensors(
+                [final["masks"]],
+                device,
+                **({"keys": tuple(policy_keys)} if policy_keys is not None else {}),
+            )
             obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
             with torch.no_grad():
                 actions, _, _ = policy.act(
@@ -131,19 +152,38 @@ def evaluate_rwpp_policy(
     records: list[dict[str, Any] | None] = [None] * total_episodes
 
     def _job(index: int) -> None:
-        record = _run_one_episode(
-            policy=policy,
-            game=game,
-            micro=micro,
-            port=int(port_base) + index,
-            seed=seeds[index],
-            episode=index,
-            device=device,
-            deterministic=deterministic,
-        )
-        records[index] = record
-        if on_episode is not None:
-            on_episode(record)
+        port = int(port_base) + index
+        # Retry a failed episode once on a fresh port.
+        #
+        # ``port_base + index`` collides with the *training* workers' port range,
+        # and a collision does not raise at bind time -- the game process starts,
+        # fails to own its port, and the client then times out with
+        # ``no observation from real game on port N``. Measured on a 16-episode
+        # evaluation: the run trained 40/40 updates successfully and then reported
+        # ``status=failed`` because evaluation alone died, discarding a healthy
+        # checkpoint. A retry on an unrelated port range turns that from "the whole
+        # job failed" into "that episode cost an extra few seconds".
+        last_failure: Exception | None = None
+        for attempt in range(2):
+            try:
+                record = _run_one_episode(
+                    policy=policy,
+                    game=game,
+                    micro=micro,
+                    port=port + attempt * _EVAL_PORT_STRIDE,
+                    seed=seeds[index],
+                    episode=index,
+                    device=device,
+                    deterministic=deterministic,
+                )
+                records[index] = record
+                if on_episode is not None:
+                    on_episode(record)
+                return
+            except Exception as failure:  # noqa: BLE001 - retried, then re-raised
+                last_failure = failure
+        assert last_failure is not None
+        raise last_failure
 
     if workers <= 1:
         for index in range(total_episodes):
@@ -170,6 +210,10 @@ def evaluate_rwpp_policy(
             "map_path": game.map_relative,
             "vision_radius": float(game.vision_radius or 0.0),
             "frame_ms": int(game.frame_ms),
+            "physics_ms": int(game.physics_ms),
+            "fast_forward": int(getattr(game, "fast_forward", 1) or 1),
+            "lockstep": bool(getattr(game, "lockstep", False)),
+            "lockstep_timeout_ms": int(getattr(game, "lockstep_timeout_ms", 30000) or 30000),
             "elapsed_s": round(time.time() - started, 2),
             "episode_results": episode_results,
         }

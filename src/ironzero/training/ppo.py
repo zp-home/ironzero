@@ -260,6 +260,13 @@ class PPOTrainer:
     # ------------------------------------------------------------------
     def collect(self) -> Rollout:
         cfg = self.config
+        # The mask key order belongs to the *policy's* layout, not to a module
+        # constant: a two-slot policy keys its masks ``econ_*``/``tac_*`` and has no
+        # ``"kind"`` entry at all, so iterating ``MASK_KEYS`` over it would raise
+        # ``KeyError`` on the first collection step. ``policy.mask_keys`` is derived
+        # from the policy's own ``nvec``, which is also what ``masks_to_tensors``
+        # and ``_dists`` use, so all three cannot disagree.
+        keys = tuple(self.policy.mask_keys)
         obs, masks, _infos = self.vec.reset()
         observations: list[torch.Tensor] = []
         actions: list[torch.Tensor] = []
@@ -267,9 +274,9 @@ class PPOTrainer:
         values: list[torch.Tensor] = []
         rewards: list[torch.Tensor] = []
         dones: list[torch.Tensor] = []
-        mask_history: dict[str, list[torch.Tensor]] = {key: [] for key in MASK_KEYS}
+        mask_history: dict[str, list[torch.Tensor]] = {key: [] for key in keys}
         for _ in range(cfg.rollout_steps):
-            mask_tensors = masks_to_tensors(masks, self.device)
+            mask_tensors = masks_to_tensors(masks, self.device, keys=keys)
             obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
             action, logprob, value = self.policy.act(obs_tensor, mask_tensors)
             batch = self.vec.step(action.cpu().numpy())
@@ -282,12 +289,12 @@ class PPOTrainer:
             values.append(value.cpu())
             rewards.append(torch.as_tensor(batch.rewards, dtype=torch.float32))
             dones.append(torch.as_tensor(batch.terminated | batch.truncated, dtype=torch.float32))
-            for key in MASK_KEYS:
+            for key in keys:
                 mask_history[key].append(mask_tensors[key].cpu())
             obs, masks = batch.observations, self.vec.masks
         with torch.no_grad():
             last_obs = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
-            last_masks = masks_to_tensors(masks, self.device)
+            last_masks = masks_to_tensors(masks, self.device, keys=keys)
             _, last_values = self.policy.forward(last_obs)
             _ = last_masks
         return Rollout(
@@ -297,7 +304,7 @@ class PPOTrainer:
             values=torch.stack(values),
             rewards=torch.stack(rewards),
             dones=torch.stack(dones),
-            masks={key: torch.stack(mask_history[key]) for key in MASK_KEYS},
+            masks={key: torch.stack(mask_history[key]) for key in keys},
             last_values=last_values.cpu(),
         )
 
@@ -349,7 +356,13 @@ class PPOTrainer:
                 old_logprob = flat_logprobs[batch].to(self.device)
                 advantages_batch = flat_advantages[batch].to(self.device)
                 returns_batch = flat_returns[batch].to(self.device)
-                masks_batch = {key: flat_masks[key][batch].to(self.device) for key in MASK_KEYS}
+                # Iterate the rollout's own mask keys, not the module constant: the
+                # keys were chosen by the policy's layout during collection, and a
+                # two-slot rollout carries ``econ_*``/``tac_*`` instead of the five
+                # single-slot names.
+                masks_batch = {
+                    key: flat_masks[key][batch].to(self.device) for key in flat_masks
+                }
                 new_logprob, entropy, value = self.policy.evaluate(obs_batch, masks_batch, actions_batch)
                 ratio = torch.exp(new_logprob - old_logprob)
                 surrogate_1 = ratio * advantages_batch
