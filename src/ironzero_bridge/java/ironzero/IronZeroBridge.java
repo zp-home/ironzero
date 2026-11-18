@@ -3162,7 +3162,16 @@ public final class IronZeroBridge implements ServerExtension {
                 float x = (float) action.getDouble("x", 0.0);
                 float y = (float) action.getDouble("y", 0.0);
                 command = engine.commandController.createCommandForTeam(engine.playerTeam);
-                addOwnOrderableUnits(command, unitGroup);
+                // Army movement must never include the builder. A numbered group is
+                // selected by ``id % GROUP_COUNT``, so the builder cannot be avoided
+                // by picking a group; see addOwnOrderableUnits for the measurement.
+                //
+                // The broadcast slot (unitGroup == GROUP_BROADCAST) is the worst
+                // case: it selected *every* living friendly unit, builder included,
+                // so each broadcast order cancelled whatever construction was in
+                // flight. The curriculum never uses it for movement, but the policy
+                // can, so the exclusion is applied here rather than left to callers.
+                addOwnOrderableUnits(command, unitGroup, true);
                 if ("move_group".equals(kind)) {
                     command.setMoveWaypoint(x, y);
                 } else {
@@ -4014,6 +4023,32 @@ public final class IronZeroBridge implements ServerExtension {
     }
 
     private void addOwnOrderableUnits(CommandControllerCommand command, int unitGroup) {
+        addOwnOrderableUnits(command, unitGroup, false);
+    }
+
+    /**
+     * Add our orderable units to {@code command}, optionally keeping builders out.
+     *
+     * <p><b>Why the exclusion is needed.</b> A numbered group selects units by
+     * {@code id % GROUP_COUNT}, so a builder lands in the group named by its own id
+     * and cannot be excluded by choosing a different group -- every group can
+     * contain it. The Python curriculum already tries to keep the builder out of the
+     * army (it filters by {@code is_builder} when choosing which group to address),
+     * but that filter only decides <i>which</i> group, so the order still reached the
+     * builder through the id-modulo rule.
+     *
+     * <p>Measured on Lake at difficulty 1 (``.runtime/economy_over_time.json``, a
+     * noop policy so the curriculum is the only actor): the builder's live
+     * ``order_type`` was ``attack_move`` at ticks 9001 and 12001, and over 60000
+     * ticks the economy produced exactly <b>one</b> extractor and then lost it --
+     * income went 18 -> 26 -> back to 18 and stayed there. A builder that marches
+     * with the army cannot expand, so the economy is frozen at the base income and
+     * the army can never out-produce a difficulty-1 opponent.
+     *
+     * @param excludeBuilders when true, only non-builder units may receive the order
+     */
+    private void addOwnOrderableUnits(
+            CommandControllerCommand command, int unitGroup, boolean excludeBuilders) {
         for (Object item : Unit.unitList) {
             if (!(item instanceof OrderableUnit)) {
                 continue;
@@ -4023,6 +4058,9 @@ public final class IronZeroBridge implements ServerExtension {
                 continue;
             }
             if (unit.team == null || unit.team.teamId != engine.playerTeam.teamId) {
+                continue;
+            }
+            if (excludeBuilders && unit.isBuilder()) {
                 continue;
             }
             if (unitGroup >= 0 && unitGroup < GROUP_COUNT && (unit.id % GROUP_COUNT) != unitGroup) {
