@@ -3726,9 +3726,29 @@ public final class IronZeroBridge implements ServerExtension {
      * Returns {@code null} when we own nothing yet.
      */
     private double[] ownBaseAnchor() {
-        double sumX = 0.0;
-        double sumY = 0.0;
-        int count = 0;
+        // The anchor must be **stable for the whole episode**, because
+        // ``resourceSlots()`` sorts the map's pools by distance to it and the
+        // policy's ``slot_id`` is an index into that sorted list. If the anchor
+        // moves, every ``slot_id`` silently names a different pool.
+        //
+        // This method used to return the first own unit for which
+        // ``isFactoryBuilding()`` was true, with a comment claiming the command
+        // centre is unique. It is not: ``isFactoryBuilding()`` is true for a
+        // ``landFactory`` too, and the loop walks ``Unit.unitList`` in the engine's
+        // own order. The moment our first combat factory finished, the anchor could
+        // jump from the command centre to that factory, re-sorting the pool list.
+        //
+        // Measured consequence on Lake at difficulty 1 (``--debug-build`` trace):
+        // the expansion stage asked for "the nearest free pool" and the bridge built
+        // at (1170,2050) sixteen times, then (1250,1190), then (1020,2315) -- the
+        // same *index* resolving to different *places*. The builder was permanently
+        // en route: 894 -> 1111 px (walking away), switch, 977 -> 692, switch,
+        // 1185 -> 999, switch. One extractor all episode and income pinned at 26.
+        //
+        // The command centre is identified positively by its engine internal name,
+        // so it is preferred outright; only when we own none (pre-spawn) do we fall
+        // back to a factory building, and only then to the centroid of buildings.
+        Unit factoryFallback = null;
         for (Object item : Unit.unitList) {
             if (!(item instanceof Unit)) {
                 continue;
@@ -3740,16 +3760,52 @@ public final class IronZeroBridge implements ServerExtension {
             if (unit.team == null || unit.team.teamId != engine.playerTeam.teamId) {
                 continue;
             }
-            if (unit.isFactoryBuilding()) {
-                // The command centre is unique: prefer it outright so the anchor
-                // never drifts as outlying factories get built.
+            if (isCommandCentre(unit)) {
                 return new double[]{unit.x, unit.y};
+            }
+            if (factoryFallback == null && unit.isFactoryBuilding()) {
+                factoryFallback = unit;
+            }
+        }
+        if (factoryFallback != null) {
+            return new double[]{factoryFallback.x, factoryFallback.y};
+        }
+        // Last resort: the centroid of **buildings only**. The old code averaged in
+        // every living unit, so a marching army drifted the anchor and re-sorted the
+        // pools mid-episode for the same reason the factory did.
+        double sumX = 0.0;
+        double sumY = 0.0;
+        int count = 0;
+        for (Object item : Unit.unitList) {
+            if (!(item instanceof Unit)) {
+                continue;
+            }
+            Unit unit = (Unit) item;
+            if (unit.removed || unit.hp <= 0.0f || !unit.isBuilding()) {
+                continue;
+            }
+            if (unit.team == null || unit.team.teamId != engine.playerTeam.teamId) {
+                continue;
             }
             sumX += unit.x;
             sumY += unit.y;
             count++;
         }
         return count > 0 ? new double[]{sumX / count, sumY / count} : null;
+    }
+
+    /** True when ``unit`` is the map's spawn building (a command centre). */
+    private boolean isCommandCentre(Unit unit) {
+        try {
+            String name = unit.getUnitTypeInterface().getInternalName();
+            if (name == null) {
+                return false;
+            }
+            String lower = name.toLowerCase(java.util.Locale.ROOT);
+            return lower.contains("commandcenter") || lower.contains("command_center");
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     /**
