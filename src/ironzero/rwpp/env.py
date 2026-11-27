@@ -2227,6 +2227,62 @@ class RwppDuelEnv:
         combat_factories = _combat_factories(state)
         if not combat_factories:
             return []
+        funds = float((state.get("global_state") or {}).get("funds") or 0.0)
+        # Raise extra builders first, before any combat unit.
+        #
+        # Measured on Lake at difficulty 1 (round 17): the enemy reaches 2-3
+        # builders by tick 9011 while we are pinned at exactly 1, because
+        # ``_UNIT_COMBAT_RANK`` scores ``builder`` as 0 and the selection loop
+        # below therefore can never choose it. Every structure -- extractor,
+        # factory, turret -- then queues behind one unit walking the map, so
+        # expansion and production serialise against each other.
+        #
+        # This is deliberately the *first* thing the stage does once a factory
+        # exists: a second builder is what lets an extractor and a factory be
+        # built at the same time, which is the difference between an economy that
+        # grows and one that crawls. It is capped so it cannot become a sink.
+        builder_quota = int(getattr(self.game, "economy_max_builders", 0) or 0)
+        if builder_quota > 0:
+            live_builders = sum(
+                1
+                for unit in own
+                if unit.get("is_builder") and float(unit.get("hp") or 0.0) > 0.0
+            )
+            queued_builders = sum(
+                int(entry.get("queue_length") or 0)
+                for entry in combat_factories
+                if "builder" in [str(n) for n in (entry.get("can_produce") or [])]
+            )
+            if live_builders < builder_quota and not queued_builders:
+                for entry in combat_factories:
+                    menu = [str(name) for name in (entry.get("can_produce") or [])]
+                    if "builder" not in menu:
+                        continue
+                    if entry.get("is_built") is False:
+                        continue
+                    prices = entry.get("can_produce_price") or []
+                    position = menu.index("builder")
+                    price = None
+                    if position < len(prices):
+                        try:
+                            price = float(prices[position])
+                        except (TypeError, ValueError):
+                            price = None
+                    if price is None:
+                        price = float(_UNIT_PRICE.get("builder", 500))
+                    if price > funds:
+                        continue
+                    factory_id = entry.get("entity_id")
+                    if factory_id is None:
+                        continue
+                    orders = self._send_direct_order(
+                        {"kind": "produce_unit", "factory_entity_id": int(factory_id),
+                         "unit_type": "builder"},
+                        {"kind": "produce_unit", "factory_entity_id": int(factory_id),
+                         "unit_type": "builder"},
+                    )
+                    if orders:
+                        return orders
         # Keep an army, not a token: stop once the target is reached so the stage
         # does not spend the whole bank on units the map cannot use.
         combat_alive = sum(
@@ -2249,7 +2305,8 @@ class RwppDuelEnv:
             self.production_curriculum_done = False
         # Do not spend the builder's budget. ``economy_credit_reserve`` is larger
         # than one cheap unit, so the extractor/factory chain can always finish.
-        funds = float((state.get("global_state") or {}).get("funds") or 0.0)
+        # (``funds`` was read above, before the builder top-up, so the two paths
+        # cannot disagree about the bank within one decision.)
         if funds < float(self.macro.credit_reserve):
             return []
         # While extractors can still be added, every unit must leave the bank able

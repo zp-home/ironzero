@@ -603,6 +603,18 @@ class RwppGameConfig:
     #: to finish a base before the tick cap. The cap stops the stage from turning
     #: into an economy sink: a third factory costs credits the army needs.
     economy_max_factories: int = 2
+    #: How many builders the production stage will raise.
+    #:
+    #: **One builder is a serial bottleneck on the whole economy.** Measured on
+    #: Lake at difficulty 1 (probe in round 17): the enemy fields 2-3 builders by
+    #: tick 9011 while we still have exactly 1, because nothing ever produced a
+    #: second one -- ``_UNIT_COMBAT_RANK`` scores ``builder`` as 0, so the
+    #: production stage could never pick it. Every construction (extractors,
+    #: factories, turrets) therefore queues behind a single unit walking the map.
+    #:
+    #: A second builder is what lets an extractor expansion and a factory run
+    #: concurrently instead of one after the other. Zero disables the stage.
+    economy_max_builders: int = 2
     #: Let the curriculum upgrade extractors and factories up the tech ladder.
     #:
     #: The single most valuable investment in a Rusted Warfare economy is a T1
