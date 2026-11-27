@@ -2267,6 +2267,14 @@ class RwppDuelEnv:
             factory_id = entry.get("entity_id")
             if factory_id is None:
                 continue
+            # Only a factory the engine can actually work on may receive orders.
+            # ``Factory.update`` returns while isBuiltAndNotTransported() is false,
+            # so a queue item at an unfinished factory sits at progress -1.0
+            # forever and holds every ``production_queue_depth`` slot. Measured on
+            # Lake at difficulty 1: three tanks queued at factory 27 with
+            # buildProgress=0.0 and the army stayed at zero for 19000 ticks.
+            if entry.get("is_built") is False:
+                continue
             menu = [str(name) for name in (entry.get("can_produce") or [])]
             prices = entry.get("can_produce_price") or []
             for position, name in enumerate(menu):

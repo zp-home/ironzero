@@ -1380,7 +1380,16 @@ public final class IronZeroBridge implements ServerExtension {
             }
             out.append("{\"entity_id\":").append(unit.id)
                     .append(",\"unit_type\":\"").append(typeName)
-                    .append("\",\"can_produce\":[");
+                    .append("\"");
+            boolean factoryBuilt = false;
+            try {
+                factoryBuilt = unit.isBuiltAndNotTransported();
+            } catch (RuntimeException ignored) {
+                // Older engine: report false so callers never queue at an unknown
+                // factory. A conservative false cannot create a wedged queue.
+            }
+            out.append(",\"is_built\":").append(factoryBuilt);
+            out.append(",\"can_produce\":[");
             // A factory that is still being built cannot queue anything. This is
             // NOT cosmetic: the Python action mask opens ``produce_unit`` when any
             // reported factory advertises a non-``builder`` entry, so an
@@ -1400,6 +1409,13 @@ public final class IronZeroBridge implements ServerExtension {
             // episode once it finishes. Reported honestly as an empty menu instead:
             // an empty list is a real answer ("queue nothing yet"), and the mask
             // already treats it as "not producible".
+            // Whether this factory can actually WORK on a queued item, not merely
+            // whether it advertises a build menu. ``Factory.update`` returns
+            // immediately while ``isBuiltAndNotTransported()`` is false, so a queue
+            // item placed here would sit at progress -1.0 forever. Measured on Lake
+            // at difficulty 1: every curriculum order went to factory 27 with
+            // ``builtNotTransported=false, buildProgress=0.0`` while the AI queued
+            // at whichever factory had finished, producing 18 units vs our zero.
             java.util.List<String> names = factoryCanProduceNow(unit)
                     ? producibleNamesFor(unit)
                     : java.util.Collections.<String>emptyList();
@@ -1425,6 +1441,23 @@ public final class IronZeroBridge implements ServerExtension {
             out.append(",\"queued\":[");
             java.util.List<com.corrodinggames.rts.game.units.buildings.BuildQueueItem> queueItems =
                     queuedItems(unit);
+            if (debugBuild) {
+                boolean builtNotTransported = false;
+                boolean operational = false;
+                float buildProg = -1.0f;
+                try {
+                    builtNotTransported = unit.isBuiltAndNotTransported();
+                    operational = isOperational(unit);
+                    buildProg = buildProgress(unit);
+                } catch (RuntimeException ignored) {
+                    // Older engine: leave the flags at their false defaults.
+                }
+                System.out.println("[ironzero] factory diag id=" + unit.id
+                        + " builtNotTransported=" + builtNotTransported
+                        + " operational=" + operational
+                        + " buildProgress=" + buildProg
+                        + " queue=" + queueItems.size());
+            }
             for (int index = 0; index < queueItems.size(); index++) {
                 if (index > 0) {
                     out.append(',');
