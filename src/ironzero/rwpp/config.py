@@ -504,6 +504,37 @@ class RwppGameConfig:
     #: sustained fight can never out-reinforce the AI; a higher ceiling lets the
     #: factory keep replacing losses during the endgame.
     economy_army_cap: int = 16
+    #: How many combat units the attack stage waits for before it marches.
+    #:
+    #: This is its own knob on purpose. It used to be derived as
+    #: ``0.35 * economy_army_cap``, which silently coupled "when do we attack" to
+    #: "how many units may we ever own". ``economy_army_cap`` is a *ceiling* used
+    #: to let a long game keep replacing losses; deriving the march gate from it
+    #: meant raising the ceiling raised the bar the army had to clear before it
+    #: was allowed to leave home.
+    #:
+    #: Measured (scripts/probe_attack_gate32.py, Lake, difficulty 1, 19674 ticks):
+    #:
+    #:   army_cap=56 -> derived gate 19 units, army peaked at 17
+    #:                  1909/1909 decisions gated shut, **0 attack orders**
+    #:   army_cap=16 -> derived gate  5 units, army peaked at 10
+    #:                  503 attack_move orders issued
+    #:
+    #: With cap=56 the army never received a single attack order in a whole
+    #: episode, which is the real reason rounds 28-31 measured "enemy buildings
+    #: lose 0 HP over 19674 ticks". A separate knob makes the two questions
+    #: independent, so raising the ceiling can no longer disarm the army.
+    #:
+    #: The measured trade-off, 4 seeds each on Lake at difficulty 1:
+    #:
+    #:   march_at=5  (the old cap=16 derivation): army reaches 4-7 units and dies
+    #:               in detail -- 0/4 wins, every episode a timeout with a small
+    #:               army that had already been traded away
+    #:   march_at=12: the army assembles first and the losses are affordable
+    #:
+    #: Twelve is the smallest number that is a *force* rather than a probe: below
+    #: it the army arrives in pieces and the AI's 30-38 units defeat it in detail.
+    economy_march_at: int = 12
     #: How many units may sit in a factory's build queue at once.
     #:
     #: The production stage used to go silent whenever the queue was non-empty, on

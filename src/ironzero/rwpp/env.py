@@ -182,6 +182,102 @@ def _unit_combat_rank(name: str) -> int:
     return _UNIT_COMBAT_RANK.get(name.split(".")[-1], 0)
 
 
+#: Unit types that fly. Used only to decide whether the enemy has an air arm our
+#: ground army cannot answer -- not to price them.
+_AIR_UNIT_TOKENS: tuple[str, ...] = (
+    "gunship", "helicopter", "bomber", "interceptor", "airship",
+)
+
+
+def _is_air_unit(unit: dict) -> bool:
+    """Whether a unit is an air unit.
+
+    Two independent signals, because neither is present in every payload: the
+    bridge reports ``is_air`` when it can resolve the engine's movement class,
+    and the stock unit names are unambiguous otherwise (``lightGunship``,
+    ``c_helicopter``, ``gunShip``, ``heavyInterceptor``, ``bomber``).
+    """
+    if unit.get("is_air"):
+        return True
+    name = str(unit.get("unit_type") or "").lower()
+    return any(token in name for token in _AIR_UNIT_TOKENS)
+
+
+#: Mobile anti-air units to field per enemy aircraft.
+#:
+#: Two, because aircraft focus fire: a 1:1 trade leaves no anti-air alive to
+#: shoot the next one, so the army cycles back to "cannot damage the air arm"
+#: after every exchange. Measured (scripts/probe_air_winrate.py, Lake, 4 seeds,
+#: difficulty 1): with a 1:1 rule the army held 1-2 ``hoverTank`` against 2-3
+#: enemy air and every episode timed out.
+AIR_COVER_PER_ENEMY: int = 2
+
+#: Hard ceiling on mobile anti-air, however large the enemy air arm gets.
+#: Without it a large enemy air fleet converts the entire army into anti-air and
+#: leaves nothing to hold the line -- the same failure ``economy_army_cap``
+#: guards against on the ground. Six is enough to clear the 2-3 aircraft a
+#: difficulty-1 AI fields while keeping the army mostly tanks.
+AIR_COVER_CAP: int = 6
+
+#: Largest army the attack stage will wait for before marching.
+#:
+#: ``_issue_attack_drive`` used to gate on ``0.35 * economy_army_cap``. That
+#: couples the march decision to a *ceiling*: raising the ceiling to let a long
+#: game reinforce also raised the bar the army had to clear before it was allowed
+#: to leave home. Measured (scripts/probe_attack_gate32.py, Lake, difficulty 1):
+#: with ``economy_army_cap=56`` the gate demanded 19 units while the army peaked
+#: at 17, so the stage was gated shut on **1909 of 1909 decisions** and issued
+#: zero attack orders -- the army sat at home for the whole episode and every
+#: enemy building finished at full HP.
+#:
+#: Sixteen is the measured size this economy actually sustains at difficulty 1,
+#: so the clamp makes "march" reachable while still keeping the original intent
+#: (do not feed units in one at a time).
+ARMY_MARCH_CEILING: int = 16
+
+
+#: Stock ground units that can shoot at aircraft.
+#: The bridge reports ``can_attack_air`` per *entity* but not per *menu entry*,
+#: so a unit we do not own yet has no capability field to read. This set is the
+#: fallback for exactly that case; :func:`_menu_entry_attacks_air` prefers an
+#: observed entity of the same type whenever one exists, so a map that renames or
+#: retiers these units is still handled from the engine's own answer.
+_AIR_CAPABLE_UNIT_NAMES: frozenset[str] = frozenset({
+    "hovertank",
+    "heavyhovertank",
+    "c_hovertank",
+    "antiair",
+    "c_antiairturret",
+    "antiairturret",
+    "lightgunship",
+    "c_helicopter",
+    "gunship",
+    "interceptor",
+    "c_interceptor",
+    "heavyinterceptor",
+})
+
+
+def _menu_entry_attacks_air(entry: dict, position: int) -> bool:
+    """Whether the factory-menu entry at ``position`` produces an anti-air unit.
+
+    Prefers the engine's own answer: if we already own an entity of that type,
+    its ``can_attack_air`` field is authoritative and covers renamed or custom
+    units. Falls back to :data:`_AIR_CAPABLE_UNIT_NAMES` for types we have never
+    built, which is the normal case for the first hoverTank of the episode.
+    """
+    menu = [str(name) for name in (entry.get("can_produce") or [])]
+    if not (0 <= position < len(menu)):
+        return False
+    name = menu[position]
+    key = name.split(".")[-1].lower()
+    # An entity of this type already in the observation settles it.
+    for unit in (entry.get("_own_same_type") or []):
+        if unit.get("can_attack_air") is not None:
+            return bool(unit.get("can_attack_air"))
+    return key in _AIR_CAPABLE_UNIT_NAMES
+
+
 def _unit_value_per_credit(name: str) -> float:
     """Combat value per credit, so an affordable unit beats a better unaffordable one.
 
@@ -1722,10 +1818,40 @@ class RwppDuelEnv:
                 int(game_cap) if game_cap is not None else int(self.macro.attack_at_army)
             )
             cap = max(cap, int(self.macro.attack_at_army))
-            # 0.35 of cap is reachable at difficulty 1 (~11 tanks of 32); 0.6
-            # (~19) was only reached at step 1420 of 1600, too late to break a
-            # building before the tick cap. March with what exists and reinforce.
-            if len(ours) < max(1, int(cap * 0.35)):
+            # The march threshold is its own knob, not a fraction of the ceiling.
+            #
+            # ``0.35 * cap`` reads like "march at a third of the army you are
+            # allowed to build", which is only sound while the cap is near the
+            # army the economy can actually fund. It is not: ``economy_army_cap``
+            # is a *ceiling*, and raising it is how you let a long game keep
+            # replacing losses. Coupling the march gate to the ceiling means every
+            # increase of the ceiling raises the bar the army must clear before it
+            # is allowed to leave home.
+            #
+            # Measured (scripts/probe_attack_gate32.py, Lake, difficulty 1,
+            # 19674 ticks):
+            #
+            #   cap=56 -> gate needs 19 units, army peaked at 17
+            #             1909/1909 decisions GATED SHUT, 0 attack orders issued
+            #   cap=16 -> gate needs  5 units, army peaked at 10
+            #             503 attack_move orders issued
+            #
+            # With cap=56 the attack stage never fired once in a whole episode --
+            # which is why rounds 28-31 measured "enemy buildings lose 0 HP over
+            # 19674 ticks" and why every episode timed out. The zero damage was
+            # never a damage-formula or unit-composition problem; the army was
+            # simply never ordered to attack.
+            #
+            # The march size now comes from ``economy_march_at``, clamped to the
+            # ceiling so a small cap still bounds it (there is no point waiting
+            # for 12 units when the cap forbids building 12).
+            march_at = int(getattr(self.game, "economy_march_at", 0) or 0)
+            if march_at <= 0:
+                # Configs that predate the knob keep their old derivation, but
+                # clamped so a high ceiling cannot disarm the army.
+                march_at = min(max(1, int(cap * 0.35)), ARMY_MARCH_CEILING)
+            march_at = max(1, min(march_at, int(cap)))
+            if len(ours) < march_at:
                 return []
         # Address the army group by group, rotating each decision.
         #
@@ -2450,7 +2576,55 @@ class RwppDuelEnv:
             and int(combat_alive) >= 1
         ):
             upgrade_floor = float(self.micro.extractor_upgrade_cost)
-        if funds < float(self.macro.credit_reserve) + upgrade_floor:
+        # The reserve protects the *builder's next structure*, and it must not be
+        # the gate that stops the army from existing.
+        #
+        # The intent is sound: ``economy_credit_reserve`` (700) is roughly one
+        # extractor, so holding it back lets the build stages keep working. But the
+        # build stages already enforce exactly that themselves -- ``_issue_late_
+        # expansion`` returns early unless ``funds >= extractor_price``, and
+        # ``_issue_opening_extractor``/``_issue_opening_factory`` have their own
+        # affordability checks. Duplicating the rule here adds a second, stricter
+        # bar and it is the one that binds.
+        #
+        # Measured (scripts/probe_bisect34.py, Lake, difficulty 1, seed 71018,
+        # 8000 ticks, the recorded baseline configuration):
+        #
+        #   744 production calls
+        #   592  rej:funds_below_reserve      <- 80% of all rejections
+        #   108  rej:no_factory
+        #    34  rej:queue_full
+        #    10  issued
+        #     0  rej:picker_chose_nothing
+        #
+        # Funds oscillate between 200 and 700 all episode, so the bank is *below*
+        # the 700 reserve on four decisions out of five and the stage never gets to
+        # the picker at all. The army peaked at 14 and the enemy base finished with
+        # 13 buildings / 15200 HP.
+        #
+        # The fix is to scale the reserve with the army instead of applying it
+        # unconditionally: while the army is below its target, the army *is* the
+        # economy (an extractor that cannot be defended pays for nothing), so the
+        # stage only needs the unit to be affordable. Once the army target is met,
+        # the full reserve applies again and the surplus goes to the builder chain
+        # and upgrades, which is exactly what the original rule wanted.
+        reserve = float(self.macro.credit_reserve)
+        army_target = int(self.macro.army_target or 0)
+        if army_target > 0 and int(combat_alive) < army_target:
+            # Below target: keep only enough to pay for the unit being ordered.
+            # ``protect`` below still holds back ``extractor_price`` per candidate,
+            # so the builder is not starved -- it just no longer blocks the whole
+            # stage before a candidate is even considered.
+            #
+            # Half the reserve, not zero. Relaxing it all the way was measured
+            # (round 34) to invert the problem: the army grew to 14-15 units but
+            # ``extractors`` stayed at **1** and ``income`` at **26.0** for the whole
+            # episode, because every credit went into units and none was ever left
+            # for the next extractor. Six seeds all timed out with
+            # ``end_own=7-10`` against ``end_foe=7-12``. The bank has to fund both
+            # the army and the thing that pays for it.
+            reserve = min(reserve, float(getattr(self.game, "extractor_cost", 350.0) or 350.0))
+        if funds < reserve + upgrade_floor:
             return []
         # While extractors can still be added, every unit must leave the bank able
         # to pay for one more extractor. Expansion is the ONLY stage that raises
@@ -2515,6 +2689,88 @@ class RwppDuelEnv:
         # (``action.getLong("factory_entity_id")`` + ``action.getString("unit_type")``),
         # so there is no reason to express a decision the curriculum already knows.
         funds = float((state.get("global_state") or {}).get("funds") or 0.0)
+        # Air cover: prefer an anti-air unit while the enemy actually fields air.
+        #
+        # ``c_tank`` (the unit this stage otherwise picks, at 5/500) has
+        # ``can_attack_air: false``. The enemy at difficulty 1 fields
+        # ``lightGunship``/``c_helicopter``/``gunShip``, so every one of those is
+        # literally undamageable by our army -- not "hard to kill", impossible.
+        # Measured on Lake at difficulty 1 (scripts/probe_air_gap.py):
+        #
+        #   factory menu   ['builder', 'hoverTank', 'hovercraft', 'heavyTank',
+        #                   'heavyHoverTank', 'tank', 'artillery', 'scout']
+        #   final army     own 16 x c_tank, 0 air-capable
+        #   enemy          3 air (lightGunship, c_helicopter, gunShip) + 5 ground
+        #   >>> every enemy air unit is UNTOUCHABLE by our army
+        #
+        # The menu *does* offer ``hoverTank``, the one ground unit with
+        # ``can_attack_air: true``. The stage never built it because the pick is
+        # ``_unit_value_per_credit`` = rank/price, and tank scores 4/350 = 0.0114
+        # against hoverTank's 3/450 = 0.0067 -- the cheaper tank always wins. That
+        # ranking is right for a ground-only fight and wrong the moment the enemy
+        # has air, which at difficulty 1 is always.
+        #
+        # So the ranking is not replaced, it is *preceded* by a coverage rule: when
+        # the enemy fields air and we have no air-capable unit alive, the anti-air
+        # unit outranks everything. This is an ordering argument, not a tuning
+        # constant -- an army that cannot damage a third of the enemy is not a
+        # smaller army, it is an incomplete one.
+        enemy_air = [
+            unit for unit in (state.get("visible_enemy_entities") or [])
+            if _is_air_unit(unit) and float(unit.get("hp") or 0.0) > 0.0
+        ]
+        # Only a *mobile* anti-air unit counts as cover.
+        #
+        # The first version of this rule asked ``can_attack_air`` of every own
+        # entity, and the ``commandCenter`` answers ``true`` -- it has an
+        # anti-air weapon. So ``own_air_cover`` was true from tick 1 of every
+        # episode and the rule never fired at all. Measured
+        # (scripts/probe_air_why.py):
+        #
+        #   1405 decisions with enemy air
+        #   1405 of them "BLOCKED_by_building_cover"
+        #   tick 5641: enemy_air=1 own_cover=['commandCenter']
+        #
+        # A building cannot escort the army. What the rule is asking is "can the
+        # force that marches on the enemy base shoot at the aircraft attacking
+        # it", and the answer is only yes if a *mobile* unit carries the
+        # capability.
+        # How much mobile anti-air we have, and how much enemy air it must answer.
+        #
+        # The first version asked a yes/no question -- "do we own any mobile
+        # anti-air at all" -- and that made the rule fire exactly once per
+        # episode. Measured after the fix (scripts/probe_air_winrate.py, Lake,
+        # 4 seeds): ``hoverTank`` did appear, but the army stayed 16-17
+        # ``c_tank`` + 1-2 ``hoverTank`` against 2-3 enemy air units, and every
+        # episode still timed out. One anti-air unit is a token, not coverage: the
+        # enemy's air arm kept growing while the rule considered itself satisfied
+        # and went back to building tanks.
+        #
+        # So the requirement is a *ratio*, not a flag. Two of ours per enemy
+        # aircraft is the cheapest number that lets the anti-air group survive
+        # long enough to matter (aircraft focus fire, so a 1:1 trade leaves
+        # nothing); it is also bounded by ``AIR_COVER_CAP`` so a huge enemy air
+        # arm cannot convert the whole army into anti-air and leave no line.
+        own_air_cover = sum(
+            1
+            for unit in own
+            if unit.get("can_attack_air")
+            and not unit.get("is_building")
+            and float(unit.get("hp") or 0.0) > 0.0
+        )
+        air_cover_needed = min(
+            int(AIR_COVER_CAP),
+            max(0, len(enemy_air) * int(AIR_COVER_PER_ENEMY)),
+        )
+        need_air_cover = len(enemy_air) > 0 and own_air_cover < air_cover_needed
+        # What the engine says about units we already own, keyed by type name.
+        # ``_menu_entry_attacks_air`` uses this so a type we have built before is
+        # judged by the engine's own ``can_attack_air`` rather than by our table.
+        own_by_type: dict[str, list[dict]] = {}
+        for unit in own:
+            key = str(unit.get("unit_type") or "").split(".")[-1].lower()
+            if key:
+                own_by_type.setdefault(key, []).append(unit)
         chosen_factory = None
         chosen_unit = None
         best_score = None
@@ -2547,14 +2803,46 @@ class RwppDuelEnv:
                 # army over a full episode.
                 if price > funds:
                     continue
+                # The coverage rule, evaluated *before* the economy-protection gate
+                # below. Order matters and it is the whole bug that made the first
+                # version of this fix inert.
+                #
+                # ``protect`` reserves ``extractor_price`` (700) of the bank for the
+                # next extractor, so a candidate is skipped unless
+                # ``funds - price >= 700``. ``hoverTank`` costs 450 and ``tank``
+                # costs 350, so whenever the bank sits between 1050 and 1150 the
+                # tank passes this gate and hoverTank does not -- the anti-air
+                # candidate is filtered out *before* the score bonus can apply.
+                # Measured (scripts/probe_air_trace.py): over a full episode the
+                # predicate was reached 34 times and every single one was
+                # ``tank``; ``hoverTank`` was never evaluated at all, so the
+                # +100 bonus was unreachable code in practice.
+                #
+                # The economic argument for ``protect`` is that a unit must not
+                # starve the extractor that pays for the next one. That argument
+                # does not hold for the one unit that can damage an enemy air arm:
+                # an army that cannot shoot back is not a smaller army, it is a
+                # lost one, and no extractor survives that. So anti-air is exempt
+                # from the reserve -- it still has to be affordable
+                # (``price > funds`` above), it just does not have to leave 700
+                # behind.
+                attacks_air = need_air_cover and _menu_entry_attacks_air(
+                    {**entry, "_own_same_type": own_by_type.get(
+                        name.split(".")[-1].lower(), [])},
+                    position,
+                )
                 # ...and it must leave room for the economy to keep growing, while
                 # extractors remain (see ``protect`` above). This is the exact form
                 # of that rule: spend ``price``, keep ``extractor_price``.
-                if protect and funds - price < extractor_price:
+                if protect and not attacks_air and funds - price < extractor_price:
                     continue
                 score = _unit_value_per_credit(name)
                 if score <= 0.0:
                     continue
+                if attacks_air:
+                    # Outrank everything, but keep the relative order among
+                    # anti-air candidates so a better one still wins.
+                    score += 100.0
                 if best_score is None or score > best_score:
                     best_score = score
                     chosen_factory = int(factory_id)
