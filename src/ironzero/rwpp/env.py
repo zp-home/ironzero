@@ -2493,12 +2493,63 @@ class RwppDuelEnv:
             self.factory_site = None
             self._factory_progress = None
             self._factory_stalled = 0
-        # A hull already under construction means the builder is busy. Re-issuing
-        # restarts it (``.runtime/ab_reissue.py``: ``build_progress`` pinned at 0.0
-        # while every receipt says ``accepted: true``), so wait it out.
+        # A half-built hull is the *stall* case, not a reason to wait forever.
+        #
+        # This block used to read ``if unfinished: return []`` with the rationale
+        # that re-issuing restarts construction (``.runtime/ab_reissue.py``). But
+        # the stall detector further down -- the one that exists precisely to
+        # re-issue after :data:`STALL_DECISIONS` of no progress -- was unreachable
+        # behind it, and the site-clear above wiped ``_factory_stalled`` on every
+        # call. The second landFactory therefore sat at ``build_progress 0.0`` for
+        # the whole episode (``scripts/probe_factory2.py``, tick 2011 -> 19011)
+        # and production ran on one factory, halving throughput.
+        #
+        # Measured: the stage sent 33 orders and then idled 1919 decisions with
+        # ``_factory_progress=None`` -- the counter could never accumulate.
         unfinished = [unit for unit in land_factories if not _is_operational(unit)]
         if unfinished:
-            return []
+            target = unfinished[0]
+            try:
+                progress_now = float(target.get("build_progress") or 0.0)
+            except (TypeError, ValueError):
+                progress_now = None
+            previous = getattr(self, "_factory_progress", None)
+            if progress_now is not None and (
+                previous is None or progress_now > float(previous) + 1e-9
+            ):
+                # Real progress: keep waiting and remember where it got to.
+                self._factory_progress = progress_now
+                self._factory_stalled = 0
+                return []
+            self._factory_stalled = int(getattr(self, "_factory_stalled", 0)) + 1
+            if self._factory_stalled < STALL_DECISIONS:
+                return []
+            # Stalled at the same progress for a whole stall window. Re-issue at
+            # the hull's own coordinates -- never a fresh site, or a third hull
+            # would be started next to the two we already have.
+            self._factory_stalled = 0
+            bx = float(target.get("x") or 0.0)
+            by = float(target.get("y") or 0.0)
+            self.factory_exact = (bx, by)
+            grid = int(self.micro.position_grid)
+            self.factory_site = (
+                max(0, min(grid - 1, int(round(bx / max(1.0, float(self.micro.map_width)) * (grid - 1))))),
+                max(0, min(grid - 1, int(round(by / max(1.0, float(self.micro.map_height)) * (grid - 1))))),
+            )
+            gx, gy = self.factory_site
+            menu = build_menu(self.obs_state)
+            action = np.array(
+                [ACTION_KINDS.index("build_structure"), int(self.micro.groups),
+                 int(gx), int(gy), 0],
+                dtype=np.int64,
+            )
+            if menu:
+                action[4] = int(menu_index(menu, "land_factory"))
+            return self._send_curriculum_order(
+                action,
+                {"kind": "build_structure", "structure_type": "land_factory",
+                 "target": self.factory_exact},
+            )
         # Wait for the opening extractor. Issuing the factory while the builder is
         # mid-construction would *cancel* the extractor -- every order cancels the
         # in-flight one, which is the whole reason ``noop`` exists. A missing
