@@ -43,12 +43,22 @@ class RushStrategy(RuleStrategy):
             army_cap=army_cap,
             unit_pref=unit_pref,
         ))
+        # Keep the upgrade stage in the order whenever it is enabled. The old
+        # hard-coded order omitted "upgrade" entirely, so every probe that used
+        # RushStrategy silently disabled T2 even when the game config enabled it.
+        # Measured (round 18): stage_names after reset were
+        # ('extractor','factory','production','expansion','attack') and
+        # _issue_upgrades was called 0 times in 400 decisions.
+        order = ("extractor", "factory", "production", "expansion", "attack")
+        if max_upgrades > 0:
+            order = ("upgrade",) + order
+        object.__setattr__(self, "_build_order", order)
 
     def propose(self, observation_summary):
         d = super().propose(observation_summary)
         c = self._cfg
         macro = MacroPlan(
-            build_order=("extractor", "factory", "production", "expansion", "attack"),
+            build_order=self._build_order,
             army_target=c["army_target"],
             army_cap=c["army_cap"],
             attack_at_army=c["attack_at"],

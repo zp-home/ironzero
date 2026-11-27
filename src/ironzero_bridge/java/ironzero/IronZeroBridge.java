@@ -3548,10 +3548,20 @@ public final class IronZeroBridge implements ServerExtension {
             return false;
         }
         try {
-            if (!action.isAvailableForUnit(orderable) || !action.canAffordForUnit(orderable, false)) {
+            boolean available = action.isAvailableForUnit(orderable);
+            boolean affordable = action.canAffordForUnit(orderable, false);
+            if (!available || !affordable) {
+                // Diagnose which half refused: the two have completely different
+                // fixes (a capability/state problem versus a bank problem), and
+                // without this line they are indistinguishable from the outside --
+                // every refusal just surfaced as UPGRADE_UNAVAILABLE.
+                System.out.println("[ironzero] upgrade rejected: building="
+                        + buildingId
+                        + " available=" + available + " affordable=" + affordable);
                 return false;
             }
         } catch (RuntimeException failure) {
+            System.out.println("[ironzero] upgrade threw: " + failure);
             return false;
         }
         CommandControllerCommand command =

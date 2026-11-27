@@ -1102,12 +1102,28 @@ class RwppDuelEnv:
         ]
         if not upgradable:
             return []
-        # The builder must be idle: an upgrade is issued to the *building*, but the
-        # engine routes a build-queue item through the builder, and every order
-        # interrupts an in-flight construction.
         own = state.get("own_entities") or []
-        if any(unit.get("is_building") and not _is_operational(unit) for unit in own):
-            return []
+        # NOTE: there is deliberately **no** "builder must be idle" gate here.
+        #
+        # There used to be one, on the theory that the engine routes a build-queue
+        # item through the builder and an order would interrupt an in-flight
+        # construction. That is true of ``build_structure``/``build_extractor``,
+        # which address the *builder*, but not of an upgrade: the bridge's
+        # ``upgradeBuilding`` creates a command for the building itself
+        # (``engine.commandController.createCommandForTeam`` +
+        # ``command.addUnit(orderable)``, IronZeroBridge.java:3557) and dispatches
+        # the building's own ``getBuildActionId()`` special action. No builder is
+        # involved, so an in-flight construction is not disturbed.
+        #
+        # The gate was not cosmetic: combined with the ``combat_alive >= 1``
+        # precondition below it made the stage unreachable in practice. Measured on
+        # Lake at difficulty 1 (scripts/probe_upgrade_gates.py), the builder has a
+        # structure under construction on essentially every decision from tick 0 to
+        # the end, so the two conditions never held together and
+        # ``_issue_upgrades`` emitted **zero** orders across 1200 decisions with
+        # five upgradable buildings, max_upgrades=4 and a 4004-credit opening bank.
+        # Every building finished the episode at tech_level 1 while the enemy
+        # fielded extractorT2, heavyInterceptor (shield 450) and mechFactory units.
         # Leave enough for the army.
         #
         # Two separate floors, because they protect different things:
@@ -1159,9 +1175,20 @@ class RwppDuelEnv:
         # reserve. ``need`` is derived from the *price list* rather than hard-coded so
         # it tracks ``extractor_upgrade_cost`` if that changes.
         funds = float((state.get("global_state") or {}).get("funds") or 0.0)
+        # The engine's upgrade price is 1200, so the old gate
+        # ``extractor_upgrade_cost * 1.1`` = 1320 was never reachable: measured on
+        # Lake at difficulty 1 (scripts/probe_upgrade_gates.py) the bank oscillates
+        # 700-1054 and ``_issue_upgrades`` emitted **zero** orders across 1200
+        # decisions even with five upgradable buildings and max_upgrades=4.
+        #
+        # The reserve*0.5 floor (350) is the real protection: the production stage
+        # has already claimed its reserve before this stage sees the bank, so the
+        # only question is whether the upgrade itself can be paid for. Asking for
+        # the raw price (not price*1.1) lets it fire the moment 1200 is available,
+        # which does happen during the opening when the starting bank is 4000.
         need = max(
             float(self.macro.credit_reserve) * 0.5,
-            float(self.micro.extractor_upgrade_cost) * 1.1,
+            float(self.micro.extractor_upgrade_cost),
         )
         if funds < need:
             return []
@@ -2307,7 +2334,35 @@ class RwppDuelEnv:
         # than one cheap unit, so the extractor/factory chain can always finish.
         # (``funds`` was read above, before the builder top-up, so the two paths
         # cannot disagree about the bank within one decision.)
-        if funds < float(self.macro.credit_reserve):
+        # While an upgrade is still owed, hold its price back as well.
+        #
+        # Measured on Lake at difficulty 1 (scripts/probe_upgrades.py): with the
+        # upgrade stage finally reachable, it still emitted its four orders at
+        # tick ~17000 of a 19674-tick episode and no building ever left
+        # tech_level 1. The reason is here rather than there -- this stage drains
+        # the bank to ``credit_reserve`` (700) on every decision, so the upgrade
+        # stage's own 1200 gate only opens once the army has saturated and the
+        # bank drifts up on its own. An upgrade ordered 2600 ticks before the cap
+        # cannot repay itself, so "late but eventually ordered" is the same as
+        # never. Raising the floor here is what lets it start in the opening.
+        # ...but only once there is an army to show for it.
+        #
+        # The upgrade stage requires a working factory AND at least one combat
+        # unit, so saving from decision 1 deadlocks: no army is built (the floor
+        # blocks this stage), so the upgrade gate never opens. Measured with
+        # credit_reserve=2600 (round 18): funds climbed to 3288 with zero upgrade
+        # orders because ``combat_alive`` stayed 0 all episode.
+        #
+        # The honest sequence is therefore two-phase: build the first combat unit
+        # at the plain reserve, then save the upgrade's price on top of it.
+        upgrade_floor = 0.0
+        if (
+            getattr(self.game, "economy_upgrade", False)
+            and int(self._upgrades_issued) < int(self.macro.max_upgrades)
+            and int(combat_alive) >= 1
+        ):
+            upgrade_floor = float(self.micro.extractor_upgrade_cost)
+        if funds < float(self.macro.credit_reserve) + upgrade_floor:
             return []
         # While extractors can still be added, every unit must leave the bank able
         # to pay for one more extractor. Expansion is the ONLY stage that raises
