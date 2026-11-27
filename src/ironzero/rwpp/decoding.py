@@ -305,6 +305,37 @@ def _decode_heads(
         options = produce_options(state)
         if options:
             factory_id, unit_type = options[int(target_index) % len(options)]
+            # ...but never order a unit the bank cannot pay for.
+            #
+            # ``produce_options`` is the cross product of (factory, unit), so the
+            # slot the policy picked can name an ``artillery`` at 900 credits when
+            # the bank holds 582. The engine answers that with
+            # ``PRODUCE_UNAVAILABLE`` -- 1233 times in one round-24 update, the
+            # largest rejection bucket by 40x -- and each one pays
+            # ``invalid_penalty``. Measured on Lake at difficulty 1
+            # (scripts/probe_produce_reject.py): rejections cluster at funds
+            # 386-658, i.e. affordable for a tank (350) but not for artillery.
+            #
+            # Falling back to the cheapest *offered* unit keeps the policy's
+            # intent ("produce something here") instead of silently doing nothing,
+            # which is what an empty return would mean.
+            from ..micro_config import UNIT_PRICES, UNKNOWN_UNIT_PRICE
+
+            funds = float((state.get("global_state") or {}).get("funds") or 0.0)
+            price = float(
+                UNIT_PRICES.get(str(unit_type).split(".")[-1], UNKNOWN_UNIT_PRICE)
+            )
+            if funds > 0.0 and price > funds:
+                affordable = [
+                    (fid, name)
+                    for fid, name in options
+                    if float(UNIT_PRICES.get(str(name).split(".")[-1],
+                                             UNKNOWN_UNIT_PRICE)) <= funds
+                ]
+                if affordable:
+                    factory_id, unit_type = affordable[
+                        int(target_index) % len(affordable)
+                    ]
             return [
                 {
                     "kind": "produce_unit",

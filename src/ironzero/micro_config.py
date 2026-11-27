@@ -264,6 +264,13 @@ class MicroDuelConfig:
     extractor_upgrade_cost: float = 1400.0
     factory_cost: float = 800.0
     turret_cost: float = 500.0
+    #: Nominal price of "one combat unit" for the ``produce_unit`` mask gate.
+    #:
+    #: **Not** the cheapest real unit: on a stock land factory the cheapest is
+    #: ``tank`` at 350 (``hoverTank`` 450, ``artillery`` 900). See
+    #: :data:`UNIT_PRICES` for the real table, which the mask now prefers when
+    #: the bridge reports a menu. This value remains the fallback for
+    #: environments that report no menu at all (mock engine, older bridge).
     tank_cost: float = 250.0
     resource_slots_count: int = 4
 
@@ -352,6 +359,40 @@ class MicroDuelConfig:
 
 
 DEFAULT_CONFIG = MicroDuelConfig()
+
+#: What the engine charges for each producible unit, in credits.
+#:
+#: The engine does **not** report these: ``factories[].can_produce_price`` comes
+#: back empty on this build, so any Python-side affordability decision has to use
+#: a table. This is that table, kept here (rather than in ``rwpp/env.py``, where
+#: it started) because the action mask needs it too and importing the env from
+#: ``observation/`` would be a cycle.
+#:
+#: These are the values measured from the engine, not guesses: the extractor
+#: upgrade price was read out of ``SpecialAction.getPriceValue()`` in round 19 and
+#: came back 1400 where the config said 1200, so the same mistake was assumed here
+#: until measured.
+UNIT_PRICES: dict[str, int] = {
+    "builder": 500,
+    "scout": 700,
+    "hoverTank": 450,
+    "tank": 350,
+    "c_tank": 500,
+    "artillery": 900,
+    "c_artillery": 1000,
+    "lightGunship": 700,
+    "c_helicopter": 900,
+    "gunship": 900,
+    "bomber": 1000,
+    "c_bomber": 1200,
+}
+
+#: Price assumed for a unit name that is not in :data:`UNIT_PRICES`.
+#:
+#: Deliberately the *middle* of the table rather than the cheapest: an unknown
+#: custom unit is more likely to be expensive, and under-estimating its price is
+#: what produces ``PRODUCE_UNAVAILABLE`` rejections.
+UNKNOWN_UNIT_PRICE = 500
 
 #: Enemy visibility budget the **real-game training and evaluation paths** use.
 #:

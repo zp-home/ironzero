@@ -11,7 +11,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..micro_config import DEFAULT_CONFIG, MicroDuelConfig
+from ..micro_config import (
+    DEFAULT_CONFIG,
+    UNKNOWN_UNIT_PRICE,
+    UNIT_PRICES,
+    MicroDuelConfig,
+)
 from ..mock_engine import ACTION_KINDS
 from .menus import build_menu, produce_options, upgradable_buildings
 
@@ -67,6 +72,29 @@ _KIND_COST_ATTR: dict[str, str] = {
     "produce_unit": "tank_cost",
     "upgrade_building": "extractor_upgrade_cost",
 }
+
+
+def _cheapest_producible_cost(producibles) -> float | None:
+    """Cheapest unit price among the names a factory actually advertises.
+
+    Returns ``None`` when the menu is unknown (``producibles is None``) or names
+    nothing priceable, so callers can fall back to their configured estimate.
+
+    This exists because gating ``produce_unit`` on ``tank_cost`` (250) let the
+    mask advertise production whenever the bank held 250-349 credits, while the
+    cheapest real unit costs 350. Every one of those orders came back
+    ``PRODUCE_UNAVAILABLE``: 1233 of them in a single training update, the
+    largest rejection bucket by a factor of 40, each paying ``invalid_penalty``
+    and teaching the policy that production does not work.
+    """
+
+    if not producibles:
+        return None
+    prices = [
+        float(UNIT_PRICES.get(str(name).split(".")[-1], UNKNOWN_UNIT_PRICE))
+        for name in producibles
+    ]
+    return min(prices) if prices else None
 
 
 def _reported_capabilities(state: dict, own: list[dict]) -> set[str] | None:
@@ -290,6 +318,32 @@ def build_masks(state: dict, config: MicroDuelConfig = DEFAULT_CONFIG) -> dict[s
         affordable = (
             float(getattr(cfg, cost_attr, 0.0)) <= funds if cost_attr else True
         )
+        if kind == "produce_unit":
+            # Gate on the price of the cheapest unit the factory actually offers,
+            # not on ``tank_cost``.
+            #
+            # ``tank_cost`` is 250 while the cheapest real unit on a stock land
+            # factory costs 350 (``_UNIT_PRICE["tank"]``; ``hoverTank`` is 450).
+            # So whenever the bank sat between 250 and 349 the mask advertised
+            # ``produce_unit`` and the engine refused it. Measured on Lake at
+            # difficulty 1 (scripts/probe_produce_reject.py): every
+            # ``PRODUCE_UNAVAILABLE`` was chosen with funds 314-564, and that
+            # bucket reached 1233 per update in the round-24 training run -- far
+            # above BUILD_UNAVAILABLE=30. Each of those paid ``invalid_penalty``
+            # and taught the policy that production does not work.
+            #
+            # ``producible`` already holds the names the bridge reports for our
+            # factories, so the cheapest of those is the honest threshold. When
+            # the bridge reports nothing (mock engine, older bridge) the old
+            # ``tank_cost`` fallback stays, which is the permissive behaviour
+            # those environments expect.
+            cheapest = _cheapest_producible_cost(producibles)
+            if cheapest is not None:
+                affordable = cheapest <= funds
+            else:
+                affordable = (
+                    float(getattr(cfg, cost_attr, 0.0)) <= funds if cost_attr else True
+                )
         if kind == "build_extractor":
             kind_mask[index] = has_builder and buildable and affordable
         elif kind == "build_structure":
