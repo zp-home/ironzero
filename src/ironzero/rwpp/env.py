@@ -63,6 +63,14 @@ from .vision import apply_vision
 #: the builder away.
 STALL_DECISIONS = 20
 
+#: How many decisions the build stages yield the builder to an in-flight upgrade.
+#:
+#: An extractor tier-up takes a few hundred ticks once it starts, so this is
+#: generous -- but bounded, because the tier-up is dispatched as a build-queue
+#: item and a queue item that never starts would otherwise block expansion for
+#: the rest of the episode.
+UPGRADE_PATIENCE_DECISIONS = 120
+
 
 def _building_tier_total(units: Any) -> int:
     """Tiers *gained above the starting tier*, counting buildings only.
@@ -347,6 +355,10 @@ class RwppDuelEnv:
         # (entity_id, tech_level) of the building whose upgrade is in flight.
         # Re-issuing while this is set restarts the upgrade, so the stage waits.
         self._upgrade_in_flight: tuple[int, int] | None = None
+        # Decisions spent waiting on that upgrade; bounded by
+        # ``UPGRADE_PATIENCE_DECISIONS`` so a tier-up that never finishes cannot
+        # block the build stages forever.
+        self._upgrade_wait: int = 0
         # Last observed build progress per stage, so a stage can tell "the builder is
         # working, leave it alone" from "the policy cancelled it, re-issue".
         self._extractor_progress: float | None = None
@@ -1190,9 +1202,23 @@ class RwppDuelEnv:
         # only question is whether the upgrade itself can be paid for. Asking for
         # the raw price (not price*1.1) lets it fire the moment 1200 is available,
         # which does happen during the opening when the starting bank is 4000.
+        # The upgrade needs the price *plus* a construction buffer.
+        #
+        # Charging 1400 is only the purchase. The build-queue item then accrues
+        # progress while the team keeps paying, exactly like a structure under
+        # construction. Measured on Lake at difficulty 1
+        # (scripts/probe_upgrade_trace.py): the stage fired the moment the bank
+        # reached 1400, funds dropped to 5.0, and the tier never rose -- there was
+        # nothing left to fund the work. The same upgrade completed to
+        # ``extractorT2`` (income 26 -> 30) when it was dispatched with ~2000
+        # credits still in the bank (scripts/probe_upgrade_functional.py).
+        #
+        # So require room for the purchase and the work: the price, plus the
+        # production reserve as the buffer that keeps the construction funded.
         need = max(
             float(self.macro.credit_reserve) * 0.5,
-            float(self.micro.extractor_upgrade_cost),
+            float(self.micro.extractor_upgrade_cost)
+            + float(self.macro.credit_reserve),
         )
         if funds < need:
             return []
@@ -1211,6 +1237,19 @@ class RwppDuelEnv:
         # one, because an extractor also reports progress while its pump animates.
         in_flight = getattr(self, "_upgrade_in_flight", None)
         if in_flight is not None:
+            # The latch must not be able to wedge the whole build pipeline.
+            #
+            # While it is set, the builder stages are skipped so the builder can
+            # perform the tier-up. If the tier-up never completes -- measured: it
+            # fires late enough that the episode ends first -- that skip would
+            # block expansion for the rest of the game. A bounded patience keeps
+            # the optimisation from becoming a deadlock.
+            self._upgrade_wait = int(getattr(self, "_upgrade_wait", 0)) + 1
+            if self._upgrade_wait > UPGRADE_PATIENCE_DECISIONS:
+                self._upgrade_in_flight = None
+                self._upgrade_wait = 0
+                in_flight = None
+        if in_flight is not None:
             for unit in upgradable:
                 if int(unit.get("entity_id", -1)) == in_flight[0]:
                     try:
@@ -1219,10 +1258,12 @@ class RwppDuelEnv:
                         level = 1
                     if level > in_flight[1]:
                         self._upgrade_in_flight = None
+                        self._upgrade_wait = 0
                     break
             else:
                 # The building is gone (destroyed or upgraded into a new entity).
                 self._upgrade_in_flight = None
+                self._upgrade_wait = 0
             if getattr(self, "_upgrade_in_flight", None) is not None:
                 return []
         # Prefer the *cheapest tier first* -- i.e. a T1 building over an already-T2
@@ -2396,11 +2437,16 @@ class RwppDuelEnv:
         # orders because ``combat_alive`` stayed 0 all episode.
         #
         # The honest sequence is therefore two-phase: build the first combat unit
-        # at the plain reserve, then save the upgrade's price on top of it.
+        # at the plain reserve, then save for the upgrade on top of it.
+        #
+        # The floor must cover the upgrade's *full* gate -- price plus the
+        # construction buffer -- not just the price, or this stage stops saving at
+        # a bank that the upgrade stage still refuses to spend.
         upgrade_floor = 0.0
         if (
             getattr(self.game, "economy_upgrade", False)
             and int(self._upgrades_issued) < int(self.macro.max_upgrades)
+            and self._upgrade_in_flight is None
             and int(combat_alive) >= 1
         ):
             upgrade_floor = float(self.micro.extractor_upgrade_cost)
@@ -3146,9 +3192,25 @@ class RwppDuelEnv:
             "expansion": self._issue_late_expansion,
             "attack": self._issue_attack_drive,
         }
+        # Stages that command the single builder. While a tier-up is in flight the
+        # builder has to be free to perform it: a build order re-tasks the builder
+        # away from the upgrade, and the extractor then sits at tech_level 1 with
+        # 1400 credits already spent.
+        #
+        # Measured on Lake at difficulty 1 (scripts/probe_upgrade_trace.py): the
+        # upgrade stage charged the full 1400 and latched ``_upgrade_in_flight``,
+        # yet the tier never rose, because ``_issue_late_expansion`` re-issued a
+        # build order on every following decision. The identical upgrade completed
+        # to ``extractorT2`` (income 26 -> 30) when the builder was left alone
+        # (scripts/probe_upgrade_functional.py).
+        _BUILDER_STAGES = frozenset(
+            {"extractor", "factory", "expansion", "defence"}
+        )
         for name in self.macro.stage_names:
             stage = stages.get(name)
             if stage is None:  # pragma: no cover - MacroPlan validates names
+                continue
+            if name in _BUILDER_STAGES and self._upgrade_in_flight is not None:
                 continue
             order = stage()
             # ``order`` is a *list* of decoded orders. Testing it for ``None``
