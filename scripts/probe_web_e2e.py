@@ -99,9 +99,13 @@ def main() -> int:
     text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
     print("\n=== trainer log (first 40 lines) ===", flush=True)
     for line in text.splitlines()[:40]:
-        # The trainer's stderr is UTF-8 but this console is GBK; write the line
-        # with replacement instead of letting one odd byte kill the whole check.
-        sys.stdout.write(line.encode("utf-8", "replace").decode("utf-8", "replace") + "\n")
+        # The trainer's stderr is UTF-8 but this console is GBK. Encode with
+        # ``backslashreplace`` and strip the escape again: ``"replace"`` on both
+        # sides keeps the odd character and the *console* then fails on it
+        # (measured: UnicodeEncodeError on '\u01ff' killed the whole probe before
+        # it printed the checks, so a passing run reported exit 1).
+        safe = line.encode("ascii", "backslashreplace").decode("ascii")
+        sys.stdout.write(safe + "\n")
         sys.stdout.flush()
     checks = {
         "--enemy-ai-difficulty 1": "--enemy-ai-difficulty 1" in text,
@@ -116,7 +120,8 @@ def main() -> int:
     # Web API received are the values the engine was launched with.
     for line in text.splitlines():
         if "arguments=" in line or "--enemy-ai-difficulty" in line:
-            sys.stdout.write("ARGV: " + line.strip()[:400] + "\n")
+            safe = line.strip()[:400].encode("ascii", "backslashreplace").decode("ascii")
+            sys.stdout.write("ARGV: " + safe + "\n")
             sys.stdout.flush()
             break
     return 0 if all(checks.values()) else 1

@@ -742,6 +742,32 @@
                     <span>观测迷雾半径（px）</span>
                     <input id="fe-ppo-vision" type="number" min="0" max="2000" step="10" value="0" />
                   </label>
+                  <!-- 对手难度 / 胜利判定 / 种子：这三项决定「赢」是什么意思，
+                       而后端 (models.py, launch.py, ppo.py) 早就支持它们，
+                       前端却从不发送，所以从浏览器启动的训练永远跑在引擎默认难度上。 -->
+                  <label class="field">
+                    <span>敌方 AI 难度</span>
+                    <select id="fe-ppo-enemy-difficulty">
+                      <option value="0">0 · 正常（收入 ×1.00）</option>
+                      <option value="1" selected>1 · 困难（收入 ×1.40 · 目标难度）</option>
+                      <option value="2">2 · 非常困难（收入 ×1.80）</option>
+                      <option value="3">3 · 炼狱（收入 ×3.20）</option>
+                      <option value="-1">-1 · 简单（收入 ×0.70）</option>
+                      <option value="-2">-2 · 非常简单（收入 ×0.40）</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>胜利判定 win_mode</span>
+                    <select id="fe-ppo-win-mode">
+                      <option value="objective" selected>objective（摧毁敌方产能即胜 · 推荐）</option>
+                      <option value="annihilation">annihilation（歼灭全部敌军）</option>
+                      <option value="native">native（引擎原生判定）</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>引擎种子 seed（0 = 随机）</span>
+                    <input id="fe-ppo-seed" type="number" min="0" max="2147483647" step="1" value="71000" />
+                  </label>
                   <label class="field field-wide">
                     <span>设备 device</span>
                     <select id="fe-ppo-device">

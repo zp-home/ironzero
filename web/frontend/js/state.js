@@ -39,6 +39,7 @@ export function cacheEls() {
     'fe-ppo-map', 'fe-ppo-units-field', 'fe-ppo-map-hint', 'fe-ppo-init-mode', 'fe-ppo-checkpoint-field', 'fe-ppo-init-checkpoint', 'fe-ppo-checkpoint-sort', 'fe-ppo-checkpoint-refresh', 'fe-ppo-init-hint',
     'fe-ppo-start', 'fe-ppo-stop', 'fe-ppo-hint', 'rwpp-status-ppo', 'rwpp-status-ppo-text',
     'fe-ppo-frame-ms', 'fe-ppo-vision', 'fe-ppo-kpi-device-foot',
+    'fe-ppo-enemy-difficulty', 'fe-ppo-win-mode', 'fe-ppo-seed',
     'fe-checkpoint-field', 'fe-checkpoint-select', 'fe-checkpoint-sort', 'fe-checkpoint-refresh', 'fe-model-note', 'fe-map-count',
     'fe-ppo-eval-every', 'fe-ppo-eval-episodes', 'fe-ppo-use-llm', 'fe-ppo-llm-note',
     'fe-ppo-reward', 'fe-ppo-reward-chip', 'fe-ppo-reward-note',

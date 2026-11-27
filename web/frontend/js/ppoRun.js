@@ -110,6 +110,20 @@ export async function feStartPpo() {
   const evalEvery = clampInt(els.fePpoEvalEvery && els.fePpoEvalEvery.value, 0, 500, 0);
   const evalEpisodes = clampInt(els.fePpoEvalEpisodes && els.fePpoEvalEpisodes.value, 1, 16, 1);
   const useLlm = !!(els.fePpoUseLlm && els.fePpoUseLlm.checked);
+  // Opponent strength and the victory rule decide what "winning" even means.
+  //
+  // Both were already accepted by every layer below this one -- the Pydantic
+  // schema (``web/backend/app/models.py: RwppPpoRequest``), the host service's
+  // parser (``scripts/rwpp_service/launch.py``) and the trainer command line
+  // (``--enemy-ai-difficulty``, ``--win-mode``) -- but this function never put
+  // them in the payload, so every browser-started run silently played at the
+  // engine default (level 0, x1.00 income) no matter what the UI showed. The
+  // objective explicitly asks for difficulty 1 through the Web UI, so the gap
+  // made that requirement unexpressible rather than merely untested.
+  const enemyDifficulty = clampInt(els.fePpoEnemyDifficulty && els.fePpoEnemyDifficulty.value, -2, 3, 1);
+  const winMode = (els.fePpoWinMode && els.fePpoWinMode.value) || 'objective';
+  const seedValue = clampInt(els.fePpoSeed && els.fePpoSeed.value, 0, 2147483647, 0);
+  const seed = seedValue > 0 ? seedValue : null;
   const selectedMap = (els.fePpoMap && els.fePpoMap.value) || 'IronZero25';
   let ppoMapName = selectedMap;
   let ppoMapPath = `maps/ironzero/${selectedMap}.tmx`;
@@ -189,6 +203,12 @@ export async function feStartPpo() {
       units_per_team: unitsPerTeam,
       init_checkpoint: initCheckpoint,
       init_mode: initMode,
+      // Difficulty / victory rule / seed. Omitting these is what made the
+      // Web-launched training run at the engine default difficulty.
+      enemy_ai_difficulty: enemyDifficulty,
+      win_mode: winMode,
+      unlock_ai: true,
+      seed: seed,
     });
     const jobId = response && (response.job_id || response.id);
     if (!jobId) throw new Error('后端未返回 PPO 任务 id');
@@ -273,6 +293,15 @@ export async function feRestorePpoJob(force) {
       ppo.useLlm = !!running.use_llm;
       if (els.fePpoUseLlm) els.fePpoUseLlm.checked = ppo.useLlm;
       if (els.fePpoLlmNote) els.fePpoLlmNote.hidden = !ppo.useLlm;
+    }
+    // Reflect the running job's own difficulty / victory rule / seed, so a
+    // restored page shows what the job is actually doing instead of the form's
+    // defaults.
+    if (numOrNull(running.enemy_ai_difficulty) !== null && els.fePpoEnemyDifficulty) {
+      els.fePpoEnemyDifficulty.value = String(num(running.enemy_ai_difficulty, 1));
+    }
+    if (running.win_mode && els.fePpoWinMode) {
+      els.fePpoWinMode.value = String(running.win_mode);
     }
     feSetPpoRunning(true);
     startFePpoPolling();
