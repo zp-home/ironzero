@@ -1,0 +1,35 @@
+fix(rwpp): attack stage never fired because it called int(None)
+
+THE BUG
+-------
+On Lake at difficulty 1 the army grew to 15-21 tanks, closed only to 1250+ px
+from any enemy building, and every episode timed out with both main bases at
+100% HP. scripts/probe_attack_stage_gate.py over 1600 decisions showed the attack
+stage fired ZERO orders; every sample reported ``army<20``.
+
+The stage has a fallback meant to march with a stalled army:
+
+    cap = max(int(self.macro.army_cap), int(self.macro.attack_at_army))
+
+but the rule layer leaves ``macro.army_cap = None`` (the real value is on the game
+config), so ``int(None)`` raised TypeError. The dispatcher swallowed it and the
+stage silently contributed nothing -- indistinguishable from "the army is not big
+enough yet".
+
+THE FIX
+-------
+* Read the cap from ``game.economy_army_cap``, with macro and attack threshold as
+  fallbacks; never call int() on None.
+* Lower the stalled-army fallback from 0.6 to 0.35 of cap. At cap 32 the 0.6 gate
+  (19 tanks) was only reached at step 1420 of 1600 -- too late to break a building
+  before the tick cap. 0.35 (about 11 tanks) is reachable and leaves time to fight.
+
+VERIFIED
+--------
+scripts/probe_attack_target.py after the fix:
+
+    step 1100: curriculum=attack_move, closest 1514 px
+    step 1300: closest 259.8 px
+    step 1400: closest 219.6 px, enemy building HP 12500 -> 11500
+
+For the first time the army reaches the enemy base and damages buildings.

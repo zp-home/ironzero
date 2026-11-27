@@ -1584,8 +1584,22 @@ class RwppDuelEnv:
             # The army that exists is still the army that has to fight, so the stage
             # fires anyway once the army has plateaued at a real fraction of the
             # cap.
-            cap = max(int(self.macro.army_cap), int(self.macro.attack_at_army))
-            if len(ours) < max(1, int(cap * 0.6)):
+            # The cap comes from the game config, not ``macro.army_cap``: the rule
+            # layer leaves that field unset (None), and ``int(None)`` raised
+            # TypeError on every decision, which the dispatcher swallowed as "the
+            # stage had nothing to say". Measured on Lake at difficulty 1: the
+            # attack stage fired zero orders in 1600 decisions while 15 tanks sat
+            # 1250 px from an enemy building and both bases stayed at 100% HP.
+            macro_cap = getattr(self.macro, "army_cap", None)
+            game_cap = getattr(self.game, "economy_army_cap", None)
+            cap = int(macro_cap) if macro_cap is not None else (
+                int(game_cap) if game_cap is not None else int(self.macro.attack_at_army)
+            )
+            cap = max(cap, int(self.macro.attack_at_army))
+            # 0.35 of cap is reachable at difficulty 1 (~11 tanks of 32); 0.6
+            # (~19) was only reached at step 1420 of 1600, too late to break a
+            # building before the tick cap. March with what exists and reinforce.
+            if len(ours) < max(1, int(cap * 0.35)):
                 return []
         # Address the army group by group, rotating each decision.
         #
