@@ -132,6 +132,91 @@ def _is_operational(unit: dict[str, Any]) -> bool:
     return float(unit.get("build_progress", 1.0) or 0.0) >= 1.0
 
 
+
+#: Rough combat value per unit type. Higher is better; unknown types rank 0.
+#:
+#: These are an *ordering*, not a balance claim. What matters is that ``scout`` sits
+#: below every real combat unit, because a menu-driven "first entry" policy was
+#: measured to build nothing but scouts while three land factories stood idle
+#: (endgame probe on Lake at difficulty 1).
+_UNIT_COMBAT_RANK: dict[str, int] = {
+    "scout": 1,
+    "hoverTank": 3,
+    "tank": 4,
+    "c_tank": 5,
+    "artillery": 5,
+    "c_artillery": 6,
+    "lightGunship": 4,
+    "c_helicopter": 5,
+    "gunship": 5,
+    "bomber": 6,
+    "c_bomber": 6,
+}
+
+#: Rough price per unit type, in credits. Used only to compare value per credit.
+_UNIT_PRICE: dict[str, int] = {
+    "scout": 700,
+    "hoverTank": 450,
+    "tank": 350,
+    "c_tank": 500,
+    "artillery": 900,
+    "c_artillery": 1000,
+    "lightGunship": 700,
+    "c_helicopter": 900,
+    "gunship": 900,
+    "bomber": 1000,
+    "c_bomber": 1200,
+}
+
+
+def _unit_combat_rank(name: str) -> int:
+    """Combat value of a producible unit name; 0 when unknown."""
+    return _UNIT_COMBAT_RANK.get(name.split(".")[-1], 0)
+
+
+def _unit_value_per_credit(name: str) -> float:
+    """Combat value per credit, so an affordable unit beats a better unaffordable one.
+
+    Ordering by absolute strength alone was measured to *empty* the army: the
+    preferred unit on a land factory is ``artillery`` at 900 credits, the factory
+    waited for a bank it never saw, and the episode ended with zero mobile units
+    while income sat at 42 and three factories were idle. A 350-credit tank that is
+    actually built is worth more than a 900-credit artillery that is not.
+    """
+    key = name.split(".")[-1]
+    rank = _UNIT_COMBAT_RANK.get(key, 0)
+    if rank <= 0:
+        return 0.0
+    price = max(1, _UNIT_PRICE.get(key, 500))
+    return rank / float(price)
+
+
+def _combat_factories(state: dict) -> list[dict]:
+    """Factories that can produce a *real* combat unit.
+
+    A factory qualifies only when its menu contains something better than a scout,
+    and the command centre never qualifies. That building's purpose is to make
+    builders; its ``scout`` entry is the weakest unit on the map, so counting it as
+    a combat factory both mislabels the base and -- because
+    ``produce_options`` lists it first -- captures every production order.
+
+    Measured consequence of the old predicate on Lake at difficulty 1: three
+    ``landFactory`` buildings stood idle for a whole episode while the army was six
+    ``scout`` against an enemy holding tanks, artillery and gunships.
+    """
+    out: list[dict] = []
+    for entry in state.get("factories") or []:
+        if not isinstance(entry, dict):
+            continue
+        type_name = str(entry.get("unit_type") or "").lower()
+        if "commandcenter" in type_name or "command_centre" in type_name:
+            continue
+        menu = [str(name) for name in (entry.get("can_produce") or [])]
+        if any(_unit_combat_rank(name) > _unit_combat_rank("scout") for name in menu):
+            out.append(entry)
+    return out
+
+
 class RwppDuelEnv:
     """Single real-game environment driven through the IronZero bridge."""
 
@@ -859,6 +944,28 @@ class RwppDuelEnv:
         )
         return self._send_curriculum_order(action, {"kind": "build_extractor",
                                                    "slot_id": int(slot_id)})
+
+    def _send_direct_order(
+        self, order: dict[str, Any], payload: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Dispatch an already-decoded order, bypassing the action-vector round trip.
+
+        Some curriculum decisions name a concrete entity ("queue a tank at factory
+        27"). Encoding that as a head index and decoding it again is not just
+        redundant: the index space is rebuilt from the live observation and changes
+        size whenever a factory is busy, so the same index names a different pair one
+        decision later. Measured consequence: a land factory was ordered to build a
+        unit absent from its menu, the queue item never started (progress -1.0), and
+        the stage read ``queue_full`` for 771 of 900 decisions with the army at zero.
+
+        Returns a single-element list so callers keep the same "orders to append"
+        contract as :meth:`_send_curriculum_order`.
+        """
+
+        if not isinstance(order, dict) or not order.get("kind"):
+            return []
+        self.curriculum_order = {**payload, "accepted": True}
+        return [order]
 
     def _send_curriculum_order(
         self, action: np.ndarray, payload: dict[str, Any]
@@ -1680,15 +1787,7 @@ class RwppDuelEnv:
         own = state.get("own_entities") or []
         # The factory chain must be established first: a finished, non-command-centre
         # factory with nothing queued.
-        combat_factories = [
-            entry
-            for entry in (state.get("factories") or [])
-            if isinstance(entry, dict)
-            and any(
-                str(name).lower() != "builder"
-                for name in (entry.get("can_produce") or [])
-            )
-        ]
+        combat_factories = _combat_factories(state)
         if not combat_factories:
             return []
         # NOTE: a busy factory queue deliberately does **not** block expansion.
@@ -2093,15 +2192,7 @@ class RwppDuelEnv:
         # ``builder`` -- queueing there would pay nothing and teach nothing. The
         # bridge already answers the real question through ``factories[].can_produce``,
         # so require a factory that advertises a non-builder entry.
-        combat_factories = [
-            entry
-            for entry in (state.get("factories") or [])
-            if isinstance(entry, dict)
-            and any(
-                str(name).lower() != "builder"
-                for name in (entry.get("can_produce") or [])
-            )
-        ]
+        combat_factories = _combat_factories(state)
         if not combat_factories:
             return []
         # Keep an army, not a token: stop once the target is reached so the stage
@@ -2153,53 +2244,66 @@ class RwppDuelEnv:
         )
         if queued >= int(self.macro.production_queue_depth):
             return []
-        # Pick the target index from the factory's OWN menu, not from a constant.
+        # Name the factory and the unit explicitly; never route through an index.
         #
-        # This used to pin the target head at ``target_slots - 1``, and
-        # ``decode_action`` resolves that index modulo ``produce_options(state)`` --
-        # the (factory, unit) cross product over **every** factory, including the
-        # command centre. Measured on Lake at difficulty 1
-        # (``.runtime/queue_items.json``): factory 29 was ordered to build
-        # ``scout``, a unit that appears in the *command centre's* menu and not in
-        # the land factory's, so the engine queued it and never started it --
-        # ``queued[].progress`` stayed at exactly **-1.0** ("not started") from tick
-        # 1001 to 2751 while ``can_produce`` listed only
-        # ``[builder, hoverTank, tank]``.
+        # The index form was the source of two separate wedges. First the target head
+        # was pinned at ``target_slots - 1``, which resolved modulo a list covering
+        # every factory including the command centre, so a land factory was ordered
+        # to build ``scout`` -- absent from its menu -- and the queue item sat at
+        # progress -1.0 from tick 1001 to 2751. Then the index was chosen from
+        # ``produce_options``, which is rebuilt from the live observation and *shrinks*
+        # whenever a factory is busy: measured with scripts/probe_produce_options.py,
+        # 13 entries at step 83 and 6 at step 85, so a fixed index names a different
+        # pair one decision later and the queue ended up holding ``c_tank``.
         #
-        # A queue that never drains is worse than an empty one: it holds the
-        # ``production_queue_depth`` slots, so this stage reads ``queue_full`` on
-        # every subsequent decision and never orders the units that *would* work.
-        # The measured consequence was ``factories=4``, ``queue=3``, ``funds=1624``
-        # and ``army=0`` for an entire episode.
-        #
-        # ``produce_options`` already filters ``builder`` out, so any entry it
-        # returns is a combat unit this factory can actually make. Selecting the
-        # index of the *first option belonging to a combat factory* keeps the
-        # stage's "one order per decision" behaviour while guaranteeing the order is
-        # executable.
-        options = produce_options(state)
-        combat_ids = {
-            int(entry.get("entity_id", -1))
-            for entry in combat_factories
-            if entry.get("entity_id") is not None
-        }
-        target_index = None
-        for index, (factory_id, _unit) in enumerate(options):
-            if factory_id in combat_ids:
-                target_index = index
-                break
-        if target_index is None:
-            # No producible combat unit on any factory this decision. Returning
-            # here is correct: ordering anything else would queue a unit the
-            # factory cannot build and wedge the queue (see above).
+        # The bridge accepts the concrete form directly
+        # (``action.getLong("factory_entity_id")`` + ``action.getString("unit_type")``),
+        # so there is no reason to express a decision the curriculum already knows.
+        funds = float((state.get("global_state") or {}).get("funds") or 0.0)
+        chosen_factory = None
+        chosen_unit = None
+        best_score = None
+        for entry in combat_factories:
+            factory_id = entry.get("entity_id")
+            if factory_id is None:
+                continue
+            menu = [str(name) for name in (entry.get("can_produce") or [])]
+            prices = entry.get("can_produce_price") or []
+            for position, name in enumerate(menu):
+                price = None
+                if position < len(prices):
+                    try:
+                        price = float(prices[position])
+                    except (TypeError, ValueError):
+                        price = None
+                if price is None:
+                    price = float(_UNIT_PRICE.get(name.split(".")[-1], 500))
+                # Affordability is part of the decision: a 900-credit artillery that
+                # the bank cannot pay for is worth less than a 350-credit tank that
+                # gets built. Ordering the unaffordable one measured as an *empty*
+                # army over a full episode.
+                if price > funds:
+                    continue
+                score = _unit_value_per_credit(name)
+                if score <= 0.0:
+                    continue
+                if best_score is None or score > best_score:
+                    best_score = score
+                    chosen_factory = int(factory_id)
+                    chosen_unit = name
+        if chosen_factory is None or chosen_unit is None:
+            # Nothing buildable and affordable this decision. Returning here is
+            # correct: ordering anything else wedges the queue (see above).
             return []
-        action = np.array(
-            [ACTION_KINDS.index("produce_unit"), int(self.micro.groups),
-             int(self.micro.position_grid) // 2, int(self.micro.position_grid) // 2,
-             int(target_index)],
-            dtype=np.int64,
+        orders = self._send_direct_order(
+            {
+                "kind": "produce_unit",
+                "factory_entity_id": int(chosen_factory),
+                "unit_type": str(chosen_unit),
+            },
+            {"kind": "produce_unit", "factory_entity_id": int(chosen_factory),
+             "unit_type": str(chosen_unit)},
         )
-        orders = self._send_curriculum_order(action, {"kind": "produce_unit"})
         if not orders:
             return []
         self.production_curriculum_done = False

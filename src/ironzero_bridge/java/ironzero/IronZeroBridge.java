@@ -3334,13 +3334,74 @@ public final class IronZeroBridge implements ServerExtension {
      * factory cannot queue it (tech-locked, unaffordable, unit cap) so the
      * receipt reports a rejection instead of a phantom success.
      */
-    private boolean produceUnit(long factoryId, String unitTypeName) {
-        UnitTypeInterface unitType = resolveUnitType(unitTypeName);
-        if (unitType == null) {
-            return false;
+    /**
+     * The {@link UnitType} in this factory's own producible menu whose internal name
+     * equals {@code name}, or {@code null} when the menu has no such entry.
+     *
+     * <p>Deliberately an exact match: the whole point is to hand
+     * {@link #produceUnit} the same type the observation advertised, so a receipt of
+     * "accepted" cannot describe a unit the policy did not ask for. See the caller
+     * for the measurement that motivated this.
+     */
+    private UnitTypeInterface exactProducibleType(OrderableUnit factory, String name) {
+        if (name == null || name.isEmpty()) {
+            return null;
         }
+        UnitType[] types;
+        try {
+            types = UnitType.values();
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+        for (UnitType candidate : types) {
+            if (candidate == null) {
+                continue;
+            }
+            String internal;
+            try {
+                internal = candidate.getInternalName();
+            } catch (RuntimeException ignored) {
+                continue;
+            }
+            if (internal == null || !internal.equals(name)) {
+                continue;
+            }
+            try {
+                if (factory.findActionForUnitType(candidate) != null) {
+                    return candidate;
+                }
+            } catch (RuntimeException ignored) {
+                // Unqueryable: keep looking rather than aborting the whole menu.
+            }
+        }
+        return null;
+    }
+
+    private boolean produceUnit(long factoryId, String unitTypeName) {
         OrderableUnit factory = findOwnFactory(factoryId);
         if (factory == null) {
+            return false;
+        }
+        // Resolve the requested type against THIS factory's own menu, by exact name.
+        //
+        // ``UnitType.findUnitType(name)`` is the engine's string lookup and is not
+        // guaranteed to return the type the menu advertised: measured on Lake at
+        // difficulty 1, ordering ``tank`` at a factory whose menu lists ``tank``
+        // queued ``c_tank`` instead (a separate registry entry), the receipt said
+        // "ok", and the queue item sat at progress -1.0 for the whole episode. A
+        // queue that never drains holds every ``production_queue_depth`` slot, so the
+        // stage read ``queue_full`` on 771 of 900 decisions with three factories
+        // idle and the army at zero.
+        //
+        // Matching the menu first makes the dispatched type and the advertised type
+        // the same object, which is what "the policy asked for a unit the factory
+        // offers" is supposed to mean. The fuzzy lookup stays as the fallback for
+        // custom or aliased units, which never appear in ``UnitType.values()``.
+        UnitTypeInterface unitType = exactProducibleType(factory, unitTypeName);
+        if (unitType == null) {
+            unitType = resolveUnitType(unitTypeName);
+        }
+        if (unitType == null) {
             return false;
         }
         SpecialAction action;
@@ -3359,6 +3420,32 @@ public final class IronZeroBridge implements ServerExtension {
             }
         } catch (RuntimeException failure) {
             return false;
+        }
+        // Call the engine's own production entry point.
+        //
+        // The previous form built a CommandControllerCommand and set its actionId,
+        // which relies on the command dispatcher turning an action id into a build
+        // queue entry. It does not: measured on Lake at difficulty 1, the item
+        // appeared in the queue with progress -1.0 and never started, with 1201
+        // credits in the bank and the type present in the factory's menu.
+        //
+        // ``Factory.executeSpecialAction`` is what the engine itself uses (and what
+        // the built-in AI reaches): it forwards to
+        // ``FactoryBuildQueue.queueOrCancel``, which charges the price and enqueues
+        // the build. Routing through it means "accepted" really means "the factory
+        // is now building this".
+        try {
+            if (factory instanceof com.corrodinggames.rts.game.units.buildings.Factory) {
+                ((com.corrodinggames.rts.game.units.buildings.Factory) factory)
+                        .executeSpecialAction(action, false);
+                return true;
+            }
+            // ``FactoryInterface`` has no executeSpecialAction -- it declares only
+            // queue introspection -- so a custom unit that implements the interface
+            // without extending Factory falls through to the command path below.
+        } catch (RuntimeException failure) {
+            // Fall through to the command path rather than reporting a phantom
+            // rejection: the queue may still accept the order on older builds.
         }
         CommandControllerCommand command =
                 engine.commandController.createCommandForTeam(engine.playerTeam);
