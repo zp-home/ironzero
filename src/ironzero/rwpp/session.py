@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import socket
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from .errors import RwppEnvError
@@ -30,7 +31,24 @@ _CATCH_UP_LIMIT = 10_000
 def start_game(env: "RwppDuelEnv") -> None:
     """Launch the game process and connect to its bridge port."""
 
-    env._process = env._launcher(env.game, env.port)
+    # The engine seed comes from ``--seed``, which ``_bridge_command`` reads from
+    # the *config* (``game.seed``). The gymnasium-facing seed lives on the env
+    # (``env.seed``) and is set by both the constructor and ``reset(seed=...)``.
+    # They used to be different objects: every caller that seeded the env
+    # (the whole evaluation path, all probes, VecRwppEnv's per-slot seeds) left
+    # ``game.seed`` at its default 0, so the engine re-randomised on every
+    # ``loadMap``. Measured: identical config + "seed" reported different
+    # outcomes across runs, and 1/8 vs 0/8 win rates on the same "seeds".
+    #
+    # Forward the env's seed into a *copy* of the config for this launch. A copy
+    # is required because VecRwppEnv shares one config across all its envs with
+    # different per-slot seeds; mutating ``env.game.seed`` would make every slot
+    # use the last one's seed.
+    launch_game = env.game
+    engine_seed = int(getattr(env, "seed", 0) or 0)
+    if engine_seed and engine_seed != int(getattr(launch_game, "seed", 0) or 0):
+        launch_game = replace(launch_game, seed=engine_seed)
+    env._process = env._launcher(launch_game, env.port)
     deadline = time.time() + env.game.start_timeout
     last_error: Exception | None = None
     while time.time() < deadline:
