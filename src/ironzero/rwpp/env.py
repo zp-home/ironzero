@@ -217,6 +217,22 @@ def _combat_factories(state: dict) -> list[dict]:
     return out
 
 
+def _occupied_extractors(state: dict) -> int:
+    """How many resource pools currently hold an extractor.
+
+    Read from the bridge's occupancy view rather than by counting ``extractor``
+    entities: a pool flips ``occupied`` only when the hull is streamed, which is
+    the same signal the expansion stage latches on, so the two stages agree on
+    whether capacity remains.
+    """
+
+    return sum(
+        1
+        for slot in state.get("resource_slots") or []
+        if isinstance(slot, dict) and slot.get("occupied")
+    )
+
+
 class RwppDuelEnv:
     """Single real-game environment driven through the IronZero bridge."""
 
@@ -2236,6 +2252,29 @@ class RwppDuelEnv:
         funds = float((state.get("global_state") or {}).get("funds") or 0.0)
         if funds < float(self.macro.credit_reserve):
             return []
+        # While extractors can still be added, every unit must leave the bank able
+        # to pay for one more extractor. Expansion is the ONLY stage that raises
+        # income, and this stage competes with it for the same credits.
+        #
+        # Measured on Lake at difficulty 1 with ``credit_reserve = 700``
+        # (scripts/probe_hover_gates.py): two otherwise identical runs differed
+        # only in which unit production preferred --
+        #
+        #   hoverTank (450 cr, value/credit 6/450) -> funds<700 on 1723 decisions,
+        #     expansion fired ONCE, extractors 1, income 26
+        #   tank      (350 cr, value/credit 4/350) -> funds<700 on 50 decisions,
+        #     expansion fired 4 times, extractors 3, income 42
+        #
+        # The expensive unit drained the bank below the extractor price, the
+        # expansion gate stayed shut, income never rose, and funds recovered even
+        # more slowly -- a self-reinforcing stall where picking the better combat
+        # unit made the whole economy worse. The protection belongs on the *unit
+        # price* (checked per candidate below, where the price is known) rather
+        # than as a flat addend on this gate: adding ``extractor_cost`` here made
+        # the bar 1400 and shrank the army (peak 17-22 -> 13-16) while buying no
+        # extra wins.
+        protect = _occupied_extractors(state) < int(self.macro.max_extractors)
+        extractor_price = float(getattr(self.game, "extractor_cost", 700.0) or 700.0)
         # Top up the queue instead of going silent whenever it is non-empty.
         #
         # This used to return ``[]`` as soon as *any* factory had
@@ -2307,6 +2346,11 @@ class RwppDuelEnv:
                 # gets built. Ordering the unaffordable one measured as an *empty*
                 # army over a full episode.
                 if price > funds:
+                    continue
+                # ...and it must leave room for the economy to keep growing, while
+                # extractors remain (see ``protect`` above). This is the exact form
+                # of that rule: spend ``price``, keep ``extractor_price``.
+                if protect and funds - price < extractor_price:
                     continue
                 score = _unit_value_per_credit(name)
                 if score <= 0.0:
