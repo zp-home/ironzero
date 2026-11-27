@@ -326,12 +326,11 @@ def build_masks(state: dict, config: MicroDuelConfig = DEFAULT_CONFIG) -> dict[s
         if construction_guard and kind in {
             "move_group",
             "attack_move",
+            "attack_target",
             "stop",
             "hold",
         }:
-            # These are the kinds that re-task the builder. ``attack_target`` is
-            # deliberately left open: it names a specific enemy and does not issue a
-            # movement order to the builder's group.
+            # These are the kinds that re-task units during an active build.
             kind_mask[index] = False
     if not kind_mask.any():
         # Never emit an all-false head: fall back to the tactical orders.

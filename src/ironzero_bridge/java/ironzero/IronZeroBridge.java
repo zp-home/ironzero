@@ -2014,6 +2014,9 @@ public final class IronZeroBridge implements ServerExtension {
      */
     private boolean isOperational(Unit unit) {
         try {
+            if (unit.isFactoryBuilding() && !unit.isBuiltAndNotTransported()) {
+                return false;
+            }
             if (!unit.isNonOperational()) {
                 return true;
             }
@@ -3215,7 +3218,7 @@ public final class IronZeroBridge implements ServerExtension {
                 Unit target = findUnitById(targetId);
                 if (target != null) {
                     command = engine.commandController.createCommandForTeam(engine.playerTeam);
-                    addOwnOrderableUnits(command, unitGroup);
+                    addOwnOrderableUnits(command, unitGroup, true);
                     command.setAttackUnitWaypoint(target);
                 } else {
                     // The named target is gone. This is not a mask bug: the policy
@@ -4201,7 +4204,7 @@ public final class IronZeroBridge implements ServerExtension {
                 continue;
             }
             OrderableUnit unit = (OrderableUnit) item;
-            if (unit.removed || unit.hp <= 0.0f) {
+            if (unit.removed || unit.hp <= 0.0f || unit.isBuilder()) {
                 continue;
             }
             if (unit.team == null || unit.team.teamId != engine.playerTeam.teamId) {
