@@ -4265,7 +4265,26 @@ public final class IronZeroBridge implements ServerExtension {
             if (unit.team == null || unit.team.teamId != engine.playerTeam.teamId) {
                 continue;
             }
-            if (excludeBuilders && unit.isBuilder()) {
+            if (excludeBuilders && (unit.isBuilder() || unit.isBuilding())) {
+                // Buildings are excluded for the same reason as builders, and it
+                // is the reason extractor tier-ups never completed.
+                //
+                // A building cannot move, so a ``move_group``/``attack_move``
+                // order gives it nothing -- but re-tasking it DOES cancel its
+                // build queue. Measured on Lake at difficulty 1
+                // (scripts/probe_upgrade_trace.py): the curriculum's upgrade stage
+                // charged the full 1400 and set ``_upgrade_in_flight``, yet the
+                // extractor's ``queue_progress`` stayed at exactly 0.0 for 120
+                // decisions while income never left 26.0. The same upgrade
+                // dispatched with no army order in flight progressed normally
+                // (scripts/probe_upgrade_paths.py: 0 -> 0.183 -> ... -> 0.951) and
+                // completed to ``extractorT2`` with income 26 -> 30
+                // (scripts/probe_upgrade_functional.py).
+                //
+                // So every broadcast march silently cancelled the tier-up. The
+                // fix belongs here rather than in the curriculum: the policy can
+                // also emit movement orders, and no caller wants a building to
+                // receive one.
                 continue;
             }
             if (unitGroup >= 0 && unitGroup < GROUP_COUNT && (unit.id % GROUP_COUNT) != unitGroup) {

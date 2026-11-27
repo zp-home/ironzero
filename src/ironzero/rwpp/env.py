@@ -344,6 +344,9 @@ class RwppDuelEnv:
         self._factory_orders: int = 0
         # Upgrade attempts this episode (see ``reset`` for why attempts, not wins).
         self._upgrades_issued: int = 0
+        # (entity_id, tech_level) of the building whose upgrade is in flight.
+        # Re-issuing while this is set restarts the upgrade, so the stage waits.
+        self._upgrade_in_flight: tuple[int, int] | None = None
         # Last observed build progress per stage, so a stage can tell "the builder is
         # working, leave it alone" from "the policy cancelled it, re-issue".
         self._extractor_progress: float | None = None
@@ -553,6 +556,7 @@ class RwppDuelEnv:
         # is cheap, while the reward stays honest because ``bonus_upgrade`` is only
         # paid when ``tech_level`` actually rises.
         self._upgrades_issued = 0
+        self._upgrade_in_flight = None
         # Latched turret site, for the same reason as ``factory_site``: a moving
         # target re-orders the structure every decision and repeating a build order
         # restarts construction. The tuple is
@@ -1192,6 +1196,35 @@ class RwppDuelEnv:
         )
         if funds < need:
             return []
+        # Wait for the in-flight upgrade instead of re-issuing it.
+        #
+        # This is the same failure the build stages document: **repeating an
+        # order restarts it**. Measured directly (scripts/probe_upgrade_paths.py):
+        # one dispatched upgrade advanced ``queue_progress`` 0 -> 0.183 -> 0.375
+        # -> 0.567 -> 0.759 -> 0.951 and then snapped back to 0.086, because the
+        # stage fired again while the first one was still running. The tier never
+        # completed and income stayed at the T1 rate.
+        #
+        # The latch is per building and is cleared when that building's
+        # ``tech_level`` actually rises (or the building disappears), which is the
+        # only honest "the upgrade finished" signal -- ``queue_progress`` is not
+        # one, because an extractor also reports progress while its pump animates.
+        in_flight = getattr(self, "_upgrade_in_flight", None)
+        if in_flight is not None:
+            for unit in upgradable:
+                if int(unit.get("entity_id", -1)) == in_flight[0]:
+                    try:
+                        level = int(unit.get("tech_level") or 1)
+                    except (TypeError, ValueError):
+                        level = 1
+                    if level > in_flight[1]:
+                        self._upgrade_in_flight = None
+                    break
+            else:
+                # The building is gone (destroyed or upgraded into a new entity).
+                self._upgrade_in_flight = None
+            if getattr(self, "_upgrade_in_flight", None) is not None:
+                return []
         # Prefer the *cheapest tier first* -- i.e. a T1 building over an already-T2
         # one -- because the marginal credit is worth more at the bottom of the
         # ladder. ``tech_level`` is missing on older payloads, where every building
@@ -1207,6 +1240,15 @@ class RwppDuelEnv:
             dtype=np.int64,
         )
         self._upgrades_issued += 1
+        # Remember which building is now upgrading, so the next decision waits for
+        # it instead of restarting it (see the latch comment above).
+        try:
+            self._upgrade_in_flight = (
+                int(building.get("entity_id", -1)),
+                int(building.get("tech_level") or 1),
+            )
+        except (TypeError, ValueError):
+            self._upgrade_in_flight = None
         return self._send_curriculum_order(
             action,
             {"kind": "upgrade_building",
