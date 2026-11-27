@@ -3551,18 +3551,55 @@ public final class IronZeroBridge implements ServerExtension {
             boolean available = action.isAvailableForUnit(orderable);
             boolean affordable = action.canAffordForUnit(orderable, false);
             if (!available || !affordable) {
-                // Diagnose which half refused: the two have completely different
-                // fixes (a capability/state problem versus a bank problem), and
-                // without this line they are indistinguishable from the outside --
-                // every refusal just surfaced as UPGRADE_UNAVAILABLE.
+                // Report the engine's OWN price, not a Python-side guess.
+                //
+                // ``MicroDuelConfig.extractor_upgrade_cost`` is 1200, but measured
+                // at difficulty 1 the engine refused every upgrade with a bank of
+                // 1207 (scripts/probe_upgrade_gates.py: available=true,
+                // affordable=false). The price is not in the observation payload,
+                // so the only reliable source is ``SpecialAction.getPriceValue``
+                // itself. Logging it makes the Python-side reserve provably
+                // correct instead of guessed.
+                int price = -1;
+                try {
+                    price = action.getPriceValue();
+                } catch (RuntimeException ignored) {
+                    price = -1;
+                }
                 System.out.println("[ironzero] upgrade rejected: building="
                         + buildingId
-                        + " available=" + available + " affordable=" + affordable);
+                        + " available=" + available + " affordable=" + affordable
+                        + " price=" + price);
                 return false;
             }
         } catch (RuntimeException failure) {
             System.out.println("[ironzero] upgrade threw: " + failure);
             return false;
+        }
+        // Call the engine's own entry point, exactly as ``produceUnit`` does.
+        //
+        // The previous form built a ``CommandControllerCommand`` and set its
+        // action id, which is the same dead end that ``produceUnit`` documents:
+        // the dispatcher does not turn an action id into a build-queue entry, so
+        // the item appears with progress -1.0 and never starts. Measured on Lake
+        // at difficulty 1 (round 19): the upgrade was ACCEPTED and charged -- the
+        // bank dropped from 1405 to 5.0, i.e. the full 1400 price -- and the
+        // extractor still reported ``extractorT1`` / ``tech_level 1`` for the
+        // rest of the episode. Charged but not performed is the exact signature
+        // of the command path being wrong.
+        //
+        // ``Factory.executeSpecialAction`` forwards to
+        // ``FactoryBuildQueue.queueOrCancel``, which is what the engine and its
+        // built-in AI use. An extractor is a ``Factory`` subclass (it produces
+        // income and can tier up), so the same call applies.
+        try {
+            if (building instanceof com.corrodinggames.rts.game.units.buildings.Factory) {
+                ((com.corrodinggames.rts.game.units.buildings.Factory) building)
+                        .executeSpecialAction(action, false);
+                return true;
+            }
+        } catch (RuntimeException failure) {
+            System.out.println("[ironzero] upgrade executeSpecialAction failed: " + failure);
         }
         CommandControllerCommand command =
                 engine.commandController.createCommandForTeam(engine.playerTeam);

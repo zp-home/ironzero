@@ -248,7 +248,20 @@ class MicroDuelConfig:
     extractor_income_per_second: float = 8.0
     extractor_t2_income_per_second: float = 18.0
     extractor_cost: float = 700.0
-    extractor_upgrade_cost: float = 1200.0
+    #: Price the *engine* charges to tier an extractor up.
+    #:
+    #: 1400, not 1200. This is not a tuning knob: it is the engine's own
+    #: ``SpecialAction.getPriceValue()`` for the extractor's
+    #: ``getBuildActionId()`` action, read out of the live game by the bridge.
+    #: Measured on ``[p2]Lake (2p)`` at difficulty 1 (round 19):
+    #:
+    #:   [ironzero] upgrade rejected: building=25 available=true
+    #:             affordable=false price=1400
+    #:
+    #: The old 1200 made every gate that used this field under-reserve by 200, so
+    #: the upgrade stage ordered an upgrade the engine then refused as
+    #: unaffordable, and no building ever left tech_level 1.
+    extractor_upgrade_cost: float = 1400.0
     factory_cost: float = 800.0
     turret_cost: float = 500.0
     tank_cost: float = 250.0
