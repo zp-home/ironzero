@@ -3212,6 +3212,12 @@ class RwppDuelEnv:
                 continue
             if name in _BUILDER_STAGES and self._upgrade_in_flight is not None:
                 continue
+            if name == "production" and any(
+                o.get("kind") == "upgrade_building" for o in collected
+            ):
+                # Do not spend credits in the same dispatch that just queued a
+                # 1400-credit upgrade, or production eats the construction buffer.
+                continue
             order = stage()
             # ``order`` is a *list* of decoded orders. Testing it for ``None``
             # would be true for an empty list too -- and that is exactly the bug

@@ -3206,6 +3206,23 @@ public final class IronZeroBridge implements ServerExtension {
                 : new JsonArray();
         // One entry per action: null = accepted, otherwise the ErrorCode name.
         List<String> actionOutcomes = new ArrayList<>();
+        // Trace what actually arrives. The Python side has been verified to put
+        // ``{"kind": "upgrade_building", "building_entity_id": 25}`` on the wire
+        // (scripts/probe_upgrade_spy.py) while none of ``upgradeBuilding``'s log
+        // lines ever appear, so the question is now "how many actions does this
+        // loop see, and what are their kinds" -- which only this line can answer.
+        if (actions.size() > 0) {
+            StringBuilder kinds = new StringBuilder();
+            for (JsonValue entry : actions) {
+                if (kinds.length() > 0) {
+                    kinds.append(',');
+                }
+                kinds.append(entry.isObject()
+                        ? entry.asObject().getString("kind", "?") : "non-object");
+            }
+            System.out.println("[ironzero] applyStep actions=" + actions.size()
+                    + " kinds=[" + kinds + "]");
+        }
         for (JsonValue item : actions) {
             if (!item.isObject()) {
                 actionOutcomes.add("INVALID_MESSAGE");
@@ -3299,7 +3316,17 @@ public final class IronZeroBridge implements ServerExtension {
                 // Extractor / factory tier upgrade: the engine exposes it as the
                 // building's current build action id.
                 long buildingId = action.getLong("building_entity_id", -1L);
-                actionOutcomes.add(upgradeBuilding(buildingId) ? null : "UPGRADE_UNAVAILABLE");
+                // Entry trace. ``applyStep`` has been observed receiving
+                // ``kinds=[move_group,upgrade_building]`` while neither
+                // ``upgrade dispatched`` nor any of ``upgradeBuilding``'s guard
+                // lines appear, so this line answers the only remaining question:
+                // is this branch entered at all?
+                System.out.println("[ironzero] upgrade branch entered: building="
+                        + buildingId);
+                boolean upgraded = upgradeBuilding(buildingId);
+                System.out.println("[ironzero] upgrade branch result: building="
+                        + buildingId + " ok=" + upgraded);
+                actionOutcomes.add(upgraded ? null : "UPGRADE_UNAVAILABLE");
                 continue;
             } else if ("noop".equals(kind)) {
                 // Explicit "do nothing". Construction and production need many
@@ -3521,20 +3548,33 @@ public final class IronZeroBridge implements ServerExtension {
      */
     private boolean upgradeBuilding(long buildingId) {
         Unit building = findUnitById(buildingId);
-        if (building == null || !(building instanceof OrderableUnit)) {
+        if (building == null) {
+            System.out.println("[ironzero] upgrade guard: id=" + buildingId + " NOT_FOUND");
+            return false;
+        }
+        if (!(building instanceof OrderableUnit)) {
+            System.out.println("[ironzero] upgrade guard: id=" + buildingId
+                    + " NOT_ORDERABLE class=" + building.getClass().getName());
             return false;
         }
         if (building.team == null || building.team.teamId != engine.playerTeam.teamId) {
+            System.out.println("[ironzero] upgrade guard: id=" + buildingId + " NOT_OWN_TEAM");
             return false;
         }
         ActionId upgradeId;
         try {
             upgradeId = building.getBuildActionId();
         } catch (RuntimeException failure) {
+            System.out.println("[ironzero] upgrade guard: id=" + buildingId
+                    + " getBuildActionId threw " + failure);
             return false;
         }
         if (upgradeId == null || !SpecialAction.isRealActionId(upgradeId)) {
             // Already at the top tier, or this building type has no upgrade.
+            System.out.println("[ironzero] upgrade guard: id=" + buildingId
+                    + " NO_REAL_ACTION id=" + upgradeId
+                    + " real=" + (upgradeId != null && SpecialAction.isRealActionId(upgradeId))
+                    + " type=" + building.getClass().getSimpleName());
             return false;
         }
         OrderableUnit orderable = (OrderableUnit) building;
@@ -3542,9 +3582,13 @@ public final class IronZeroBridge implements ServerExtension {
         try {
             action = orderable.getSpecialAction(upgradeId);
         } catch (RuntimeException failure) {
+            System.out.println("[ironzero] upgrade guard: id=" + buildingId
+                    + " getSpecialAction threw " + failure);
             return false;
         }
         if (action == null) {
+            System.out.println("[ironzero] upgrade guard: id=" + buildingId
+                    + " NO_SPECIAL_ACTION type=" + building.getClass().getSimpleName());
             return false;
         }
         try {
@@ -3597,21 +3641,100 @@ public final class IronZeroBridge implements ServerExtension {
                 com.corrodinggames.rts.game.units.buildings.Factory factory =
                         (com.corrodinggames.rts.game.units.buildings.Factory) building;
                 factory.executeSpecialAction(action, false);
-                // Observe what actually happened. Measured (round 20): the bank
-                // dropped by exactly 1400 yet the extractor reported
-                // tech_level 1, queue_length 0 and order_type idle a decision
-                // later -- charged but not performed. These two lines say whether
-                // the item was enqueued, and what the engine immediately did
-                // with it, which is the whole open question.
                 Object queued = factory.getCurrentQueuedItem();
                 System.out.println("[ironzero] upgrade dispatched: building="
                         + buildingId + " queued=" + queued
-                        + " queueLen=" + (factory.buildQueue == null ? -1
-                                : factory.buildQueue.buildQueue.size)
-                        + " current=" + (factory.buildQueue == null ? null
-                                : factory.buildQueue.getCurrentBuildItem()));
+                        + " queueLen=" + queueLength(factory));
                 return true;
             }
+            // Stock-map extractors are ``CustomUnit``, not ``Extractor``.
+            //
+            // This was the real reason no tier-up ever completed, and it took
+            // until round 26 to see because the fallback returned ``true``: the
+            // order looked accepted from Python while nothing was queued.
+            // Measured (scripts/probe_upgrade_spy.py):
+            //
+            //   [ironzero] upgrade branch entered: building=25
+            //   [ironzero] upgrade fallback (NOT a Factory): building=25
+            //              class=com.corrodinggames.rts.game.units.custom.CustomUnit
+            //   [ironzero] upgrade branch result: building=25 ok=true
+            //
+            // ``CustomUnit`` implements ``FactoryInterface`` and declares its own
+            // ``executeSpecialAction(SpecialAction, boolean)``, plus
+            // ``getBuildActionId``/``getUpgradeActions``/``completeQueueItem`` --
+            // i.e. it has the whole upgrade machinery, just not the ``Factory``
+            // base class the old check required.
+            if (building instanceof com.corrodinggames.rts.game.units.custom.CustomUnit) {
+                com.corrodinggames.rts.game.units.custom.CustomUnit custom =
+                        (com.corrodinggames.rts.game.units.custom.CustomUnit) building;
+                // ``getBuildActionId()`` is the WRONG action for a CustomUnit.
+                //
+                // Its implementation is ``getUpgradeActions().get(0)`` -- the
+                // *current* tier's action, not the next one. The engine's own
+                // ``addUpgradeActions`` proves the convention: it clears the
+                // caller's list, returns early when fewer than two actions exist,
+                // and otherwise **removes index 0** before adding the rest. So
+                // element 0 is "what I am now" and elements 1..n are "what I can
+                // become".
+                //
+                // Queueing element 0 is why ``executeSpecialAction`` reported
+                // success with ``queueLen=0``: the engine was asked to build the
+                // tier it already had, which it silently declines.
+                java.util.ArrayList<?> upgrades = custom.getUpgradeActions();
+                if (upgrades == null || upgrades.isEmpty()) {
+                    System.out.println("[ironzero] upgrade none available: building="
+                            + buildingId + " techLevel=" + custom.getTechLevel());
+                    return false;
+                }
+                // Element 0 IS the upgrade action.
+                //
+                // Measured (round 26): ``getUpgradeActions()`` on a live T1
+                // extractor returns a one-element list whose entry prints as
+                // ``ExtraAction:price=1400`` -- the tier-up, priced exactly as
+                // ``getPriceValue`` reported in round 19. It is not a
+                // "current tier" marker; ``addUpgradeActions`` drops index 0 only
+                // because that list is also used to enumerate *pending* actions.
+                //
+                // Picking the first ``SpecialAction`` in the list is therefore the
+                // correct dispatch. ``executeSpecialAction`` on ``CustomUnit``
+                // forwards to its own ``FactoryBuildQueue``, which is the same
+                // queue the engine's AI fills.
+                SpecialAction next = null;
+                for (Object candidate : upgrades) {
+                    if (candidate instanceof SpecialAction) {
+                        next = (SpecialAction) candidate;
+                        break;
+                    }
+                }
+                if (next == null) {
+                    System.out.println("[ironzero] upgrade none available: building="
+                            + buildingId + " no SpecialAction in list");
+                    return false;
+                }
+                custom.executeSpecialAction(next, false);
+                int queueAfterFirst = queueLength(custom);
+                if (queueAfterFirst == 0) {
+                    // The two-arg overload queued nothing. ``CustomUnit`` also
+                    // declares ``executeSpecialAction(SpecialAction, PointF,
+                    // Unit, int)``, which is the entry point its own build-queue
+                    // path uses for a *targeted* action; an upgrade carries no
+                    // target, so nulls are the correct arguments.
+                    try {
+                        custom.executeSpecialAction(next, null, null, 0);
+                    } catch (RuntimeException failure) {
+                        System.out.println("[ironzero] upgrade targeted overload failed: "
+                                + failure);
+                    }
+                }
+                System.out.println("[ironzero] upgrade dispatched (custom): building="
+                        + buildingId + " techLevel=" + custom.getTechLevel()
+                        + " actions=" + upgrades.size()
+                        + " queueFirst=" + queueAfterFirst
+                        + " queueLen=" + queueLength(custom));
+                return true;
+            }
+            System.out.println("[ironzero] upgrade fallback (unknown class): building="
+                    + buildingId + " class=" + building.getClass().getName());
         } catch (RuntimeException failure) {
             System.out.println("[ironzero] upgrade executeSpecialAction failed: " + failure);
         }
