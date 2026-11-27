@@ -3594,8 +3594,22 @@ public final class IronZeroBridge implements ServerExtension {
         // income and can tier up), so the same call applies.
         try {
             if (building instanceof com.corrodinggames.rts.game.units.buildings.Factory) {
-                ((com.corrodinggames.rts.game.units.buildings.Factory) building)
-                        .executeSpecialAction(action, false);
+                com.corrodinggames.rts.game.units.buildings.Factory factory =
+                        (com.corrodinggames.rts.game.units.buildings.Factory) building;
+                factory.executeSpecialAction(action, false);
+                // Observe what actually happened. Measured (round 20): the bank
+                // dropped by exactly 1400 yet the extractor reported
+                // tech_level 1, queue_length 0 and order_type idle a decision
+                // later -- charged but not performed. These two lines say whether
+                // the item was enqueued, and what the engine immediately did
+                // with it, which is the whole open question.
+                Object queued = factory.getCurrentQueuedItem();
+                System.out.println("[ironzero] upgrade dispatched: building="
+                        + buildingId + " queued=" + queued
+                        + " queueLen=" + (factory.buildQueue == null ? -1
+                                : factory.buildQueue.buildQueue.size)
+                        + " current=" + (factory.buildQueue == null ? null
+                                : factory.buildQueue.getCurrentBuildItem()));
                 return true;
             }
         } catch (RuntimeException failure) {
