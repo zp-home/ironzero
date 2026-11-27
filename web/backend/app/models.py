@@ -78,3 +78,27 @@ class RwppPpoRequest(BaseModel):
     units_per_team: int | None = Field(default=None, ge=1, le=25, description="双方坦克数量（1..25）")
     init_checkpoint: str | None = Field(default=None, max_length=512, description="初始策略 Checkpoint 路径")
     init_mode: str | None = Field(default=None, max_length=64, description="策略初始化模式: warmstart / checkpoint / scratch")
+    # Opponent strength and the victory rule are the two settings that decide what
+    # "winning" even means, yet neither was reachable from this API -- the host
+    # service accepts both (scripts/rwpp_service/ppo.py maps them onto
+    # ``--enemy-ai-difficulty`` and ``--win-mode``) and the UI simply never sent
+    # them, so every browser-started run played at the engine's default level.
+    #
+    # The difficulty ladder is -2 / -1 / 0 / 1, which the bridge turns into income
+    # multipliers of 0.40 / 0.70 / 1.00 / 1.40. ``None`` keeps the service default.
+    enemy_ai_difficulty: int | None = Field(
+        default=None, ge=-2, le=3,
+        description="敌方 AI 难度：-2/-1/0/1（收入倍率 0.40/0.70/1.00/1.40）",
+    )
+    ai_difficulty: int | None = Field(
+        default=None, ge=-2, le=3, description="己方 AI 难度（仅在 ai_pilot 接管时生效）",
+    )
+    win_mode: str | None = Field(
+        default=None, max_length=32, description="胜利判定：native / annihilation / objective",
+    )
+    unlock_ai: bool = Field(default=False, description="解锁引擎内置 AI 的受限行为")
+    # A pinned seed only narrows variance: the engine calls Math.random() in 12
+    # places that cannot be seeded (see IronZeroBridge.pinGlobalRandom), so two
+    # runs with the same value still diverge. It is exposed so an evaluation can
+    # be repeated against the *same* opening rather than an arbitrary one.
+    seed: int | None = Field(default=None, ge=0, le=2**31 - 1, description="引擎随机种子（仅降低方差，非完全可复现）")

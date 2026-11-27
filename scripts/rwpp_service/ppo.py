@@ -84,6 +84,7 @@ def run_ppo(
     record_ai_orders: bool = False,
     ai_difficulty: int | None = None,
     enemy_ai_difficulty: int | None = None,
+    seed: int | None = None,
     init_checkpoint: str | None = None,
 ) -> None:
     job_dir = RUNS / f"rwpp-ppo-{job_id}"
@@ -160,6 +161,10 @@ def run_ppo(
         command.extend(["--ai-difficulty", str(int(ai_difficulty))])
     if enemy_ai_difficulty is not None:
         command.extend(["--enemy-ai-difficulty", str(int(enemy_ai_difficulty))])
+    # A pinned seed narrows run-to-run variance (the engine still calls
+    # Math.random() in 12 unseedable places, so this is not full reproducibility).
+    if seed is not None:
+        command.extend(["--seed", str(int(seed))])
     if init_checkpoint:
         command.extend(["--init-checkpoint", str(init_checkpoint)])
     started = time.time()

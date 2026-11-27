@@ -83,6 +83,9 @@ class StartMixin:
         record_ai_orders = bool(payload.get("record_ai_orders", False))
         ai_difficulty = _optional_int(payload.get("ai_difficulty"), None)
         enemy_ai_difficulty = _optional_int(payload.get("enemy_ai_difficulty"), None)
+        # Engine seed. Declared on ``run_ppo`` but never read here, so a request
+        # that asked for a pinned seed silently got an arbitrary one.
+        seed = _optional_int(payload.get("seed"), None)
         preset = resolve_preset(payload, map_name, map_path)
         map_name = preset["map_name"]
         map_path = preset["map_path"]
@@ -211,6 +214,7 @@ class StartMixin:
                 record_ai_orders=record_ai_orders,
                 ai_difficulty=ai_difficulty,
                 enemy_ai_difficulty=enemy_ai_difficulty,
+                seed=seed,
                 init_checkpoint=init_checkpoint,
             )
 
