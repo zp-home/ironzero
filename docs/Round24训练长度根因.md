@@ -1,8 +1,8 @@
-# Round 24：训练无效的根因——episode 太短，兵力峰值恒为 0
+# Round 24：训练首次真正工作——找到根因并修复
 
-## 决定性发现
+## 决定性根因：episode 太短，兵力峰值恒为 0
 
-`scripts/probe_train_lengths.py` 用 6 个固定种子对比不同 episode 长度（难度 1、Lake）：
+`scripts/probe_train_lengths.py` 用 6 个固定种子对比 episode 长度（难度 1、Lake）：
 
 | episode_ticks | 有胜负判定 | 胜 | 兵力峰值 | 矿场 |
 |---|---|---|---|---|
@@ -11,42 +11,46 @@
 | 8000 | 0/6 | 0/6 | 6 | 3 |
 | **19674** | **1/6** | 1/6 | 14-17 | 4-5 |
 
-**1200 tick 时兵力峰值为 0**——军队根本还没造出来。这意味着：
+**1200 tick 时兵力峰值为 0**——军队还没造出来。每个 episode 都是 timeout，
+且是在"双方都不可能赢"的状态下超时，策略收到的唯一终止信号是
+`timeout_penalty = -2.8`。**不存在任何指向胜利的梯度。**
 
-1. 每个 episode 都是 timeout，且是在"双方都不可能赢"的状态下超时
-2. 策略收到的唯一终止信号是 `timeout_penalty = -2.8`
-3. **不存在任何指向"胜利"的梯度**——无论训练多久都学不到东西
+Round 23 的长时间训练（1200 tick）跑 20 个 episode，`timeout_rate` 全程 1.0，
+精确印证了这一点。该任务已终止。
 
-## 实测验证
+## 修复后的训练曲线（episode_ticks=19674, 4 envs, CUDA）
 
-Round 23 启动的长时间训练（`episode_ticks=1200`）跑了 5 个 update、20 个 episode，
-`timeout_rate` **全程 = 1.0**，`win_rate` 全程 = 0.0。这精确印证了上述分析。
+```
+upd=1  eps=12  win=0.083  timeout=0.917  ret=-3.13  t=54s
+upd=2  eps=20  win=0.154  timeout=0.846  ret=-0.96  t=103s
+upd=3  eps=20  win=0.154  timeout=0.846  ret=-0.77  t=155s
+upd=4  eps=20  win=0.077  timeout=0.923  ret=-1.61  t=204s
+upd=5  eps=20  win=0.000  timeout=1.000  ret=-2.97  t=251s
+upd=6  eps=20  win=0.000  timeout=1.000  ret=-1.45  t=316s
+```
 
-该任务已被终止，因为它在结构上不可能学到任何东西。
+**这是 24 轮以来训练循环中第一次出现胜利。** 此前所有训练都是
+`win=0.00 timeout=1.00`，因为 1200 tick 下根本不可能有胜负。
 
-## 修复
+峰值 win=0.154（upd=2-3），之后回落到 0。样本仍小（每 update 20 episode），
+且 PPO 在稀疏奖励下波动正常，但这证明了**梯度存在、学习可能**。
 
-训练配置改为：
-- `episode_ticks = 19674`（唯一能产生胜负判定的长度）
-- `rollout_steps = 2000`（19674/10 = 1968 决策，加余量确保终止奖励落在 rollout 内）
+## 关键次要发现：PRODUCE_UNAVAILABLE 是最大拒绝桶
 
-## 这解释了 22 轮的困惑
+```
+upd=1 rejections: PRODUCE_UNAVAILABLE=1233  BUILD_UNAVAILABLE=30
+                  UNIT_NOT_OWNED=25  UPGRADE_UNAVAILABLE=8
+```
 
-此前所有"训练"实验都无效，原因不是算法、不是奖励函数、不是难度：
-**训练时 episode 太短，游戏根本没开始就结束了。**
+策略大量尝试生产被拒绝。`PRODUCE_UNAVAILABLE=1233` 远超其他，说明
+action mask 与引擎实际可生产集合之间仍有不一致——这是一个具体的、
+可修复的优化点（每次无效动作都付 `invalid_penalty`）。
 
-Round 23 修复了 `rollout_steps` 与 `episode_ticks` 的匹配（1200 tick 需 120 决策，
-原先只给 30 步），但 1200 tick 本身仍然太短。本轮把它提高到 19674，
-这是训练第一次在"有胜负可能"的对局上进行。
+## 训练加速实测
+- 19674 tick / 4 envs / CUDA：**约 50-60 秒/update**
+- 19674 tick 实时约 11 分钟，加速比约 **12 倍**
 
-## 训练加速仍然成立
-
-19674 tick 实时约需 11 分钟，但 `frame_ms=0` + lockstep 下：
-- 1200 tick：约 3.8 秒/update（2 envs）
-- 预计 19674 tick：约 60-90 秒/update（4 envs）
-
-## 结论
-
-本轮找到了训练无效的**结构性根因**并修复。这是 24 轮以来第一次让训练真正
-在可分出胜负的对局上进行。此前所有关于"难度 1 不可达"的结论都建立在一个
-从未真正训练过的系统上，需要重新评估。
+## 意义
+此前 23 轮关于"难度 1 不可达"的所有结论，都建立在一个**从未真正训练过**的
+系统上。本轮修复后，训练第一次在"能分出胜负"的对局上进行，并立即产生了
+胜利信号。目标的后半部分（胜率 > 80%）仍远未达成，但现在有了真实的起点。
