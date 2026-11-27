@@ -1845,7 +1845,9 @@ class RwppDuelEnv:
         if any(
             not _is_operational(unit)
             for unit in own
-            if unit.get("is_building") and unit.get("build_progress") not in (None, 0.0)
+            if unit.get("is_building")
+            and isinstance(unit.get("build_progress"), (int, float))
+            and 0.0 < float(unit.get("build_progress")) < 1.0
         ):
             return []
         if not any(

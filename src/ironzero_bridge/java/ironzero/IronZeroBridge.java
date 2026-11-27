@@ -1250,13 +1250,33 @@ public final class IronZeroBridge implements ServerExtension {
                 if (action == null) {
                     continue;
                 }
-                // The reported menu must be exactly what {@link #produceUnit} can
-                // dispatch, otherwise the mask opens a kind the engine will refuse.
-                // ``produceUnit`` requires BOTH checks; reporting on
-                // ``isAvailableForUnit`` alone made the menu a superset of what was
-                // dispatchable.
-                if (action.isAvailableForUnit(factory)
-                        && action.canAffordForUnit(factory, false)) {
+                // Report the *buildable* set, NOT the currently-affordable one.
+                //
+                // ``canAffordForUnit`` used to be ANDed in here, on the theory that
+                // the menu should equal the dispatchable set. That is true of
+                // ``produceUnit``, but folding affordability into the *menu* creates
+                // a self-reinforcing deadlock, measured on Lake at difficulty 1:
+                //
+                //   tick 2011  landFactory 27 built, menu=[builder,hoverTank,tank]
+                //   tick 4811  funds drained by the queue -> menu=[]  (empty!)
+                //   ...        menu stays [] for the remaining 15000 ticks
+                //
+                // ``_combat_factories()`` on the Python side requires a non-empty
+                // non-builder menu, so an empty menu there means "no factory
+                // exists". The expansion stage gates on exactly that, so the one
+                // stage that raises income was locked out by a *temporary* lack of
+                // credits -- the bank could never grow again, the queue could never
+                // drain, and the menu could never come back. Income sat at 26.0
+                // (one extractor) for the whole episode.
+                //
+                // Affordability is already enforced where it belongs: the Python
+                // mask gates the *kind* on funds, and
+                // ``RwppDuelEnv._issue_opening_production`` skips any entry whose
+                // price exceeds the bank (env.py). Both run per decision against the
+                // live bank, so they recover the moment credits arrive. The menu is
+                // a capability statement ("this factory can build tanks"), which is
+                // what the contract needs it to be.
+                if (action.isAvailableForUnit(factory)) {
                     names.add(candidate.getInternalName());
                 }
             } catch (RuntimeException ignored) {
@@ -1304,8 +1324,9 @@ public final class IronZeroBridge implements ServerExtension {
                 if (action == null) {
                     continue;
                 }
-                if (action.isAvailableForUnit(factory)
-                        && action.canAffordForUnit(factory, false)) {
+                // Buildable, not "affordable right now" -- see the long note in the
+                // registry scan above for the measured deadlock this caused.
+                if (action.isAvailableForUnit(factory)) {
                     names.add(canonical);
                 }
             } catch (RuntimeException ignored) {
